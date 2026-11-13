@@ -9,9 +9,7 @@ use serde::de::{self, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 
 use super::particles::{ColorFile, dependency};
-use crate::core::asset::{
-  AssetError, AssetLoader, AssetPath, Assets, CheckContext, Handle, LoadContext,
-};
+use crate::core::asset::{AssetError, AssetLoader, Assets, CheckContext, Handle, LoadContext};
 use crate::core::ecs::Vec2;
 use crate::core::graphics::Image;
 use crate::core::skeleton::{
@@ -30,8 +28,8 @@ use crate::core::ui::Color;
 ///
 /// ```ron
 /// (
-///   // Images by name: paths from this file's folder
-///   images: { "parts": "hero.png", "gear": "gear/extra.png" },
+///   // Images by name: paths from the asset root, as every other asset file writes them
+///   images: { "parts": "rigs/hero.png", "gear": "rigs/gear/extra.png" },
 ///   // Regions by name: an image and its pixel rectangle (x, y, width, height)
 ///   regions: {
 ///     "torso": (image: "parts", rect: (64, 0, 48, 80)),
@@ -169,10 +167,9 @@ impl AssetLoader for SkeletonLoader {
     let mut images = HashMap::new();
     for (name, written) in &file.images.0 {
       let place = format!("images: {name:?}");
-      let full = join(&path, &place, written)?;
       images.insert(
         name.as_str(),
-        dependency::<Image>(cx, &path, &place, &full)?,
+        dependency::<Image>(cx, &path, &place, written)?,
       );
     }
     file
@@ -215,20 +212,6 @@ fn problem(item: impl Into<String>, problem: impl Into<String>) -> SkeletonError
     item: item.into(),
     problem: problem.into(),
   }
-}
-
-/// `written`, a path in the file at `path`, as a path from the asset root
-fn join(path: &AssetPath, place: &str, written: &str) -> Result<String, AssetError> {
-  if written.starts_with(['/', '\\']) {
-    return Err(AssetError::decode(
-      path,
-      format!("{place}: {written:?} is an absolute path"),
-    ));
-  }
-  Ok(match path.parent() {
-    Some(folder) => format!("{folder}/{written}"),
-    None => written.to_string(),
-  })
 }
 
 /// A map read in the file's order, a name written twice failing at its line
@@ -986,6 +969,8 @@ mod tests {
   fn files(text: &str) -> MemorySource {
     let files = MemorySource::new();
     files.insert(IMAGE, png(128, 128));
+    files.insert("hero.png", png(128, 128));
+    files.insert("other/pic.png", png(8, 8));
     files.insert(EXTRA, png(16, 16));
     files.insert(PATH, text);
     files
@@ -1044,9 +1029,9 @@ mod tests {
     assert_eq!(data.bones()[1].length, 40.0);
     assert_eq!(data.slots().len(), 2);
     assert_eq!(data.slots()[0].attachment.as_deref(), Some("torso"));
-    // Regions on the image the path names, relative to the file's folder
+    // Regions on the image the path names, from the asset root
     let mut assets = AssetsView::new(&mut world);
-    let image = match assets.load_now::<Image>(IMAGE) {
+    let image = match assets.load_now::<Image>("hero.png") {
       Ok(image) => image,
       Err(error) => panic!("{}", error.report()),
     };
@@ -1126,7 +1111,7 @@ mod tests {
       r#"(
       bones: [(name: "root", rotation: 90, shear_x: 45, shear_y: -30), (name: "b", parent: "root")],
       slots: [(name: "s", bone: "root")],
-      images: { "i": "hero.png" },
+      images: { "i": "rigs/hero.png" },
       regions: { "r": (image: "i", rect: (0, 0, 8, 8)) },
       skins: { "default": { "s": {
         "a": Region(region: "r", rotation: 180),
@@ -1171,7 +1156,7 @@ mod tests {
 
   /// Every feature the data holds, written once
   const EVERYTHING: &str = r##"(
-    images: { "parts": "hero.png", "extra": "gear/extra.png" },
+    images: { "parts": "rigs/hero.png", "extra": "rigs/gear/extra.png" },
     regions: {
       "head": (image: "parts", rect: (0, 0, 64, 64)),
       "torso": (image: "parts", rect: (64, 0, 48, 80)),
@@ -1569,7 +1554,7 @@ mod tests {
 
   #[test]
   fn a_missing_image_fails_as_a_dependency() {
-    let error = failure(r#"(images: { "i": "nowhere.png" }, bones: [(name: "root")])"#);
+    let error = failure(r#"(images: { "i": "rigs/nowhere.png" }, bones: [(name: "root")])"#);
     assert!(error.contains(PATH), "{error}");
     assert!(error.contains("rigs/nowhere.png"), "{error}");
     let error = failure(r#"(images: { "i": "../../up.png" })"#);
@@ -1616,9 +1601,24 @@ mod tests {
         r#""boom""#,
       ),
       (
-        r#"(images: { "i": "hero.png" }, regions: { "r": (image: "j", rect: (0, 0, 8, 8)) })"#,
+        r#"(images: { "i": "rigs/hero.png" }, regions: { "r": (image: "j", rect: (0, 0, 8, 8)) })"#,
         r#"region "r""#,
         r#""j""#,
+      ),
+      (
+        r#"(bones: [(name: "a")], slots: [(name: "s", bone: "a"), (name: "t", bone: "a")], animations: { "w": (duration: 1.0, draw_order: [(0.5, ["s"])]) })"#,
+        r#"animation "w" timeline 0 (draw order)"#,
+        "key 0",
+      ),
+      (
+        r#"(bones: [(name: "a")], slots: [(name: "s", bone: "a")], skins: { "default": { "nope": { "x": Point() } } })"#,
+        "skin",
+        r#""nope""#,
+      ),
+      (
+        r#"(skins: { "default": {} , "red": { "nope": { "x": Point() } } })"#,
+        r#"skin "red""#,
+        r#""nope""#,
       ),
       (
         r#"(mixes: { pairs: [("x", "y", 0.1)] })"#,
@@ -1634,6 +1634,22 @@ mod tests {
   }
 
   #[test]
+  fn an_image_is_named_from_the_asset_root_not_the_file_s_folder() {
+    // The file is in rigs/; the image only exists at other/pic.png
+    let mut world = registry_over(files(
+      r#"(images: { "i": "other/pic.png" }, regions: { "r": (image: "i", rect: (0, 0, 8, 8)) })"#,
+    ));
+    let data = match load_in(&mut world) {
+      Ok(data) => data,
+      Err(error) => panic!("{error}"),
+    };
+    let pic = AssetsView::new(&mut world)
+      .load_now::<Image>("other/pic.png")
+      .expect("pic");
+    assert_eq!(data.regions()[0].image, pic);
+  }
+
+  #[test]
   fn a_name_written_twice_in_a_map_fails() {
     let error = failure(r#"(events: { "a": (), "a": () })"#);
     assert!(error.contains("written twice"), "{error}");
@@ -1643,7 +1659,7 @@ mod tests {
   #[test]
   fn a_region_outside_its_image_fails_the_check() {
     let error = failure(
-      r#"(images: { "i": "hero.png" }, regions: { "r": (image: "i", rect: (100, 0, 64, 64)) })"#,
+      r#"(images: { "i": "rigs/hero.png" }, regions: { "r": (image: "i", rect: (100, 0, 64, 64)) })"#,
     );
     assert!(error.contains(PATH), "{error}");
     assert!(error.contains(r#"region "r""#), "{error}");

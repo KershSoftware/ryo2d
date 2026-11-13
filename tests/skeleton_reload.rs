@@ -13,7 +13,7 @@ const IMAGE: &str = "rigs/hero.png";
 fn skeleton(bones: &str) -> String {
   format!(
     r#"(
-      images: {{ "parts": "hero.png" }},
+      images: {{ "parts": "rigs/hero.png" }},
       regions: {{ "torso": (image: "parts", rect: (0, 0, 8, 8)) }},
       bones: [{bones}],
     )"#
@@ -114,8 +114,8 @@ fn a_reload_keeps_the_asset_id_and_a_broken_reload_keeps_the_last_good_data() {
   );
   let good = version(&world);
 
-  // Saves that do not: a RON error, an unknown field, a bad rig and an image
-  // that is gone. Each keeps the last good data and its version
+  // Saves that do not: a RON error, an unknown field, a repeated bone and an
+  // unknown parent. Each keeps the last good data and its version
   for broken in [
     "(bones: [(name: ".to_string(),
     skeleton(r#"(name: "root", lenght: 4)"#),
@@ -187,5 +187,39 @@ fn a_saved_image_checks_the_skeleton_again() {
       .any(|event| matches!(event, AssetEvent::ReloadFailed { id, .. } if *id == handle.id()));
   }
   assert_eq!(version(&world), before);
+  assert_eq!(bone_names(&world, &handle), ["root"]);
+}
+
+#[test]
+fn a_good_image_reload_marks_the_skeleton_modified() {
+  let files = MemorySource::new();
+  files.insert(IMAGE, png());
+  files.insert(PATH, skeleton(r#"(name: "root")"#));
+  let mut world = asset_world_over(files.clone());
+  let handle = load(&mut world);
+  let version = |world: &World| world.resource::<Assets<SkeletonData>>().version(&handle);
+  let before = version(&world);
+  let mut events = world
+    .resource::<Messages<AssetEvent<SkeletonData>>>()
+    .get_cursor_current();
+  // A larger image still holds the 8 by 8 region: the recheck passes
+  let big = image::RgbaImage::from_pixel(16, 16, image::Rgba([255; 4]));
+  let mut bytes = Vec::new();
+  big
+    .write_to(
+      &mut std::io::Cursor::new(&mut bytes),
+      image::ImageFormat::Png,
+    )
+    .expect("encoding a png");
+  save(&world, &files, IMAGE, bytes);
+  pump_until(&mut world, |world| version(world) != before);
+  let sent: Vec<_> = events
+    .read(world.resource::<Messages<AssetEvent<SkeletonData>>>())
+    .cloned()
+    .collect();
+  assert!(
+    matches!(sent.as_slice(), [AssetEvent::Modified { id }] if *id == handle.id()),
+    "{sent:?}"
+  );
   assert_eq!(bone_names(&world, &handle), ["root"]);
 }
