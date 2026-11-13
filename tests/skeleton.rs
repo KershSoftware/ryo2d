@@ -151,6 +151,63 @@ fn step_key(time: f32, int: i32) -> (f32, usize, SkeletonEventValues) {
 /// bounding box "hit" (10 wide; 20 in the skin "wide"). The animations are
 /// named for what they do; no mix takes time
 fn rig() -> SkeletonData {
+  rig_builder().build().expect("a valid skeleton")
+}
+
+/// The slots [`painted`] adds after the rig's two, and the colour its
+/// animation "repaint" keys on the first of them (a slot's colour
+/// multiplies its attachment's: half as bright)
+const UNDER: SlotId = SlotId(2);
+const OVER: SlotId = SlotId(3);
+const DIMMED: Color = Color::rgb(128, 128, 128);
+
+/// The rig with two parts drawn on its root, cut from `white`: a blue
+/// square 16 px across in the slot "under" and a red one 8 px across over
+/// its middle in the slot "over". The animation "repaint" dims the under
+/// square and draws it over the other
+fn painted(white: Handle<Image>) -> SkeletonData {
+  let shows = |name: &str| SlotSetup {
+    attachment: Some(Arc::from(name)),
+    ..SlotSetup::default()
+  };
+  let square = |side: f32, color: Color| {
+    SkeletonAttachment::Region(RegionAttachment {
+      color,
+      ..RegionAttachment::new(0, side, side)
+    })
+  };
+  let skin = SkeletonData::DEFAULT_SKIN;
+  rig_builder()
+    .slot("under", "root", shows("under"))
+    .slot("over", "root", shows("over"))
+    .region(SkeletonRegion {
+      name: Arc::from("white"),
+      image: white,
+      x: 0,
+      y: 0,
+      width: 1,
+      height: 1,
+    })
+    .attachment(skin, "under", "under", square(16.0, Color::rgb(0, 0, 255)))
+    .attachment(skin, "over", "over", square(8.0, Color::rgb(255, 0, 0)))
+    .animation(clip(
+      "repaint",
+      1.0,
+      vec![
+        SkeletonTimeline::Color {
+          slot: UNDER,
+          frames: vec![(0.0, DIMMED, SkeletonCurve::Linear)],
+        },
+        SkeletonTimeline::DrawOrder {
+          frames: vec![(0.0, Some(vec![SlotId(0), WEAPON, OVER, UNDER]))],
+        },
+      ],
+    ))
+    .build()
+    .expect("a valid skeleton")
+}
+
+fn rig_builder() -> SkeletonDataBuilder {
   let arm = BoneSetup {
     x: 10.0,
     length: 20.0,
@@ -238,8 +295,6 @@ fn rig() -> SkeletonData {
         frames: vec![(0.0, Some(Arc::from("closed")))],
       }],
     ))
-    .build()
-    .expect("a valid skeleton")
 }
 
 /// A skeleton entity of `data` at `transform`, with an animation state
@@ -849,8 +904,15 @@ fn a_paused_clock_freezes_animation_and_events() {
 const PATH: &str = "rigs/hero.skeleton.ron";
 
 /// The rig as a file: the bones written in `bones`, the slot "weapon" on
-/// `weapon_bone`, and the animations written in `animations`
+/// `weapon_bone`, and the animations written in `animations`. No mix takes
+/// time
 fn rig_file(bones: &str, weapon_bone: &str, animations: &str) -> String {
+  rig_file_with(bones, weapon_bone, animations, "")
+}
+
+/// [`rig_file`] with `more` fields written after the animations (each with
+/// its comma)
+fn rig_file_with(bones: &str, weapon_bone: &str, animations: &str, more: &str) -> String {
   format!(
     r#"(
       bones: [{bones}],
@@ -861,9 +923,13 @@ fn rig_file(bones: &str, weapon_bone: &str, animations: &str) -> String {
       }},
       events: {{ "step": () }},
       animations: {{ {animations} }},
+      {more}
     )"#
   )
 }
+
+/// Every crossfade of a file takes half a second
+const HALF_SECOND_MIX: &str = "mixes: { default: 0.5 },";
 
 const BONES: &str =
   r#"(name: "root"), (name: "arm", parent: "root", x: 10), (name: "hand", parent: "arm", x: 20)"#;
@@ -1053,7 +1119,10 @@ fn a_reload_that_removes_the_playing_animation_clears_the_track_with_one_warning
 fn a_reload_that_removes_a_socket_s_bone_warns_once_and_keeps_playing() {
   let log = capture_log();
   let files = MemorySource::new();
-  files.insert(PATH, first_file());
+  let both = format!("{WALK}, {IDLE}");
+  let mixing =
+    |bones: &str, weapon_bone: &str| rig_file_with(bones, weapon_bone, &both, HALF_SECOND_MIX);
+  files.insert(PATH, mixing(BONES, "hand"));
   let Some((mut engine, data)) = engine_over(&files) else {
     return;
   };
@@ -1076,21 +1145,46 @@ fn a_reload_that_removes_a_socket_s_bone_warns_once_and_keeps_playing() {
   same(global(&engine, socket), bone(&engine, body, "hand"));
   near(global(&engine, lost).translation, Vec2::new(9.0, 6.0));
   assert_eq!(log.containing("\"wing\""), 1, "{:?}", log.warnings());
+  let at = track_time(&engine, body, walk);
+  // A crossfade to the idle is under way when the file is saved: half a
+  // second by the file's mix, six steps in
+  let idle = play(&mut engine, body, 0, "idle", true);
+  engine.step_frames(6).expect("frames");
   let held = *engine
     .world()
     .get::<Transform>(socket)
     .expect("the socket's transform");
-  let at = track_time(&engine, body, walk);
+  let dt = timestep(&engine);
+  let mixed = |engine: &HeadlessEngine| animation(engine, body).mix_progress(0);
+  close(mixed(&engine).expect("a mix under way"), 6.0 * dt / 0.5);
+  // Whether every number of the bones the skeleton still has is finite
+  let finite = |engine: &HeadlessEngine| {
+    ["root", "arm"]
+      .iter()
+      .all(|name| bone(engine, body, name).is_finite())
+  };
 
   // The saved file has no hand: the weapon's slot moves to the arm
   let bones = r#"(name: "root"), (name: "arm", parent: "root", x: 10)"#;
-  let handless = rig_file(bones, "arm", &format!("{WALK}, {IDLE}"));
+  let handless = mixing(bones, "arm");
   save(&mut engine, &files, &data, handless.clone());
   engine.step_frames(6).expect("frames");
-  // The animation plays on
-  let dt = timestep(&engine);
-  assert_eq!(animation(&engine, body).current(0), Some(walk));
-  close(track_time(&engine, body, walk), at + 6.0 * dt);
+  // The crossfade plays on from where it was: both entries are kept by
+  // name with their times, and the mix is six steps further on
+  let state = animation(&engine, body);
+  assert_eq!(state.current(0), Some(idle));
+  close(track_time(&engine, body, walk), at + 12.0 * dt);
+  close(track_time(&engine, body, idle), 12.0 * dt);
+  close(mixed(&engine).expect("still mixing"), 12.0 * dt / 0.5);
+  // The pose is the mix's: the walk has turned the arm for 24 steps of a
+  // quarter turn a second, and the idle, which keys nothing, has taken
+  // 12 / 30 of that off
+  let walked = (at + 12.0 * dt) * FRAC_PI_2;
+  close(
+    heading(bone(&engine, body, "arm")),
+    walked * (1.0 - 12.0 * dt / 0.5),
+  );
+  assert!(finite(&engine));
   assert!(skeleton(&engine, body).bone_world("hand").is_none());
   // The socket stays where it was on the skeleton, and says so once: not
   // each step, nor again when the file is saved again
@@ -1107,10 +1201,25 @@ fn a_reload_that_removes_a_socket_s_bone_warns_once_and_keeps_playing() {
   assert_eq!(log.containing("\"wing\""), 1, "{:?}", log.warnings());
 
   // With the bone back the socket follows again, and nothing more is said
-  save(&mut engine, &files, &data, first_file());
+  save(&mut engine, &files, &data, mixing(BONES, "hand"));
   engine.step_frames(3).expect("frames");
   same(global(&engine, socket), bone(&engine, body, "hand"));
   assert_eq!(log.containing("\"hand\""), 1, "{:?}", log.warnings());
+
+  // Three reloads in, the crossfade ends when it would have, 30 steps
+  // after it began: the walk's entry goes, the idle plays alone, and the
+  // pose is finite all the way to the setup pose the idle leaves
+  assert!(mixed(&engine).is_some_and(|mix| mix > 0.5 && mix < 1.0));
+  for _ in 0..14 {
+    engine.step().expect("a frame");
+    assert!(finite(&engine));
+  }
+  let state = animation(&engine, body);
+  assert_eq!(state.mix_progress(0), None);
+  assert_eq!(state.current(0), Some(idle));
+  assert!(state.entry(walk).is_none());
+  close(heading(bone(&engine, body, "arm")), 0.0);
+  assert!(log.from_target("ryo2d::core::skeleton::state").is_empty());
 }
 
 /// A source that holds every read until it is opened, so a load stays on
@@ -1257,11 +1366,25 @@ fn skeletons_sharing_data_keep_their_own_skin_overrides_and_attachments() {
   let Some(mut engine) = engine() else {
     return;
   };
-  let data = engine.assets().add(rig());
+  let white = engine
+    .assets()
+    .add(Image::solid_rect(1, 1, 255, 255, 255, 255));
+  let data = engine.assets().add(painted(white));
   let made = version(&engine, &data);
   let plain = spawn(&mut engine, &data, Transform::from_xy(0.0, 0.0));
   let dressed = spawn(&mut engine, &data, Transform::from_xy(100.0, 0.0));
   let armed = spawn(&mut engine, &data, Transform::from_xy(200.0, 0.0));
+  // Two more of the same data are drawn, side by side in the 64 px view:
+  // one will play an animation that keys a slot's colour and the draw
+  // order, and the other plays nothing
+  let still = spawn(&mut engine, &data, Transform::from_xy(16.0, 32.0));
+  let keyed = spawn(&mut engine, &data, Transform::from_xy(48.0, 32.0));
+  for entity in [still, keyed] {
+    engine
+      .world_mut()
+      .entity_mut(entity)
+      .insert(Renderable::skeleton());
+  }
   // One wears two skins and bends its arm; another closes its hand
   {
     let mut skeleton = skeleton_mut(&mut engine, dressed);
@@ -1330,6 +1453,32 @@ fn skeletons_sharing_data_keep_their_own_skin_overrides_and_attachments() {
     engine.step().expect("a frame");
   }
   assert_eq!(log.containing("\"tail\""), 1, "{:?}", log.warnings());
+
+  // What an animation keys is the playing skeleton's own as well: a slot's
+  // colour and the draw order. Each drawn skeleton is read at its middle
+  // (the over square, or whatever is drawn over it) and at a corner of
+  // its under square. Both show a red square over a blue one
+  let look = |engine: &HeadlessEngine, x: u32| -> [[u8; 4]; 2] {
+    let frame = engine.frame().expect("a frame");
+    [frame.get_pixel(x, 32).0, frame.get_pixel(x - 6, 26).0]
+  };
+  let before = look(&engine, 16);
+  assert_eq!(look(&engine, 48), before);
+  assert_ne!(before[0], before[1], "a red square over a blue one");
+  play(&mut engine, keyed, 0, "repaint", true);
+  engine.step_frames(3).expect("frames");
+  // The one that plays it is a dim blue all over: its under square is
+  // drawn over the other square, and darker than it was
+  let after = look(&engine, 48);
+  assert_eq!(after[0], after[1], "the under square is on top");
+  assert!(
+    after[1][2] > 50 && after[1][2] < before[1][2],
+    "and dimmer: {after:?} after {before:?}"
+  );
+  // The other one, of the same data, has its colours and its order as
+  // they were
+  assert_eq!(look(&engine, 16), before);
+
   // The shared data is as it was made
   assert_eq!(version(&engine, &data), made);
   near(tip(&engine, plain, "open"), Vec2::new(35.0, 0.0));
@@ -1797,6 +1946,209 @@ fn a_skeleton_under_a_scene_that_keeps_its_own_updating_keeps_animating() {
   let dt = timestep(&engine);
   close(track_time(&engine, body, entry), at + 30.0 * dt);
   assert!(sent.iter().any(|event| event.entity == body));
+}
+
+/// What the level of the transition test heard from its skeleton: in its
+/// `update`, and in a fixed-step system of its own
+#[derive(Resource, Default)]
+struct Heard {
+  /// How many times the level's `update` has run
+  updates: u32,
+  in_update: Vec<Said>,
+  in_system: Vec<Said>,
+}
+
+/// A skeleton message, as the transition test compares them: an event
+/// key's int, or what happened to an entry of an animation
+#[derive(Debug, Clone, PartialEq)]
+enum Said {
+  Key(i32),
+  Entry(Arc<str>, SkeletonTrackEventKind),
+}
+
+/// The listening level's own system. A scene's systems keep running while
+/// a transition does, where its `update` waits
+fn listen(
+  mut heard: ResMut<Heard>,
+  mut events: MessageReader<SkeletonEvent>,
+  mut track_events: MessageReader<SkeletonTrackEvent>,
+) {
+  for event in events.read() {
+    heard.in_system.push(Said::Key(event.int));
+  }
+  for event in track_events.read() {
+    heard
+      .in_system
+      .push(Said::Entry(event.animation.clone(), event.kind));
+  }
+}
+
+/// A level whose skeleton idles, heard both ways, and which pushes a menu
+/// that pops with a fade
+struct Listening {
+  board: Shared,
+}
+
+impl Scene for Listening {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    ctx.world.insert_resource(Heard::default());
+    let data = ctx.assets().add(rig());
+    let mut animation = SkeletonAnimation::new();
+    animation.set_animation(0, "idle", true);
+    let body = ctx.world.spawn((Skeleton::new(data), animation)).id();
+    self.board.lock().expect("the board").body = Some(body);
+    ctx
+      .add_systems(Phase::FixedUpdate, listen)
+      .expect("a scene takes fixed-step systems");
+  }
+
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    let events = ctx.messages::<SkeletonEvent>();
+    let track_events = ctx.messages::<SkeletonTrackEvent>();
+    let mut heard = ctx.world.resource_mut::<Heard>();
+    heard.updates += 1;
+    for event in events {
+      heard.in_update.push(Said::Key(event.int));
+    }
+    for event in track_events {
+      heard
+        .in_update
+        .push(Said::Entry(event.animation, event.kind));
+    }
+    if std::mem::take(&mut self.board.lock().expect("the board").push) {
+      return SceneAction::Push(Box::new(FadingMenu {
+        board: self.board.clone(),
+      }));
+    }
+    SceneAction::Continue
+  }
+}
+
+/// A fade's half: the menu fades out for this long, then the level fades
+/// in for as long
+const FADE: Duration = Duration::from_millis(100);
+
+/// A pause menu over the level, which stops the level updating and pops
+/// with a fade
+struct FadingMenu {
+  board: Shared,
+}
+
+impl Scene for FadingMenu {
+  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    if std::mem::take(&mut self.board.lock().expect("the board").pop) {
+      SceneAction::PopWith(Transition::fade(FADE))
+    } else {
+      SceneAction::Continue
+    }
+  }
+}
+
+#[test]
+fn what_a_skeleton_sends_during_a_scene_transition_is_heard_by_a_scene_system_and_not_by_update() {
+  use SkeletonTrackEventKind::{Complete, Dispose, End, Interrupt, Start};
+  let board = Shared::default();
+  let level = Listening {
+    board: board.clone(),
+  };
+  let Some(mut engine) = start(builder_in(level)) else {
+    return;
+  };
+  let heard = |engine: &HeadlessEngine| -> (u32, Vec<Said>, Vec<Said>) {
+    let heard = engine.world().resource::<Heard>();
+    (
+      heard.updates,
+      heard.in_update.clone(),
+      heard.in_system.clone(),
+    )
+  };
+  let said = |name: &str, kind| Said::Entry(Arc::from(name), kind);
+  let mut track_events = Inbox::<SkeletonTrackEvent>::new(&engine);
+  let body = board
+    .lock()
+    .expect("the board")
+    .body
+    .expect("the level's skeleton");
+  // While the level runs, its `update` and its system hear the same: the
+  // idle starting
+  engine.step_frames(5).expect("frames");
+  let (_, in_update, in_system) = heard(&engine);
+  assert_eq!(in_update, vec![said("idle", Start)]);
+  assert_eq!(in_system, in_update);
+
+  // Under the menu the level's skeleton is held. A call made meanwhile
+  // waits with it: "burst" has three event keys in its first step
+  ask(&board, |board| board.push = true);
+  engine.step_frames(5).expect("frames");
+  let burst = play(&mut engine, body, 0, "burst", false);
+  engine.step_frames(5).expect("frames");
+  assert_eq!(track_time(&engine, body, burst), 0.0);
+  let (updates, in_update, in_system) = heard(&engine);
+  assert_eq!(in_update.len(), 1, "{in_update:?}");
+  assert_eq!(in_system.len(), 1, "{in_system:?}");
+  track_events.take(&engine);
+
+  // The menu pops with a fade. At the fade's midpoint the menu goes and
+  // the skeleton is released: it steps while the level fades in, and what
+  // waited is written then, with the keys its first step crosses. The
+  // level's `update` is not running: a scene's `update` waits for the
+  // transition to end
+  ask(&board, |board| board.pop = true);
+  let (mut written, mut resumed) = (None, None);
+  for frame in 0..60 {
+    engine.step().expect("a frame");
+    let told = track_events.take(&engine);
+    if told
+      .iter()
+      .any(|event| event.entry == burst && event.kind == Start)
+    {
+      assert_eq!(heard(&engine).0, updates, "written while update waits");
+      written = Some(frame);
+    }
+    if resumed.is_none() && heard(&engine).0 > updates {
+      resumed = Some(frame);
+    }
+  }
+  let written: i32 = written.expect("the burst started");
+  let resumed: i32 = resumed.expect("the level updates again");
+  // Message buffers last two steps, and the fade-in is longer
+  assert!(
+    resumed - written > 2,
+    "written {written}, resumed {resumed}"
+  );
+
+  // The level's system kept running through the fade-in and heard it all
+  // (it reads the keys first): the burst's three keys, the idle
+  // interrupted and ended (the rig's mixes take no time), and the burst
+  // started
+  let (_, in_update, in_system) = heard(&engine);
+  assert_eq!(
+    in_system[1..],
+    [
+      Said::Key(1),
+      Said::Key(2),
+      Said::Key(3),
+      said("idle", Interrupt),
+      said("burst", Start),
+      said("idle", End),
+      said("idle", Dispose),
+    ],
+    "{in_system:?}"
+  );
+  // Its `update` heard none of it: by the time it ran again, the messages
+  // had gone
+  assert_eq!(in_update.len(), 1, "{in_update:?}");
+
+  // From the end of the transition `update` hears as ever: the burst
+  // completing, a second after it started
+  engine.step_frames(30).expect("frames");
+  let (_, in_update, in_system) = heard(&engine);
+  assert_eq!(in_update[1..], [said("burst", Complete)], "{in_update:?}");
+  assert_eq!(in_system.last(), Some(&said("burst", Complete)));
+  // The state itself answers whatever was missed
+  let state = animation(&engine, body);
+  assert_eq!(state.animation(0), Some("burst"));
+  assert!(state.entry(burst).is_some_and(|entry| entry.is_complete()));
 }
 
 #[test]

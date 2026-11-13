@@ -425,6 +425,15 @@ fn engine(scene: StaticMap, at: Vec2) -> Option<HeadlessEngine> {
 /// Where a stack's frames come from: the GPU API's crates
 const GPU: [&str; 5] = ["wgpu", "naga::", "objc2", "metal::", "block2"];
 
+/// The entity drawer's functions that draw a skeleton and nothing else
+/// (`render/entities.rs`): they are outside the skeleton module, and are
+/// the skeletons' path all the same
+const SKELETON_DRAWER: [&str; 3] = [
+  "ryo2d::core::render::entities::collect_skeleton",
+  "ryo2d::core::render::entities::Emitter::draw_runs",
+  "ryo2d::core::render::entities::Emitter::draw_shaded",
+];
+
 /// One frame's allocations: how many; of those not made inside the GPU API,
 /// how many were made where (the nearest engine function and the one it
 /// called); and those made inside the GPU API whose nearest engine function
@@ -433,10 +442,11 @@ struct Frame {
   count: usize,
   own: BTreeMap<String, usize>,
   map_gpu: Vec<String>,
-  /// The same for the skeletons' own path (the skeleton module)
+  /// The same for the skeletons' own path (the skeleton module, and the
+  /// entity drawer's skeleton functions, [`SKELETON_DRAWER`])
   skeleton_gpu: Vec<String>,
-  /// Those not made inside the GPU API with a function of the skeleton
-  /// module on their stack, by the function nearest the allocation
+  /// Those not made inside the GPU API with a function of the skeletons'
+  /// path on their stack, by the function nearest the allocation
   in_skeleton: Vec<String>,
   /// Those made inside the GPU API from the lighting's own path (its
   /// nearest engine function in `lighting::`), by that function and the
@@ -477,10 +487,15 @@ fn traced_after(engine: &mut HeadlessEngine, calls: impl FnOnce(&mut HeadlessEng
   let traces = TRACES.with(|t| std::mem::take(&mut *t.borrow_mut()));
   let (mut own, mut map_gpu, mut lighting_gpu) = (BTreeMap::new(), Vec::new(), BTreeMap::new());
   let (mut skeleton_gpu, mut in_skeleton) = (Vec::new(), Vec::new());
-  // A function of the skeleton module (a type that names it in its
-  // parameters is not one)
+  // A function of the skeletons' own path: one of the skeleton module (a
+  // type that names it in its parameters is not one), or one of the
+  // entity drawer's that only a skeleton's drawing reaches
   let skeleton_fn = |name: &&&str| {
-    name.starts_with("ryo2d::core::skeleton::") || name.starts_with("<ryo2d::core::skeleton::")
+    name.starts_with("ryo2d::core::skeleton::")
+      || name.starts_with("<ryo2d::core::skeleton::")
+      || SKELETON_DRAWER
+        .iter()
+        .any(|drawer| name.starts_with(drawer))
   };
   let mut timed = 0;
   for trace in traces {
