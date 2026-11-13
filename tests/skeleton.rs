@@ -10,7 +10,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use ryo2d::prelude::*;
-use ryo2d::testing::{HeadlessEngine, capture_log};
+use ryo2d::testing::{HeadlessEngine, capture_log, particle_positions};
 
 /// A scene that does nothing: the tests place entities between steps
 struct Stage;
@@ -1803,4 +1803,116 @@ fn a_reload_landing_while_the_clock_is_paused_rebuilds_the_pose_that_frame() {
   assert_eq!(animation(&engine, body).current(0), Some(walk));
   close(track_time(&engine, body, walk), at + dt);
   assert!(heading(bone(&engine, body, "arm")) > turned);
+}
+
+#[test]
+fn an_emitter_on_a_socket_does_not_spread_its_particles_along_a_jump() {
+  let Some(mut engine) = engine() else {
+    return;
+  };
+  let data = engine.assets().add(rig());
+  let body = spawn(&mut engine, &data, Transform::from_xy(20.0, 10.0));
+  play(&mut engine, body, 0, "idle", true);
+  // An item lying away from the skeleton, with an emitter on its child
+  // that leaves two particles a step where it stands (they do not move)
+  let image = engine
+    .assets()
+    .add(Image::solid_rect(2, 2, 255, 255, 255, 255));
+  let effect = ParticleEffect::new(image)
+    .with_lifetime(100.0)
+    .with_duration(100.0)
+    .with_speed(0.0)
+    .with_rate(120.0);
+  let effect = engine.assets().add(effect);
+  let ground = Vec2::new(-40.0, 30.0);
+  let item = engine
+    .world_mut()
+    .spawn(Transform::from_translation(ground))
+    .id();
+  let spark = engine
+    .world_mut()
+    .spawn((
+      Transform::IDENTITY,
+      ParticleEmitter::new(effect),
+      ChildOf(item),
+    ))
+    .id();
+  engine.step_frames(5).expect("frames");
+  let lying = particle_positions(engine.world(), spark);
+  assert!(lying.len() >= 8, "{lying:?}");
+  for &at in &lying {
+    near(at, ground);
+  }
+
+  // Picked up while the clock is paused: the item becomes a socket on the
+  // hand, and the frame puts it there
+  time(&mut engine).game.pause();
+  engine
+    .world_mut()
+    .entity_mut(item)
+    .insert((BoneSocket::new("hand"), ChildOf(body)));
+  engine.step().expect("a frame");
+  let hand = Vec2::new(50.0, 10.0);
+  near(global(&engine, item).translation, hand);
+  // The first step after: its particles are left at the hand, none on the
+  // way there from the ground
+  time(&mut engine).game.resume();
+  engine.step().expect("a frame");
+  let held = particle_positions(engine.world(), spark);
+  assert!(held.len() > lying.len(), "{held:?}");
+  for &at in &held[lying.len()..] {
+    near(at, hand);
+  }
+  engine.step_frames(3).expect("frames");
+
+  // The skeleton jumps while the clock is paused: again the next step's
+  // particles are all where the hand lands
+  let before = particle_positions(engine.world(), spark).len();
+  time(&mut engine).game.pause();
+  engine
+    .world_mut()
+    .get_mut::<Transform>(body)
+    .expect("the skeleton's transform")
+    .translation = Vec2::new(200.0, 100.0);
+  engine.world_mut().skip_interpolation(body);
+  engine.step().expect("a frame");
+  time(&mut engine).game.resume();
+  engine.step().expect("a frame");
+  let landed = particle_positions(engine.world(), spark);
+  assert!(landed.len() > before, "{landed:?}");
+  for &at in &landed[before..] {
+    near(at, Vec2::new(230.0, 100.0));
+  }
+}
+
+#[test]
+fn a_socket_added_while_the_clock_is_paused_is_on_its_bone_that_frame() {
+  let Some(mut engine) = engine() else {
+    return;
+  };
+  let data = engine.assets().add(rig());
+  let body = spawn(&mut engine, &data, Transform::from_xy(20.0, 10.0));
+  engine.world_mut().entity_mut(body).insert(Interpolated);
+  play(&mut engine, body, 0, "swing", true);
+  engine.step_frames(6).expect("frames");
+  // The skeleton has its pose. With the clock paused, the game's frame
+  // code gives it something to hold
+  time(&mut engine).game.pause();
+  engine.step().expect("a frame");
+  let steps = fixed_steps(&engine);
+  let socket = engine
+    .world_mut()
+    .spawn((BoneSocket::new("hand"), ChildOf(body)))
+    .id();
+  engine.step().expect("a frame");
+  assert_eq!(fixed_steps(&engine), steps);
+  // That frame it is on the hand, drawn there, not at the skeleton's feet
+  // nor on the way from them
+  same(global(&engine, socket), bone(&engine, body, "hand"));
+  let previous = engine.world().get::<PreviousGlobalTransform>(socket);
+  assert!(previous.is_some_and(|previous| previous.skip));
+  // Unpaused, it moves on with the hand
+  time(&mut engine).game.resume();
+  engine.step().expect("a frame");
+  same(global(&engine, socket), bone(&engine, body, "hand"));
 }

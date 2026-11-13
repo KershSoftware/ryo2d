@@ -7,19 +7,24 @@ use super::component::Skeleton;
 use crate::core::ecs::{Allow, Disabled, Resource, World};
 
 /// What the world keeps of its skeletons as a whole: the scene whose code
-/// runs, which a skeleton added now belongs to, the scenes held, and how
-/// many skeletons have been added, which tells the frame's pass when there
-/// may be one without a pose
+/// runs, which a skeleton added now belongs to, the scenes held, how many
+/// skeletons and sockets have been added, which tells the frame's pass
+/// when there may be one without a pose or a place, and the number of the
+/// last placing
 #[derive(Resource, Debug, Default)]
 pub(crate) struct SkeletonStore {
   /// The scene whose code runs now; `None` is the engine's own code
   scope: Option<u64>,
   /// The scenes a scene above stops
   held: Vec<u64>,
-  /// How many times a `Skeleton` has been put on an entity
+  /// How many times a `Skeleton` or a `BoneSocket` has been put on an
+  /// entity
   added: u64,
   /// How many times the frame's pass has looked through the skeletons
   looks: u64,
+  /// How many times a skeleton has been posed anew for its sockets to be
+  /// placed on
+  placings: u64,
 }
 
 impl SkeletonStore {
@@ -30,9 +35,21 @@ impl SkeletonStore {
     self.scope
   }
 
-  /// How many skeletons have been added
+  /// A socket was put on an entity
+  pub(crate) fn add_socket(&mut self) {
+    self.added += 1;
+  }
+
+  /// How many skeletons and sockets have been added
   pub(crate) fn additions(&self) -> u64 {
     self.added
+  }
+
+  /// The number of a skeleton's new placing: one no placing in this world
+  /// has had, from 1
+  pub(crate) fn next_placing(&mut self) -> u64 {
+    self.placings += 1;
+    self.placings
   }
 
   /// The frame's pass looked through the skeletons for one without a pose

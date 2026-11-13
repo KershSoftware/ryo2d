@@ -3,7 +3,10 @@
 use glam::{Affine2, Vec2};
 
 use super::data::{BoneId, DataVersion};
+use super::scope::SkeletonStore;
+use crate::core::ecs::kernel::{DeferredWorld, HookContext};
 use crate::core::ecs::{Children, Component, Entity, PreviousGlobalTransform, Transform, World};
+use crate::core::particles::ParticleEmitter;
 
 /// Puts a child entity of a skeleton entity on one of the skeleton's
 /// bones: a weapon in a hand, a light on a head, an emitter at a muzzle.
@@ -19,12 +22,18 @@ use crate::core::ecs::{Children, Component, Entity, PreviousGlobalTransform, Tra
 /// not a skeleton does nothing.
 ///
 /// Under an interpolated skeleton the entity is drawn between steps as
-/// the skeleton is. The step that first puts it on a bone (a new socket,
-/// its skeleton's first pose, a bone found again) draws it there at once,
-/// with everything below it, and so does a step in which the skeleton's
-/// entity skips interpolation (a teleport)
+/// the skeleton is. When it arrives on a bone, not having moved there with
+/// it (a new socket, its skeleton's first pose, a bone found again or
+/// another bone named, a socket dropped and picked up again), it is drawn
+/// there at once with everything below it, and a particle emitter on any
+/// of them leaves no streak along the way; and so when the skeleton's
+/// entity skips interpolation (a teleport).
+///
+/// A socket added while no fixed step runs (the clock paused) is on its
+/// bone in that frame. The bone may be renamed at any time
 #[derive(Component, Debug, Clone, PartialEq)]
 #[require(Transform, SocketState)]
+#[component(on_insert = socket_inserted)]
 pub struct BoneSocket {
   /// The bone's name
   pub bone: String,
@@ -90,23 +99,47 @@ impl BoneSocket {
 }
 
 /// What the engine keeps of a socket between steps, beside it on its
-/// entity
+/// entity. A `BoneSocket` put on the entity starts it afresh
 #[derive(Component, Debug, Clone, Default)]
 pub(crate) struct SocketState {
-  /// The data its bone's name was last looked up in (id and version), and
-  /// the bone's place there, if that data has it: the name is looked up
-  /// again only when the data or the socket changes
-  pub(crate) found: Option<(DataVersion, Option<BoneId>)>,
-  /// The skeleton entity whose bone it stands on; `None` while it is not
+  /// The bone last looked up
+  pub(crate) found: Option<FoundBone>,
+  /// The skeleton entity whose bone it stands on, and the number of that
+  /// skeleton's placing that last put it there; `None` while it is not
   /// placed
-  pub(crate) on: Option<Entity>,
+  pub(crate) on: Option<(Entity, u64)>,
   /// The name of a missing bone it has been told about
   pub(crate) told: Option<Box<str>>,
 }
 
+/// A socket's bone as last looked up: the name asked for, the data it was
+/// looked up in (id and version), and the bone's place there, if that data
+/// has it. The name is looked up again only when the data's version or the
+/// socket's name is another: both are compared as they are, each time, so
+/// a change made while nothing placed the socket is still seen
+#[derive(Debug, Clone)]
+pub(crate) struct FoundBone {
+  pub(crate) name: Box<str>,
+  pub(crate) seen: DataVersion,
+  pub(crate) bone: Option<BoneId>,
+}
+
+/// A socket was added, or put over another: what was kept of the one
+/// before is forgotten, so it is placed as a new socket is; and the store
+/// counts it, so the frame's pass looks for it
+fn socket_inserted(mut world: DeferredWorld, context: HookContext) {
+  if let Some(mut state) = world.get_mut::<SocketState>(context.entity) {
+    *state = SocketState::default();
+  }
+  if let Some(mut store) = world.get_resource_mut::<SkeletonStore>() {
+    store.add_socket();
+  }
+}
+
 /// A skeleton's entity jumped (`skip_interpolation`): its sockets, and
 /// everything below them, are drawn where they stand until the next step,
-/// as it is. They ride its bones, so they jump with it
+/// as it is, and an emitter on any of them spawns only where it lands, as
+/// the entity's own does. They ride its bones, so they jump with it
 pub(crate) fn skip_sockets(world: &mut World, skeleton: Entity) {
   let below = |world: &World, entity: Entity| -> Vec<Entity> {
     world
@@ -119,6 +152,9 @@ pub(crate) fn skip_sockets(world: &mut World, skeleton: Entity) {
   while let Some(entity) = walk.pop() {
     if let Some(mut previous) = world.get_mut::<PreviousGlobalTransform>(entity) {
       previous.skip = true;
+    }
+    if let Some(mut emitter) = world.get_mut::<ParticleEmitter>(entity) {
+      emitter.teleported = true;
     }
     walk.extend(below(world, entity));
   }

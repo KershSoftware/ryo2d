@@ -172,7 +172,12 @@ impl Carried {
 /// What a game sets on it (skins, attachments, bone overrides) is its own,
 /// not the data's, is kept by name, and shows from the skeleton's next
 /// step; what it answers (`bone_world`, `point`, `bounding_box`) is as its
-/// last step left it
+/// last step left it.
+///
+/// To give an entity another skeleton, insert the new `Skeleton` over the
+/// old one. Assigning a whole new value through a mutable reference
+/// (`*skeleton = Skeleton::new(..)`) does not count as adding one: no
+/// scene is recorded for it, and it has no pose until its next step
 #[derive(Component, Debug, Clone)]
 #[require(Transform)]
 #[component(on_insert = skeleton_inserted)]
@@ -197,6 +202,10 @@ pub struct Skeleton {
   pub(crate) previous_world: Vec<Affine2>,
   /// The entity's transform that `pose.world` was last computed from
   root: Affine2,
+  /// The numbers of its last two placings: each new pose, for its sockets
+  /// to be placed on, takes a number (0: none yet)
+  placing: u64,
+  placed_before: u64,
   warned: Vec<(Named, Arc<str>)>,
   warned_value: bool,
   warned_full: bool,
@@ -216,6 +225,8 @@ impl Skeleton {
       pose: Pose::default(),
       previous_world: Vec::new(),
       root: Affine2::IDENTITY,
+      placing: 0,
+      placed_before: 0,
       warned: Vec::new(),
       warned_value: false,
       warned_full: false,
@@ -440,6 +451,19 @@ impl Skeleton {
   /// placed by
   pub(crate) fn bone_space(&self, bone: BoneId) -> Option<Affine2> {
     self.pose.skeleton_space.get(bone.index()).copied()
+  }
+
+  /// It has a new pose (a step, or a pose outside one) for its sockets to
+  /// be placed on: the placing takes `number`, or with none the next after
+  /// its last
+  pub(crate) fn new_placing(&mut self, number: Option<u64>) {
+    self.placed_before = self.placing;
+    self.placing = number.unwrap_or(self.placing + 1);
+  }
+
+  /// The number of its latest placing, and of the one before
+  pub(crate) fn placings(&self) -> [u64; 2] {
+    [self.placing, self.placed_before]
   }
 
   /// The scene it belongs to
