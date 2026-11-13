@@ -67,6 +67,10 @@ pub struct YSort {
   ///
   /// Default is 1.0 (foot position) which is standard for character sprites
   /// where the "feet" touch the ground plane.
+  ///
+  /// It does not apply to a skeleton (`Renderable::skeleton`), which has
+  /// no image to measure down: a skeleton sorts by its entity's y plus
+  /// `sort_offset`.
   pub foot_offset: f32,
 
   /// Fixed pixel offset added to sort Y calculation

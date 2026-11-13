@@ -542,12 +542,33 @@ impl Renderable {
 
   /// Draws the entity's [`Skeleton`](crate::core::skeleton::Skeleton): the
   /// regions its slots show, back to front in its draw order, where its
-  /// bones put them. The skeleton takes this renderable's place among the
-  /// entities as a sprite would (`z_order`, `YSort`, its floor), and its
-  /// `visible`, `alpha`, `tint`, flips, `lighting`, `filter`, `emission`,
-  /// built-in `shader` effect and shadows apply to it as a whole. `image`,
-  /// `anchor` and `target` are not used: a skeleton's origin is its
-  /// entity's position.
+  /// bones put them.
+  ///
+  /// The skeleton takes this renderable's place among the entities as a
+  /// sprite would (`z_order`, `YSort`, its floor), and `visible`,
+  /// `lighting` and `filter` are the whole skeleton's. `flip_x` and
+  /// `flip_y` mirror it about the entity's position, its bones and sockets
+  /// with it.
+  ///
+  /// Each region is then drawn as a sprite of its own: with this
+  /// renderable's `alpha` and `tint` (times its slot's and its attachment's
+  /// colours), its `blend` (a slot with a blend of its own keeps that),
+  /// its `emission`, and its built-in sprite effect (`shader`, or the
+  /// entity's `Material`; a game's own sprite shader is not applied). So a
+  /// flash whitens every part, and an outline outlines each part, not the
+  /// figure. The drop shadow is
+  /// cast part by part too: where parts overlap, a translucent one is
+  /// darker than a sprite's. The blob and contact shadows are a sprite's,
+  /// under the entity, and suit a character better.
+  ///
+  /// `image`, `anchor` and `target` are not used: a skeleton's origin is
+  /// its entity's position, which is also where a `YSort` sorts it
+  /// (`YSort::foot_offset` plays no part).
+  ///
+  /// Bones are drawn between fixed steps only when the entity is: put
+  /// [`Interpolated`](crate::core::ecs::Interpolated) on a skeleton's
+  /// entity for smooth bones. Without it the skeleton animates at the step
+  /// rate, as its entity moves and its sockets follow.
   ///
   /// An entity without a `Skeleton`, or whose skeleton's data has not
   /// loaded, draws nothing.

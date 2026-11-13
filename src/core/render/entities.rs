@@ -1082,6 +1082,11 @@ fn collect_skeleton(frame: &EntityFrame, drawable: &Drawable<'_>, out: &mut Emit
   let (Some(data), Some(version)) = (rigs.get(id), rigs.version(id)) else {
     return;
   };
+  // Nor with a pose made for another version of its data than this: it
+  // has no body to draw, so no shadow of one either
+  if skeleton.seen() != Some((id, version)) {
+    return;
+  }
   let (z, alpha) = (renderable.z_order, renderable.alpha);
   let carrier = Carrier {
     global,

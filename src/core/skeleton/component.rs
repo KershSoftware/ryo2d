@@ -607,8 +607,11 @@ impl Skeleton {
   }
 
   /// Nothing is drawn between its last two poses: each bone's previous
-  /// transform becomes its current one
-  fn settle(&mut self) {
+  /// transform becomes its current one. For a step that follows one it
+  /// missed, a pose made outside a step, and a pose it was flipped in: its
+  /// sockets land across it then, and a bone aimed in the world is solved
+  /// afresh on the other side, so its bones land too
+  pub(crate) fn settle(&mut self) {
     self.previous_space.clone_from(&self.pose.skeleton_space);
   }
 

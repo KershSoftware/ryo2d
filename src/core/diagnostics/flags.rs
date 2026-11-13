@@ -127,5 +127,46 @@ mod tests {
     assert!(config.ui_cache, "UI node trees are cached by default");
     assert!(config.ui_fragments, "UI fragments are kept by default");
     assert!(config.ui_retain, "UI render retention is on by default");
+    assert!(!config.show_skeletons);
+  }
+
+  /// In a build without the tools, every switch that shows one is turned
+  /// off, whatever set it
+  #[cfg(not(dev_tools))]
+  #[test]
+  fn switching_the_tools_off_leaves_no_overlay_on() {
+    let mut config = DebugConfig {
+      show_colliders: true,
+      show_frame_timing: true,
+      show_stats: true,
+      show_velocities: true,
+      show_origins: true,
+      show_ui_debug: true,
+      show_ui_rebuilds: true,
+      show_skeletons: true,
+      enable_profiler: true,
+      logger_window: true,
+      dev_window_keys: true,
+      dev_console: true,
+      ..DebugConfig::default()
+    };
+    config.switch_tools_off();
+    let still_on = [
+      ("colliders", config.show_colliders),
+      ("frame timing", config.show_frame_timing),
+      ("stats", config.show_stats),
+      ("velocities", config.show_velocities),
+      ("origins", config.show_origins),
+      ("the UI overlay", config.show_ui_debug),
+      ("UI rebuilds", config.show_ui_rebuilds),
+      ("skeletons", config.show_skeletons),
+      ("the profiler", config.enable_profiler),
+      ("the logger window", config.logger_window),
+      ("the dev window keys", config.dev_window_keys),
+      ("the console", config.dev_console),
+    ];
+    for (name, on) in still_on {
+      assert!(!on, "{name} left on");
+    }
   }
 }

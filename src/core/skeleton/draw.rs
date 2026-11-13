@@ -404,7 +404,7 @@ mod tests {
         "sleeve",
         "arm",
         SlotSetup {
-          color: Color::new(255, 51, 0, 128),
+          color: Color::new(255, 102, 51, 128),
           blend: SlotBlend::Additive,
           ..shown("sleeve")
         },
@@ -429,7 +429,7 @@ mod tests {
           y: 1.0,
           rotation: FRAC_PI_2,
           scale_x: 2.0,
-          color: Color::new(255, 255, 51, 255),
+          color: Color::new(102, 255, 51, 204),
           ..RegionAttachment::new(1, 12.0, 4.0)
         }),
       )
@@ -514,13 +514,16 @@ mod tests {
     let corners = sleeve.corners();
     assert!(corners[0].abs_diff_eq(Vec2::new(21.0, 8.0), 1e-4));
     assert!(corners[2].abs_diff_eq(Vec2::new(-3.0, 4.0), 1e-4));
-    // Its slot's colour times its attachment's, component by component
-    let expected = [1.0, 51.0 / 255.0, 0.0, 128.0 / 255.0];
-    let attachment = [1.0, 1.0, 51.0 / 255.0, 1.0];
+    // Its slot's colour times its attachment's, component by component:
+    // (1, 0.4, 0.2, 0.5) x (0.4, 1, 0.2, 0.8). Blue and alpha are products
+    // of two factors that are not 1, so nothing but multiplying gives them
+    let slot = [255.0, 102.0, 51.0, 128.0].map(|c: f32| c / 255.0);
+    let attachment = [102.0, 255.0, 51.0, 204.0].map(|c: f32| c / 255.0);
     for c in 0..4 {
-      let want = expected[c] * attachment[c];
+      let want = slot[c] * attachment[c];
       assert!((sleeve.color[c] - want).abs() < 1e-6, "component {c}");
     }
+    assert!((sleeve.color[2] - 0.04).abs() < 1e-6, "0.2 x 0.2");
 
     // Under a root, every quad is carried by it
     let root = Affine2::from_scale_angle_translation(Vec2::splat(2.0), FRAC_PI_2, Vec2::X);

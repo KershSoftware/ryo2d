@@ -136,12 +136,16 @@ pub(crate) fn update_skeletons(
       root: root.affine(),
       flip: Flip::of(renderable),
     };
-    // Flipped since its last pose, its sockets land across it: they do not
-    // travel there
+    // Flipped since its last pose, its sockets land across it, they do not
+    // travel there; and its bones land with them, not drawn between this
+    // pose and the one before, which was posed for the other side
     let turned = skeleton.seen().is_some() && skeleton.flip() != stand.flip;
     skeleton.step(rig, (id, version), animation, dt, stand, fired);
     if let Some(number) = number {
       skeleton.took_step(number);
+    }
+    if turned {
+      skeleton.settle();
     }
     skeleton.new_placing(store.as_mut().map(|store| store.next_placing()));
     let mut sockets = Sockets {
@@ -256,8 +260,10 @@ pub(crate) fn pose_new_skeletons(
     if skeleton.seen() == Some((id, version)) {
       if skeleton.flip() != stand.flip {
         // Flipped with no step to pose it again: its bones are placed the
-        // new way round as they are posed, and its sockets land across it
+        // new way round as they are posed, and they and its sockets land
+        // across it
         skeleton.place_again(rig, stand);
+        skeleton.settle();
         turned = true;
       }
       stood[1] = stood[0];
@@ -676,6 +682,55 @@ mod tests {
       actual.abs_diff_eq(expected, 1e-4),
       "expected {expected:?}, got {actual:?}"
     );
+  }
+
+  #[test]
+  fn a_flipped_skeleton_s_bones_jump_with_its_sockets() {
+    use crate::core::skeleton::{BoneOverride, Space};
+    let (mut world, mut step, _) = world();
+    let data = rig(&mut world);
+    // An interpolated, turning skeleton drawn by a renderable, its hand
+    // aimed at a way in the world, with a socket on the hand
+    let [body, socket, _] = socketed(&mut world, data, "hand");
+    world.entity_mut(body).insert(Renderable::skeleton());
+    let aimed = BoneOverride {
+      rotation: Some(0.5),
+      space: Space::World,
+      ..BoneOverride::default()
+    };
+    let mut skeleton = world.get_mut::<Skeleton>(body).expect("the skeleton");
+    skeleton.override_bone("hand", aimed);
+    let mut run = |world: &mut World| {
+      snapshot(world);
+      step.run(world);
+    };
+    // Whether nothing is drawn from the pose before: each bone's previous
+    // transform is its current one
+    let settled = |world: &World| {
+      let skeleton = world.get::<Skeleton>(body).expect("the skeleton");
+      skeleton.previous_space == skeleton.pose.skeleton_space
+    };
+    run(&mut world);
+    run(&mut world);
+    run(&mut world);
+    assert!(!settled(&world), "steps that follow on are drawn between");
+    assert!(!drawn_where_it_stands(&world, socket));
+
+    // Flipped in a step, the socket lands across the skeleton, and the
+    // bones land with it: a bone aimed in the world would otherwise swing
+    // for a step from where the old side's answer points on the new side
+    world.get_mut::<Renderable>(body).expect("drawn").flip_x = true;
+    run(&mut world);
+    assert!(drawn_where_it_stands(&world, socket), "the socket jumps");
+    assert!(settled(&world), "and the bones with it");
+    run(&mut world);
+    assert!(!settled(&world), "the step after follows on again");
+
+    // Flipped back in a frame with no step, the same
+    world.get_mut::<Renderable>(body).expect("drawn").flip_x = false;
+    appearing().run(&mut world);
+    assert!(drawn_where_it_stands(&world, socket), "the socket jumps");
+    assert!(settled(&world), "and the bones with it");
   }
 
   #[test]

@@ -136,7 +136,6 @@ fn a_project_cannot_switch_tools_on() {
     !debug.show_ui_debug && !debug.show_ui_rebuilds,
     "UI overlays"
   );
-  assert!(!debug.show_skeletons, "skeleton overlay");
 }
 
 #[test]

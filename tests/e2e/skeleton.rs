@@ -92,6 +92,8 @@ struct Part {
   colour: [u8; 4],
   size: (u32, u32),
   at: Vec2,
+  /// Its slot's colour
+  slot: Color,
 }
 
 /// A part on a root bone at the skeleton's origin, centred on it
@@ -103,6 +105,7 @@ fn part(name: &'static str, colour: [u8; 4], size: (u32, u32)) -> Part {
     colour,
     size,
     at: Vec2::ZERO,
+    slot: Color::WHITE,
   }
 }
 
@@ -124,6 +127,12 @@ impl Part {
   /// Its rectangle's centre in its bone's space
   fn at(mut self, x: f32, y: f32) -> Self {
     self.at = Vec2::new(x, y);
+    self
+  }
+
+  /// Its slot's colour, which multiplies its image's
+  fn slot(mut self, colour: Color) -> Self {
+    self.slot = colour;
     self
   }
 }
@@ -182,6 +191,7 @@ fn rig_with(
   for (index, (part, (image, x))) in parts.iter().zip(placed).enumerate() {
     let (width, height) = part.size;
     let shown = SlotSetup {
+      color: part.slot,
       attachment: Some(Arc::from(part.name)),
       ..SlotSetup::default()
     };
@@ -868,6 +878,11 @@ fn a_flipped_skeleton_mirrors_its_regions_and_sockets() {
 /// A rig whose white 4 px hand slides right 20 px a step (1200 px/s), on a
 /// bone "hand" of a still body with no art
 fn slider(world: &mut World) -> Handle<SkeletonData> {
+  slider_by(world, 20.0)
+}
+
+/// A rig whose white 4 px hand slides right `per_step` px a step
+fn slider_by(world: &mut World, per_step: f32) -> Handle<SkeletonData> {
   let parts = [
     Part {
       size: (1, 1),
@@ -884,7 +899,11 @@ fn slider(world: &mut World) -> Handle<SkeletonData> {
         bone: BoneId(1),
         frames: vec![
           (0.0, Vec2::ZERO, SkeletonCurve::Linear),
-          (10.0, Vec2::new(12_000.0, 0.0), SkeletonCurve::Linear),
+          (
+            10.0,
+            Vec2::new(per_step * 600.0, 0.0),
+            SkeletonCurve::Linear,
+          ),
         ],
       }],
     })
@@ -1144,43 +1163,59 @@ fn a_one_region_skeleton_draws_as_the_sprite_of_its_image() {
     .id();
   let bones = stand(world, data, (0.0, 0.0), Renderable::skeleton());
 
+  // Each look, and whether it shows only where the image is drawn at
+  // another size than its own (a filter)
   type Dress = fn(Renderable) -> Renderable;
-  let looks: [(&str, Dress); 12] = [
-    ("plain", |r| r),
-    ("tinted and faded", |r| {
-      r.with_tint(Color::new(255, 128, 64, 200)).with_alpha(0.6)
-    }),
-    ("flipped left to right", |r| r.with_flip_x(true)),
-    ("flipped both ways", |r| {
-      r.with_flip_x(true).with_flip_y(true)
-    }),
-    ("a drop shadow", |r| {
-      r.with_drop_shadow(DropShadow::new().offset(5.0, 3.0))
-    }),
-    ("a blob shadow", |r| {
-      r.with_blob_shadow(BlobShadow::ellipse(8.0, 4.0).offset(5.0))
-    }),
-    ("a contact shadow", |r| {
-      r.with_contact_shadow(ContactShadow::new().radius(6.0).offset(4.0))
-    }),
-    ("unlit", |r| r.with_lighting(false)),
-    ("additive", |r| r.with_blend(BlendMode::Additive)),
-    ("glowing", |r| r.with_emission(3.0)),
-    ("smooth", |r| r.with_filter(Filter::Linear)),
-    ("flashing", |r| {
-      r.with_shader(SpriteShader::BuiltIn(SpriteEffect::Flash {
-        color: Color::WHITE,
-        intensity: 0.5,
-      }))
-    }),
+  let looks: [(&str, Dress, bool); 11] = [
+    (
+      "tinted and faded",
+      |r| r.with_tint(Color::new(255, 128, 64, 200)).with_alpha(0.6),
+      false,
+    ),
+    ("flipped left to right", |r| r.with_flip_x(true), false),
+    (
+      "flipped both ways",
+      |r| r.with_flip_x(true).with_flip_y(true),
+      false,
+    ),
+    (
+      "a drop shadow",
+      |r| r.with_drop_shadow(DropShadow::new().offset(5.0, 3.0)),
+      false,
+    ),
+    (
+      "a blob shadow",
+      |r| r.with_blob_shadow(BlobShadow::ellipse(8.0, 4.0).offset(5.0)),
+      false,
+    ),
+    (
+      "a contact shadow",
+      |r| r.with_contact_shadow(ContactShadow::new().radius(6.0).offset(4.0)),
+      false,
+    ),
+    ("unlit", |r| r.with_lighting(false), false),
+    ("additive", |r| r.with_blend(BlendMode::Additive), false),
+    ("glowing", |r| r.with_emission(3.0), false),
+    ("smooth", |r| r.with_filter(Filter::Linear), true),
+    (
+      "flashing",
+      |r| r.with_shader(SpriteShader::flash(Color::WHITE, 0.5)),
+      false,
+    ),
   ];
   let places = [
-    ("upright", Transform::from_xy(30.0, 30.0)),
+    ("upright", Transform::from_xy(30.0, 30.0), false),
+    (
+      "half as large again",
+      Transform::from_xy(30.0, 30.0).with_scale(Vec2::splat(1.5)),
+      true,
+    ),
     (
       "turned and scaled",
       Transform::from_xy(24.5, 31.25)
         .with_rotation(0.6)
         .with_scale(Vec2::new(3.0, 2.0)),
+      true,
     ),
   ];
   // Neither in view: what the floor alone looks like
@@ -1190,37 +1225,47 @@ fn a_one_region_skeleton_draws_as_the_sprite_of_its_image() {
   }
   engine.step_frames(2).unwrap();
   let empty = frame(&engine);
-  for (place, transform) in places {
-    for (look, dress) in looks {
-      // One of the two dressed and in place, the other out of view
-      let shown = |engine: &mut HeadlessEngine, which: Entity, other: Entity| {
-        let world = engine.world_mut();
-        let was = world.get::<Renderable>(which).unwrap().clone();
-        *world.get_mut::<Renderable>(which).unwrap() = dress(Renderable {
-          image: was.image,
-          style: was.style,
-          ..Renderable::skeleton()
-        });
-        *world.get_mut::<Transform>(which).unwrap() = transform;
-        *world.get_mut::<Transform>(other).unwrap() = hidden;
-        engine.step_frames(2).unwrap();
-        frame(engine)
-      };
-      let as_sprite = shown(&mut engine, sprite, bones);
-      let as_bones = shown(&mut engine, bones, sprite);
-      let drew = as_sprite
-        .pixels()
-        .zip(empty.pixels())
-        .filter(|(drawn, empty)| drawn != empty)
-        .count();
-      assert!(
-        drew > 20,
-        "{place}, {look}: the sprite drew ({drew} pixels)"
-      );
+  for (place, transform, resized) in places {
+    // One of the two dressed and in place, the other out of view
+    let shown = |engine: &mut HeadlessEngine, dress: Dress, which: Entity, other: Entity| {
+      let world = engine.world_mut();
+      let was = world.get::<Renderable>(which).unwrap().clone();
+      *world.get_mut::<Renderable>(which).unwrap() = dress(Renderable {
+        image: was.image,
+        style: was.style,
+        ..Renderable::skeleton()
+      });
+      *world.get_mut::<Transform>(which).unwrap() = transform;
+      *world.get_mut::<Transform>(other).unwrap() = hidden;
+      engine.step_frames(2).unwrap();
+      frame(engine)
+    };
+    let same = |as_sprite: &image::RgbaImage, as_bones: &image::RgbaImage, look: &str| {
       for (x, y, pixel) in as_sprite.enumerate_pixels() {
         let got = as_bones.get_pixel(x, y).0;
         assert_eq!(got, pixel.0, "{place}, {look}: pixel ({x}, {y})");
       }
+    };
+    // Plain first: the sprite draws, and the skeleton draws the same
+    let plain = shown(&mut engine, |r| r, sprite, bones);
+    let drew = plain
+      .pixels()
+      .zip(empty.pixels())
+      .filter(|(drawn, empty)| drawn != empty)
+      .count();
+    assert!(drew > 20, "{place}: the sprite drew ({drew} pixels)");
+    same(&plain, &shown(&mut engine, |r| r, bones, sprite), "plain");
+    for (look, dress, needs_resizing) in looks {
+      if needs_resizing && !resized {
+        continue;
+      }
+      // The look shows on the sprite, or the comparison would prove nothing
+      let as_sprite = shown(&mut engine, dress, sprite, bones);
+      assert!(
+        as_sprite != plain,
+        "{place}, {look}: the look changes how the sprite draws"
+      );
+      same(&as_sprite, &shown(&mut engine, dress, bones, sprite), look);
     }
   }
 }
@@ -1230,10 +1275,11 @@ fn a_region_s_colour_is_its_slot_s_times_its_attachment_s_times_the_tint() {
   let Some(mut engine) = engine() else {
     return;
   };
-  // A white image through an orange slot and a cyan-tinted attachment,
-  // under a yellow tint: each channel is the product of the three, and the
-  // alphas multiply with the renderable's. Beside it a slot that adds
-  // light, over a grey sprite
+  // A white image through a slot that halves green and blue, an attachment
+  // that halves red and blue, and a tint that halves red and green: every
+  // channel is 255 x 128/255 x 128/255 = 64, a product of two factors that
+  // are not 1, each from a different pair of the three. Beside it a slot
+  // that adds light, over a grey sprite
   let world = engine.world_mut();
   let grey = solid(world, (16, 16), [100, 100, 100, 255]);
   world.spawn((
@@ -1259,7 +1305,7 @@ fn a_region_s_colour_is_its_slot_s_times_its_attachment_s_times_the_tint() {
     .slot(
       "body",
       "root",
-      slot("body", Color::new(255, 128, 0, 255), SlotBlend::Normal),
+      slot("body", Color::new(255, 128, 128, 255), SlotBlend::Normal),
     )
     .slot(
       "glow",
@@ -1278,43 +1324,47 @@ fn a_region_s_colour_is_its_slot_s_times_its_attachment_s_times_the_tint() {
       skin,
       "body",
       "body",
-      region(0.0, Color::new(128, 255, 255, 255)),
+      region(0.0, Color::new(128, 255, 128, 255)),
     )
     .attachment(skin, "glow", "glow", region(32.0, Color::WHITE))
     .build()
     .expect("a valid skeleton");
   let data = world.resource_mut::<Assets<SkeletonData>>().add(data);
-  let hero = stand(
-    world,
-    data,
-    (16.0, 32.0),
-    Renderable::skeleton().with_tint(Color::new(255, 255, 128, 255)),
-  );
+  let hero = stand(world, data, (16.0, 32.0), Renderable::skeleton());
+  // Without the tint: the slot's times the attachment's alone
   let drawn = stepped(&mut engine);
-  // Red 1 x 128/255 x 1, green 128/255 x 1 x 1, blue 0 x 1 x 128/255
-  assert_eq!(drawn.get_pixel(16, 32).0, [128, 128, 0, 255]);
-  // The additive slot over grey: more red, the rest as it was
+  assert_eq!(drawn.get_pixel(16, 32).0, [128, 128, 64, 255], "untinted");
+  // With it, 64 in every channel
+  engine.world_mut().get_mut::<Renderable>(hero).unwrap().tint = Color::new(128, 128, 255, 255);
+  let drawn = stepped(&mut engine);
+  assert_eq!(drawn.get_pixel(16, 32).0, [64, 64, 64, 255], "tinted");
+  // The additive slot over grey: more red, the rest as it was (the tint
+  // takes its green and blue, which it has none of)
   let glow = drawn.get_pixel(48, 32).0;
-  assert!(glow[0] > 120, "red added: {glow:?}");
+  assert!(glow[0] > 105, "red added: {glow:?}");
   assert_eq!((glow[1], glow[2]), (100, 100), "{glow:?}");
   assert_eq!(drawn.get_pixel(48, 26).0, [100, 100, 100, 255], "the grey");
 
-  // At half alpha it is half way to the background
+  // The alphas multiply too: at half alpha it is part of the way to the
+  // background, and at none it is gone
   let background = drawn.get_pixel(SIZE - 1, SIZE - 1).0;
+  assert!(background[0] < 60, "a dark background: {background:?}");
   engine
     .world_mut()
     .get_mut::<Renderable>(hero)
     .unwrap()
     .alpha = 0.5;
   let faded = stepped(&mut engine).get_pixel(16, 32).0;
-  for channel in 0..3 {
-    let (full, none) = ([128u8, 128, 0][channel], background[channel]);
-    let (low, high) = (full.min(none), full.max(none));
-    assert!(
-      (low..=high).contains(&faded[channel]) && (low == high || faded[channel] != full),
-      "channel {channel} between {none} and {full}: {faded:?}"
-    );
-  }
+  assert!(
+    faded[0] > background[0] && faded[0] < 64,
+    "between {background:?} and 64: {faded:?}"
+  );
+  engine
+    .world_mut()
+    .get_mut::<Renderable>(hero)
+    .unwrap()
+    .alpha = 0.0;
+  assert_eq!(stepped(&mut engine).get_pixel(16, 32).0, background);
 }
 
 #[cfg(dev_tools)]
@@ -1600,4 +1650,291 @@ fn a_skeleton_riding_a_flipped_skeleton_s_socket_keeps_its_mirror_between_steps(
   let half_way = now - a_step / 2.0;
   assert_eq!(at(&drawn, centre(half_way)), WHITE, "half way round");
   assert_eq!(at(&drawn, across(half_way)), background, "not turned over");
+}
+
+#[test]
+fn overlapping_parts_cast_a_darker_drop_shadow_than_one_part() {
+  let Some(mut engine) = engine() else {
+    return;
+  };
+  // A limit, pinned so that it shows if it ever changes: each region casts
+  // its own drop shadow, so where two parts overlap a translucent shadow is
+  // laid twice and is darker than a sprite's uniform one. Two 8 px parts,
+  // 4 px apart, over a white floor, with a half black shadow 16 px down
+  let world = engine.world_mut();
+  white_floor(world);
+  let parts = [
+    part("left", RED, (8, 8)),
+    part("right", BLUE, (8, 8)).under("left", 4.0, 0.0),
+  ];
+  let data = rig(world, &parts);
+  let shadow = DropShadow::new()
+    .offset(0.0, 16.0)
+    .color(Color::new(0, 0, 0, 128));
+  stand(
+    world,
+    data,
+    (20.0, 20.0),
+    Renderable::skeleton().with_drop_shadow(shadow),
+  );
+  let drawn = stepped(&mut engine);
+  // The left part's shadow alone at x 16..20, both at 20..24, the right
+  // one's alone at 24..28
+  let (one, both, other) = (
+    drawn.get_pixel(18, 36).0,
+    drawn.get_pixel(22, 36).0,
+    drawn.get_pixel(26, 36).0,
+  );
+  assert_eq!(
+    one,
+    [SHADOW_ONCE, SHADOW_ONCE, SHADOW_ONCE, 255],
+    "one part"
+  );
+  assert_eq!(other, one, "the other part alone");
+  assert_eq!(
+    both,
+    [SHADOW_TWICE, SHADOW_TWICE, SHADOW_TWICE, 255],
+    "both parts"
+  );
+}
+
+/// What a half black shadow leaves of a white floor, laid once and laid
+/// twice (blended in linear light)
+const SHADOW_ONCE: u8 = 187;
+const SHADOW_TWICE: u8 = 136;
+
+#[test]
+fn a_part_faded_by_its_slot_casts_less_shadow() {
+  let Some(mut engine) = engine() else {
+    return;
+  };
+  // Two 8 px parts over a white floor with a black shadow 16 px down: the
+  // one whose slot is half transparent casts half a shadow
+  let world = engine.world_mut();
+  white_floor(world);
+  let parts = [
+    part("solid", RED, (8, 8)).at(-10.0, 0.0),
+    part("ghost", RED, (8, 8))
+      .at(10.0, 0.0)
+      .slot(Color::new(255, 255, 255, 128)),
+  ];
+  let data = rig(world, &parts);
+  let shadow = DropShadow::new()
+    .offset(0.0, 16.0)
+    .color(Color::new(0, 0, 0, 255));
+  stand(
+    world,
+    data,
+    (32.0, 20.0),
+    Renderable::skeleton().with_drop_shadow(shadow),
+  );
+  let drawn = stepped(&mut engine);
+  assert_eq!(drawn.get_pixel(22, 36).0, BLACK, "a solid part's shadow");
+  let ghost = drawn.get_pixel(42, 36).0;
+  assert_eq!(
+    ghost,
+    [SHADOW_ONCE, SHADOW_ONCE, SHADOW_ONCE, 255],
+    "a half transparent part's shadow"
+  );
+}
+
+#[test]
+fn a_flipped_skeleton_s_bones_and_sockets_jump_together() {
+  let Some(mut engine) = engine() else {
+    return;
+  };
+  // An interpolated skeleton at x 32 whose hand slides 4 px a step, a
+  // white square on a socket 8 px below the hand
+  let world = engine.world_mut();
+  let data = slider_by(world, 4.0);
+  let hero = sliding(world, &data, (32.0, 16.0));
+  world.entity_mut(hero).insert(Interpolated);
+  let image = solid(world, (4, 4), WHITE);
+  world.spawn((
+    BoneSocket::new("hand").with_offset(Transform::from_xy(0.0, 8.0)),
+    Renderable::image(image),
+    ChildOf(hero),
+  ));
+  engine.step_frames(2).unwrap();
+  // Two steps: the hand is 8 px along, drawn a step behind with its socket
+  let drawn = frame(&engine);
+  assert!(near(bone(&engine, hero, "hand").translation.x, 40.0));
+  assert_eq!(square(&drawn, 36.0, 16.0), Some(true), "a step behind");
+  assert_eq!(square(&drawn, 36.0, 24.0), Some(true), "its socket with it");
+
+  // Flipped in the next step, the hand is 12 px the other way, at x 20.
+  // The socket lands there at once, and so does the bone: not drawn a step
+  // behind on the new side (at 24) while its socket is at 20
+  engine
+    .world_mut()
+    .get_mut::<Renderable>(hero)
+    .unwrap()
+    .flip_x = true;
+  let drawn = stepped(&mut engine);
+  assert!(near(bone(&engine, hero, "hand").translation.x, 20.0));
+  assert_eq!(square(&drawn, 20.0, 24.0), Some(true), "the socket lands");
+  assert_eq!(square(&drawn, 20.0, 16.0), Some(true), "the bone with it");
+  assert_eq!(square(&drawn, 24.0, 16.0), Some(false));
+
+  // The step after it is drawn between steps again: a step behind, at 20
+  // while it is at 16
+  let drawn = stepped(&mut engine);
+  assert!(near(bone(&engine, hero, "hand").translation.x, 16.0));
+  assert_eq!(
+    square(&drawn, 20.0, 16.0),
+    Some(true),
+    "a step behind again"
+  );
+  assert_eq!(square(&drawn, 20.0, 24.0), Some(true));
+
+  // Flipped back while no step runs, bone and socket land together in that
+  // frame, 16 px along on the first side: at 48, not the bone a step behind
+  time(&mut engine).game.pause();
+  engine
+    .world_mut()
+    .get_mut::<Renderable>(hero)
+    .unwrap()
+    .flip_x = false;
+  let drawn = stepped(&mut engine);
+  assert!(near(bone(&engine, hero, "hand").translation.x, 48.0));
+  assert_eq!(square(&drawn, 48.0, 24.0), Some(true), "the socket lands");
+  assert_eq!(square(&drawn, 48.0, 16.0), Some(true), "the bone with it");
+  assert_eq!(square(&drawn, 44.0, 16.0), Some(false));
+}
+
+#[test]
+fn a_skeleton_whose_pose_is_stale_draws_nothing_not_even_its_shadows() {
+  let Some(mut engine) = engine() else {
+    return;
+  };
+  // Over a white floor, a red body standing on (32, 40) with a blob shadow
+  // under its feet
+  let world = engine.world_mut();
+  white_floor(world);
+  let data = rig(world, &[part("body", RED, (8, 8)).at(0.0, -4.0)]);
+  let hero = stand(
+    world,
+    data.clone(),
+    (32.0, 40.0),
+    Renderable::skeleton().with_blob_shadow(BlobShadow::circle(6.0)),
+  );
+  let drawn = stepped(&mut engine);
+  assert_eq!(drawn.get_pixel(32, 36).0, RED, "the body");
+  assert_ne!(drawn.get_pixel(32, 41).0, WHITE, "its shadow");
+
+  // Its data changes while it is disabled, and it is enabled again while
+  // no step runs: nothing has made it a pose for the data as it now is.
+  // It draws nothing, its shadows neither, until its next step
+  engine.world_mut().entity_mut(hero).insert(Disabled);
+  let mut assets = engine.world_mut().resource_mut::<Assets<SkeletonData>>();
+  let again = assets.get(&data).expect("the data").clone();
+  *assets.get_mut(&data).expect("the data") = again;
+  engine.step().unwrap();
+  time(&mut engine).game.pause();
+  engine.world_mut().entity_mut(hero).remove::<Disabled>();
+  let drawn = stepped(&mut engine);
+  assert_eq!(drawn.get_pixel(32, 36).0, WHITE, "no body");
+  assert_eq!(
+    drawn.get_pixel(32, 41).0,
+    WHITE,
+    "and no shadow without one"
+  );
+
+  time(&mut engine).game.resume();
+  let drawn = stepped(&mut engine);
+  assert_eq!(drawn.get_pixel(32, 36).0, RED, "the body again");
+  assert_ne!(drawn.get_pixel(32, 41).0, WHITE, "and its shadow");
+}
+
+/// What the scenes of the hold test tell the test, and what it asks of them
+#[derive(Default)]
+struct Board {
+  /// The level's skeleton
+  hero: Option<Entity>,
+  /// The level pushes the pause menu in its next update
+  push: bool,
+  /// The pause menu pops in its next update
+  pop: bool,
+}
+
+type Shared = Arc<std::sync::Mutex<Board>>;
+
+/// A level with an interpolated skeleton whose hand slides 4 px a step
+/// from x 8
+struct Level(Shared);
+
+impl Scene for Level {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    ctx.look().tonemap = Tonemap::Clamp;
+    let data = slider_by(ctx.world, 4.0);
+    let hero = sliding(ctx.world, &data, (8.0, 16.0));
+    ctx.world.entity_mut(hero).insert(Interpolated);
+    self.0.lock().expect("the board").hero = Some(hero);
+  }
+
+  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    if std::mem::take(&mut self.0.lock().expect("the board").push) {
+      return SceneAction::Push(Box::new(Menu(self.0.clone())));
+    }
+    SceneAction::Continue
+  }
+}
+
+/// A pause menu over the level, which stops the level updating
+struct Menu(Shared);
+
+impl Scene for Menu {
+  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    if std::mem::take(&mut self.0.lock().expect("the board").pop) {
+      SceneAction::Pop
+    } else {
+      SceneAction::Continue
+    }
+  }
+}
+
+#[test]
+fn a_held_skeleton_still_draws_and_stands_still() {
+  let board = Shared::default();
+  let builder = EngineBuilder::new()
+    .pixel_art(SIZE, SIZE)
+    .start_scene(Level(board.clone()));
+  let Some(mut engine) = HeadlessEngine::new_or_skip(builder) else {
+    return;
+  };
+  engine.step_frames(3).unwrap();
+  let hero = board.lock().unwrap().hero.expect("the level's skeleton");
+  let hand = |engine: &HeadlessEngine| bone(engine, hero, "hand").translation.x;
+  // Three steps: the hand is at 20, drawn a step behind at 16
+  assert!(near(hand(&engine), 20.0), "{}", hand(&engine));
+  assert_eq!(square(&frame(&engine), 16.0, 16.0), Some(true));
+
+  // A pause menu goes over the level, which stops updating: its skeleton
+  // is held. It still draws, where it is, and stands still there while
+  // steps run and frames fall between them: it is not drawn a step behind,
+  // nor swaying with the frame's fraction
+  board.lock().unwrap().push = true;
+  engine.step_frames(2).unwrap();
+  let held_at = hand(&engine);
+  assert!(held_at < 30.0, "it stopped soon after: {held_at}");
+  for part in [0, 5, 2, 0] {
+    if part == 0 {
+      engine.step().unwrap();
+    } else {
+      part_step(&mut engine, part);
+    }
+    let drawn = frame(&engine);
+    assert_eq!(hand(&engine), held_at, "held");
+    assert_eq!(
+      square(&drawn, held_at, 16.0),
+      Some(true),
+      "drawn where it is (after {part} tenths of a step)"
+    );
+    assert_eq!(square(&drawn, held_at - 4.0, 16.0), Some(false));
+  }
+
+  // The menu goes: the level's skeleton carries on from where it was
+  board.lock().unwrap().pop = true;
+  engine.step_frames(3).unwrap();
+  assert!(hand(&engine) > held_at, "it moves again: {}", hand(&engine));
 }
