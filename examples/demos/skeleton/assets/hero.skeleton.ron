@@ -1,0 +1,452 @@
+// The demo's hero: a cutout character made of the parts of Kenney's "Modular
+// Characters" (see README.md), written by hand.
+//
+// It faces right, turned a little toward the viewer: its near arm and leg
+// are on the left and drawn over the body, its far ones on the right and
+// behind. A game turns it round with its renderable's `flip_x`.
+//
+// Units are the art's pixels: the hero stands about 530 tall, so the demo
+// draws its entity at less than half size. The origin is between its feet,
+// on the ground. Angles are degrees, clockwise.
+(
+  images: { "parts": "hero.png" },
+
+  // Where each part is in the atlas, as README.md's packing command puts them
+  regions: {
+    "light_head": (image: "parts", rect: (491, 8, 173, 168)),
+    "light_neck": (image: "parts", rect: (797, 639, 96, 37)),
+    "light_arm": (image: "parts", rect: (175, 366, 170, 136)),
+    "light_hand": (image: "parts", rect: (758, 512, 61, 71)),
+    "light_leg": (image: "parts", rect: (427, 190, 93, 164)),
+    "light_nose": (image: "parts", rect: (112, 694, 31, 21)),
+    "tan_head": (image: "parts", rect: (672, 8, 173, 168)),
+    "tan_neck": (image: "parts", rect: (901, 639, 96, 37)),
+    "tan_arm": (image: "parts", rect: (353, 366, 170, 136)),
+    "tan_hand": (image: "parts", rect: (827, 512, 61, 71)),
+    "tan_leg": (image: "parts", rect: (528, 190, 93, 164)),
+    "tan_nose": (image: "parts", rect: (151, 694, 31, 21)),
+    "dark_head": (image: "parts", rect: (8, 190, 173, 168)),
+    "dark_neck": (image: "parts", rect: (8, 694, 96, 37)),
+    "dark_arm": (image: "parts", rect: (531, 366, 170, 136)),
+    "dark_hand": (image: "parts", rect: (896, 512, 61, 71)),
+    "dark_leg": (image: "parts", rect: (629, 190, 93, 164)),
+    "dark_nose": (image: "parts", rect: (190, 694, 31, 21)),
+    "hair_brown": (image: "parts", rect: (709, 366, 171, 130)),
+    "hair_blond": (image: "parts", rect: (8, 366, 159, 138)),
+    "hair_black": (image: "parts", rect: (8, 512, 158, 119)),
+    "brow_brown": (image: "parts", rect: (316, 694, 40, 17)),
+    "brow_blond": (image: "parts", rect: (364, 694, 40, 17)),
+    "brow_black": (image: "parts", rect: (412, 694, 40, 17)),
+    "eye_brown": (image: "parts", rect: (229, 694, 21, 21)),
+    "eye_blue": (image: "parts", rect: (258, 694, 21, 21)),
+    "eye_black": (image: "parts", rect: (287, 694, 21, 21)),
+    "mouth_glad": (image: "parts", rect: (483, 694, 34, 13)),
+    "mouth_happy": (image: "parts", rect: (525, 694, 34, 13)),
+    "mouth_oh": (image: "parts", rect: (460, 694, 15, 15)),
+    "mouth_straight": (image: "parts", rect: (567, 694, 36, 6)),
+    "red_shirt": (image: "parts", rect: (8, 8, 153, 174)),
+    "red_sleeve": (image: "parts", rect: (730, 190, 171, 142)),
+    "blue_pants": (image: "parts", rect: (189, 190, 111, 166)),
+    "blue_hips": (image: "parts", rect: (8, 639, 153, 47)),
+    "brown_shoe": (image: "parts", rect: (491, 639, 94, 42)),
+    "green_shirt": (image: "parts", rect: (169, 8, 153, 174)),
+    "green_sleeve": (image: "parts", rect: (289, 512, 118, 96)),
+    "tan_shorts": (image: "parts", rect: (174, 512, 107, 118)),
+    "tan_hips": (image: "parts", rect: (169, 639, 153, 47)),
+    "black_shoe": (image: "parts", rect: (593, 639, 94, 42)),
+    "navy_shirt": (image: "parts", rect: (330, 8, 153, 174)),
+    "navy_sleeve": (image: "parts", rect: (415, 512, 67, 86)),
+    "white_pants": (image: "parts", rect: (308, 190, 111, 166)),
+    "white_hips": (image: "parts", rect: (330, 639, 153, 47)),
+    "grey_shoe": (image: "parts", rect: (695, 639, 94, 42)),
+    "hat": (image: "parts", rect: (490, 512, 260, 84)),
+  },
+
+  // Fourteen bones. Each limb's bone lies along the limb, so turning it
+  // swings the limb and a world rotation points it. The head's bone points
+  // the way the hero looks, the weapon's along a blade held in the fist
+  bones: [
+    (name: "root"),
+    (name: "hip", parent: "root", y: -180),
+    (name: "torso", parent: "hip", y: -10, rotation: -90, length: 150),
+    (name: "head", parent: "torso", x: 170, y: 2, rotation: 90, length: 70),
+    (name: "face", parent: "head", x: 12, y: -60),
+    (name: "arm_far", parent: "torso", x: 140, y: 36, rotation: 170, length: 152),
+    (name: "hand_far", parent: "arm_far", x: 152, length: 50),
+    (name: "arm_near", parent: "torso", x: 136, y: -38, rotation: 190, length: 152),
+    (name: "hand_near", parent: "arm_near", x: 152, length: 50),
+    (name: "weapon", parent: "hand_near", x: 24, rotation: -140, length: 290),
+    (name: "leg_far", parent: "hip", x: 10, y: 2, rotation: 82, length: 142),
+    (name: "shoe_far", parent: "leg_far", x: 142, rotation: -82, length: 56),
+    (name: "leg_near", parent: "hip", x: -12, y: 4, rotation: 94, length: 142),
+    (name: "shoe_near", parent: "leg_near", x: 142, rotation: -94, length: 56),
+  ],
+
+  // Back to front. The far limbs are a shade darker and the trunk a touch,
+  // so the near arm reads as in front and the far limbs as behind
+  slots: [
+    (name: "arm_far", bone: "arm_far", attachment: "arm", color: "#d2d2dc"),
+    (name: "sleeve_far", bone: "arm_far", attachment: "sleeve", color: "#d2d2dc"),
+    (name: "hand_far", bone: "hand_far", attachment: "hand", color: "#d2d2dc"),
+    (name: "leg_far", bone: "leg_far", attachment: "leg", color: "#d2d2dc"),
+    (name: "shoe_far", bone: "shoe_far", attachment: "shoe", color: "#d2d2dc"),
+    (name: "pants_far", bone: "leg_far", attachment: "pants", color: "#d2d2dc"),
+    (name: "leg_near", bone: "leg_near", attachment: "leg"),
+    (name: "shoe_near", bone: "shoe_near", attachment: "shoe"),
+    (name: "pants_near", bone: "leg_near", attachment: "pants"),
+    (name: "neck", bone: "torso", attachment: "neck"),
+    (name: "shirt", bone: "torso", attachment: "shirt", color: "#e8e8f0"),
+    (name: "hips", bone: "hip", attachment: "hips", color: "#e8e8f0"),
+    (name: "head", bone: "head", attachment: "head"),
+    (name: "mouth", bone: "face", attachment: "glad"),
+    (name: "nose", bone: "face", attachment: "nose"),
+    (name: "eye_far", bone: "face", attachment: "eye"),
+    (name: "eye_near", bone: "face", attachment: "eye"),
+    (name: "brow_far", bone: "face", attachment: "brow"),
+    (name: "brow_near", bone: "face", attachment: "brow"),
+    (name: "hair", bone: "head", attachment: "hair"),
+    // Shown only by a skin that has a hat
+    (name: "hat", bone: "head", attachment: "hat"),
+    (name: "arm_near", bone: "arm_near", attachment: "arm"),
+    (name: "sleeve_near", bone: "arm_near", attachment: "sleeve"),
+    (name: "hand_near", bone: "hand_near", attachment: "hand"),
+    // Points, where each sole meets the ground: a footstep's dust and
+    // sound are placed there
+    (name: "sole_far", bone: "shoe_far", attachment: "sole_far"),
+    (name: "sole_near", bone: "shoe_near", attachment: "sole_near"),
+    // The blade's hit box: it shows nothing until the slash turns it on
+    (name: "hit", bone: "weapon"),
+  ],
+
+  // The default skin is the whole hero: light skin, brown hair, the red
+  // top and blue trousers. The others each replace some of its parts, and
+  // are worn together: a body ("blond", "dark"), an outfit ("ranger",
+  // "sailor") and the hat.
+  //
+  // An arm's image is flipped across its bone (`scale_y: -1`), so the
+  // elbow bends back; a limb's `rotation` lays the image along the bone
+  skins: {
+    "default": {
+      "arm_far": { "arm": Region(region: "light_arm", x: 75.2, y: 7.5, rotation: 31.6, scale_y: -1) },
+      "sleeve_far": { "sleeve": Region(region: "red_sleeve", x: 74.8, y: 7.3, rotation: 31.6, scale_y: -1) },
+      "hand_far": { "hand": Region(region: "light_hand", x: 23.5, y: -2.5, rotation: -90) },
+      "leg_far": { "leg": Region(region: "light_leg", x: 65.8, y: -0.4, rotation: -76.7) },
+      "shoe_far": { "shoe": Region(region: "brown_shoe", x: 13, y: 13) },
+      "pants_far": { "pants": Region(region: "blue_pants", x: 64.9, y: -0.6, rotation: -76.7) },
+      "leg_near": { "leg": Region(region: "light_leg", x: 65.8, y: -0.4, rotation: -76.7) },
+      "shoe_near": { "shoe": Region(region: "brown_shoe", x: 13, y: 13) },
+      "pants_near": { "pants": Region(region: "blue_pants", x: 64.9, y: -0.6, rotation: -76.7) },
+      "neck": { "neck": Region(region: "light_neck", x: 160, y: 0, rotation: 90) },
+      "shirt": { "shirt": Region(region: "red_shirt", x: 91, y: 0, rotation: 90) },
+      "hips": { "hips": Region(region: "blue_hips") },
+      "head": { "head": Region(region: "light_head", x: 0.5, y: -66) },
+      "mouth": {
+        "glad": Region(region: "mouth_glad", x: 1, y: 38),
+        "happy": Region(region: "mouth_happy", x: 1, y: 38),
+        "oh": Region(region: "mouth_oh", x: 3, y: 38),
+      },
+      "nose": { "nose": Region(region: "light_nose", x: 6, y: 11) },
+      "eye_far": {
+        "eye": Region(region: "eye_brown", x: 27, y: -8),
+        // A blink: the straight mouth's dark line, drawn small
+        "shut": Region(region: "mouth_straight", x: 27, y: -6, width: 22, height: 5),
+      },
+      "eye_near": {
+        "eye": Region(region: "eye_brown", x: -30, y: -8),
+        "shut": Region(region: "mouth_straight", x: -30, y: -6, width: 22, height: 5),
+      },
+      "brow_far": { "brow": Region(region: "brow_brown", x: 28, y: -44, scale_x: -1) },
+      "brow_near": { "brow": Region(region: "brow_brown", x: -32, y: -44) },
+      "hair": { "hair": Region(region: "hair_brown", x: 5.5, y: -107) },
+      "arm_near": { "arm": Region(region: "light_arm", x: 75.2, y: 7.5, rotation: 31.6, scale_y: -1) },
+      "sleeve_near": { "sleeve": Region(region: "red_sleeve", x: 74.8, y: 7.3, rotation: 31.6, scale_y: -1) },
+      "hand_near": { "hand": Region(region: "light_hand", x: 23.5, y: -2.5, rotation: -90) },
+      "sole_far": { "sole_far": Point(x: 13, y: 34) },
+      "sole_near": { "sole_near": Point(x: 13, y: 34) },
+      "hit": { "hit": BoundingBox(vertices: [(28, -16), (266, -16), (266, 16), (28, 16)]) },
+    },
+    "blond": {
+      "arm_far": { "arm": Region(region: "tan_arm", x: 75.2, y: 7.5, rotation: 31.6, scale_y: -1) },
+      "hand_far": { "hand": Region(region: "tan_hand", x: 23.5, y: -2.5, rotation: -90) },
+      "leg_far": { "leg": Region(region: "tan_leg", x: 65.8, y: -0.4, rotation: -76.7) },
+      "leg_near": { "leg": Region(region: "tan_leg", x: 65.8, y: -0.4, rotation: -76.7) },
+      "neck": { "neck": Region(region: "tan_neck", x: 160, y: 0, rotation: 90) },
+      "head": { "head": Region(region: "tan_head", x: 0.5, y: -66) },
+      "nose": { "nose": Region(region: "tan_nose", x: 6, y: 11) },
+      "eye_far": { "eye": Region(region: "eye_blue", x: 27, y: -8) },
+      "eye_near": { "eye": Region(region: "eye_blue", x: -30, y: -8) },
+      "brow_far": { "brow": Region(region: "brow_blond", x: 28, y: -44, scale_x: -1) },
+      "brow_near": { "brow": Region(region: "brow_blond", x: -32, y: -44) },
+      "hair": { "hair": Region(region: "hair_blond", x: 0.5, y: -112) },
+      "arm_near": { "arm": Region(region: "tan_arm", x: 75.2, y: 7.5, rotation: 31.6, scale_y: -1) },
+      "hand_near": { "hand": Region(region: "tan_hand", x: 23.5, y: -2.5, rotation: -90) },
+    },
+    "dark": {
+      "arm_far": { "arm": Region(region: "dark_arm", x: 75.2, y: 7.5, rotation: 31.6, scale_y: -1) },
+      "hand_far": { "hand": Region(region: "dark_hand", x: 23.5, y: -2.5, rotation: -90) },
+      "leg_far": { "leg": Region(region: "dark_leg", x: 65.8, y: -0.4, rotation: -76.7) },
+      "leg_near": { "leg": Region(region: "dark_leg", x: 65.8, y: -0.4, rotation: -76.7) },
+      "neck": { "neck": Region(region: "dark_neck", x: 160, y: 0, rotation: 90) },
+      "head": { "head": Region(region: "dark_head", x: 0.5, y: -66) },
+      "nose": { "nose": Region(region: "dark_nose", x: 6, y: 11) },
+      "eye_far": { "eye": Region(region: "eye_black", x: 27, y: -8) },
+      "eye_near": { "eye": Region(region: "eye_black", x: -30, y: -8) },
+      "brow_far": { "brow": Region(region: "brow_black", x: 28, y: -44, scale_x: -1) },
+      "brow_near": { "brow": Region(region: "brow_black", x: -32, y: -44) },
+      "hair": { "hair": Region(region: "hair_black", x: 0, y: -102.5) },
+      "arm_near": { "arm": Region(region: "dark_arm", x: 75.2, y: 7.5, rotation: 31.6, scale_y: -1) },
+      "hand_near": { "hand": Region(region: "dark_hand", x: 23.5, y: -2.5, rotation: -90) },
+    },
+    // Short sleeves and shorts: the body's arms and legs show
+    "ranger": {
+      "sleeve_far": { "sleeve": Region(region: "green_sleeve", x: 40.2, y: 13.0, rotation: 31.6, scale_y: -1) },
+      "shoe_far": { "shoe": Region(region: "black_shoe", x: 13, y: 13) },
+      "pants_far": { "pants": Region(region: "tan_shorts", x: 41.1, y: -4.2, rotation: -76.7) },
+      "shoe_near": { "shoe": Region(region: "black_shoe", x: 13, y: 13) },
+      "pants_near": { "pants": Region(region: "tan_shorts", x: 41.1, y: -4.2, rotation: -76.7) },
+      "shirt": { "shirt": Region(region: "green_shirt", x: 91, y: 0, rotation: 90) },
+      "hips": { "hips": Region(region: "tan_hips") },
+      "sleeve_near": { "sleeve": Region(region: "green_sleeve", x: 40.2, y: 13.0, rotation: 31.6, scale_y: -1) },
+    },
+    "sailor": {
+      "sleeve_far": { "sleeve": Region(region: "navy_sleeve", x: 15.8, y: 3.9, rotation: 31.6, scale_y: -1) },
+      "shoe_far": { "shoe": Region(region: "grey_shoe", x: 13, y: 13) },
+      "pants_far": { "pants": Region(region: "white_pants", x: 64.9, y: -0.6, rotation: -76.7) },
+      "shoe_near": { "shoe": Region(region: "grey_shoe", x: 13, y: 13) },
+      "pants_near": { "pants": Region(region: "white_pants", x: 64.9, y: -0.6, rotation: -76.7) },
+      "shirt": { "shirt": Region(region: "navy_shirt", x: 91, y: 0, rotation: 90) },
+      "hips": { "hips": Region(region: "white_hips") },
+      "sleeve_near": { "sleeve": Region(region: "navy_sleeve", x: 15.8, y: 3.9, rotation: 31.6, scale_y: -1) },
+    },
+    "hat": {
+      "hat": { "hat": Region(region: "hat", x: 42, y: -147) },
+    },
+  },
+
+  events: {
+    // A foot lands. `string` says which ("near", "far" or "both"), `float`
+    // how hard, and the game plays `audio` where the foot is: the engine
+    // hands an event's sound to the game as data, and plays nothing itself
+    "footstep": (string: "near", float: 1.0, audio: (path: "audio/footstep.sound.ron", volume: 0.8)),
+  },
+
+  // A key's value is its change from the setup pose (a scale is a factor).
+  // Positive turns are clockwise: on a limb that hangs down they swing it
+  // back, negative ones forward. The curves used:
+  //   Bezier(0.4, 0, 0.6, 1)         ease in and out, for a swing
+  //   Bezier(0.33, 0.67, 0.67, 1)    fast then slowing, as a body rising
+  //   Bezier(0.33, 0, 0.67, 0.33)    slow then fast, as a body falling
+  animations: {
+    // Breathing: the hips sink a little and the legs slide up into them, so
+    // the feet stay where they are. The eyes blink and glance ahead
+    "idle": (
+      duration: 2.0,
+      bones: {
+        "hip": (translate: [(0.0, (0, 0), Bezier(0.4, 0, 0.6, 1)), (1.0, (0, 4), Bezier(0.4, 0, 0.6, 1)), (2.0, (0, 0))]),
+        "leg_near": (translate: [(0.0, (0, 0), Bezier(0.4, 0, 0.6, 1)), (1.0, (0, -4), Bezier(0.4, 0, 0.6, 1)), (2.0, (0, 0))]),
+        "leg_far": (translate: [(0.0, (0, 0), Bezier(0.4, 0, 0.6, 1)), (1.0, (0, -4), Bezier(0.4, 0, 0.6, 1)), (2.0, (0, 0))]),
+        "torso": (
+          rotate: [(0.0, 0, Bezier(0.4, 0, 0.6, 1)), (1.0, 1.5, Bezier(0.4, 0, 0.6, 1)), (2.0, 0)],
+          scale: [(0.0, (1, 1), Bezier(0.4, 0, 0.6, 1)), (1.0, (0.985, 1.012), Bezier(0.4, 0, 0.6, 1)), (2.0, (1, 1))],
+        ),
+        "head": (rotate: [(0.0, 0, Bezier(0.4, 0, 0.6, 1)), (0.6, 1.5, Bezier(0.4, 0, 0.6, 1)), (1.5, -2, Bezier(0.4, 0, 0.6, 1)), (2.0, 0)]),
+        "face": (translate: [(0.0, (0, 0)), (0.8, (0, 0), Bezier(0.4, 0, 0.6, 1)), (0.95, (4, 0)), (1.4, (4, 0), Bezier(0.4, 0, 0.6, 1)), (1.55, (0, 0)), (2.0, (0, 0))]),
+        "arm_near": (rotate: [(0.0, 0, Bezier(0.4, 0, 0.6, 1)), (1.0, 4, Bezier(0.4, 0, 0.6, 1)), (2.0, 0)]),
+        "arm_far": (rotate: [(0.0, 0, Bezier(0.4, 0, 0.6, 1)), (1.0, -4, Bezier(0.4, 0, 0.6, 1)), (2.0, 0)]),
+        "hand_near": (rotate: [(0.0, 0, Bezier(0.4, 0, 0.6, 1)), (1.1, 6, Bezier(0.4, 0, 0.6, 1)), (2.0, 0)]),
+        "hand_far": (rotate: [(0.0, 0, Bezier(0.4, 0, 0.6, 1)), (1.1, -6, Bezier(0.4, 0, 0.6, 1)), (2.0, 0)]),
+      },
+      slots: {
+        "eye_near": (attachment: [(0.0, "eye"), (1.7, "shut"), (1.8, "eye")]),
+        "eye_far": (attachment: [(0.0, "eye"), (1.7, "shut"), (1.8, "eye")]),
+      },
+    ),
+
+    // Two steps in 0.8 s: the near foot lands at 0, the far at 0.4. A leg
+    // on the ground turns evenly from 24 degrees ahead to 24 behind, which
+    // carries the body 350 units a second, then lifts and swings forward.
+    // The hips drop as the legs spread, by what keeps the feet on the
+    // ground. The arms swing against the legs
+    "walk": (
+      duration: 0.8,
+      bones: {
+        "hip": (translate: [
+          (0.0, (0, 14), Bezier(0.33, 0.67, 0.67, 1)), (0.2, (0, 0), Bezier(0.33, 0, 0.67, 0.33)),
+          (0.4, (0, 14), Bezier(0.33, 0.67, 0.67, 1)), (0.6, (0, 0), Bezier(0.33, 0, 0.67, 0.33)),
+          (0.8, (0, 14)),
+        ]),
+        "leg_near": (
+          rotate: [(0.0, -24), (0.4, 24, Bezier(0.4, 0, 0.7, 0.6)), (0.6, -6, Bezier(0.3, 0.6, 0.6, 1)), (0.8, -24)],
+          translate: [(0.0, (0, 0)), (0.4, (0, 0), Bezier(0.33, 0.67, 0.67, 1)), (0.6, (0, -20), Bezier(0.33, 0, 0.67, 0.33)), (0.8, (0, 0))],
+        ),
+        "leg_far": (
+          rotate: [(0.0, 24, Bezier(0.4, 0, 0.7, 0.6)), (0.2, -6, Bezier(0.3, 0.6, 0.6, 1)), (0.4, -24), (0.8, 24)],
+          translate: [(0.0, (0, 0), Bezier(0.33, 0.67, 0.67, 1)), (0.2, (0, -20), Bezier(0.33, 0, 0.67, 0.33)), (0.4, (0, 0)), (0.8, (0, 0))],
+        ),
+        // A shoe turns with its leg: these keep it flat on the ground, heel
+        // first as it lands and toe last as it leaves
+        "shoe_near": (rotate: [(0.0, 10), (0.1, 12), (0.3, -12), (0.4, -8), (0.6, 26), (0.8, 10)]),
+        "shoe_far": (rotate: [(0.0, -8), (0.2, 26), (0.4, 10), (0.5, 12), (0.7, -12), (0.8, -8)]),
+        "torso": (rotate: [
+          (0.0, 4, Bezier(0.4, 0, 0.6, 1)), (0.2, 2, Bezier(0.4, 0, 0.6, 1)), (0.4, 4, Bezier(0.4, 0, 0.6, 1)),
+          (0.6, 2, Bezier(0.4, 0, 0.6, 1)), (0.8, 4),
+        ]),
+        "head": (rotate: [
+          (0.0, -3, Bezier(0.4, 0, 0.6, 1)), (0.2, -1, Bezier(0.4, 0, 0.6, 1)), (0.4, -3, Bezier(0.4, 0, 0.6, 1)),
+          (0.6, -1, Bezier(0.4, 0, 0.6, 1)), (0.8, -3),
+        ]),
+        "arm_near": (rotate: [(0.0, 28, Bezier(0.4, 0, 0.6, 1)), (0.4, -30, Bezier(0.4, 0, 0.6, 1)), (0.8, 28)]),
+        "arm_far": (rotate: [(0.0, -30, Bezier(0.4, 0, 0.6, 1)), (0.4, 28, Bezier(0.4, 0, 0.6, 1)), (0.8, -30)]),
+        "hand_near": (rotate: [(0.0, 10, Bezier(0.4, 0, 0.6, 1)), (0.4, -12, Bezier(0.4, 0, 0.6, 1)), (0.8, 10)]),
+        "hand_far": (rotate: [(0.0, -12, Bezier(0.4, 0, 0.6, 1)), (0.4, 10, Bezier(0.4, 0, 0.6, 1)), (0.8, -12)]),
+      },
+      events: [(0.0, "footstep", (string: "near")), (0.4, "footstep", (string: "far"))],
+    ),
+
+    // Two strides in 0.5 s, at 900 units a second: each foot is down for
+    // 0.16 s, then kicks up behind and reaches forward while the hero is in
+    // the air. It leans into the run and pumps its arms
+    "run": (
+      duration: 0.5,
+      bones: {
+        "hip": (translate: [
+          (0.0, (0, 14)), (0.08, (0, 16)), (0.16, (0, 10), Bezier(0.33, 0.67, 0.67, 1)), (0.21, (0, -12), Bezier(0.33, 0, 0.67, 0.33)),
+          (0.25, (0, 14)), (0.33, (0, 16)), (0.41, (0, 10), Bezier(0.33, 0.67, 0.67, 1)), (0.46, (0, -12), Bezier(0.33, 0, 0.67, 0.33)),
+          (0.5, (0, 14)),
+        ]),
+        "leg_near": (
+          rotate: [(0.0, -24), (0.16, 26), (0.24, 48, Bezier(0.4, 0, 0.6, 1)), (0.42, -42, Bezier(0.4, 0, 0.6, 1)), (0.5, -24)],
+          translate: [(0.0, (0, 0)), (0.08, (0, -16)), (0.16, (0, 0)), (0.26, (0, -34)), (0.42, (0, -24)), (0.5, (0, 0))],
+        ),
+        "leg_far": (
+          rotate: [(0.0, 44, Bezier(0.4, 0, 0.6, 1)), (0.17, -42, Bezier(0.4, 0, 0.6, 1)), (0.25, -24), (0.41, 26), (0.49, 48), (0.5, 44)],
+          translate: [(0.0, (0, -34)), (0.17, (0, -24)), (0.25, (0, 0)), (0.33, (0, -16)), (0.41, (0, 0)), (0.5, (0, -34))],
+        ),
+        "shoe_near": (rotate: [(0.0, 16), (0.08, 0), (0.16, -14), (0.26, 14), (0.42, 28), (0.5, 16)]),
+        "shoe_far": (rotate: [(0.0, 14), (0.17, 28), (0.25, 16), (0.33, 0), (0.41, -14), (0.5, 14)]),
+        "torso": (rotate: [(0.0, 12), (0.125, 15), (0.25, 12), (0.375, 15), (0.5, 12)]),
+        "head": (rotate: [(0.0, -9), (0.125, -11), (0.25, -9), (0.375, -11), (0.5, -9)]),
+        "arm_near": (rotate: [(0.0, 52, Bezier(0.4, 0, 0.6, 1)), (0.25, -64, Bezier(0.4, 0, 0.6, 1)), (0.5, 52)]),
+        "arm_far": (rotate: [(0.0, -64, Bezier(0.4, 0, 0.6, 1)), (0.25, 52, Bezier(0.4, 0, 0.6, 1)), (0.5, -64)]),
+        "hand_near": (rotate: [(0.0, 14, Bezier(0.4, 0, 0.6, 1)), (0.25, -20, Bezier(0.4, 0, 0.6, 1)), (0.5, 14)]),
+        "hand_far": (rotate: [(0.0, -20, Bezier(0.4, 0, 0.6, 1)), (0.25, 14, Bezier(0.4, 0, 0.6, 1)), (0.5, -20)]),
+      },
+      events: [(0.0, "footstep", (string: "near", float: 1.4)), (0.25, "footstep", (string: "far", float: 1.4))],
+    ),
+
+    // A jump where it stands: a crouch, 0.66 s in the air on the curve a
+    // thrown body follows, and a landing that fires one hard footstep. The
+    // rise is in the animation, so the game moves nothing: the entity, and
+    // the shadow under it, stay on the ground
+    "jump": (
+      duration: 1.0,
+      bones: {
+        "hip": (translate: [
+          (0.0, (0, 0), Bezier(0.4, 0, 0.6, 1)), (0.11, (0, 30)), (0.14, (0, 12), Bezier(0.33, 0.67, 0.67, 1)),
+          (0.47, (0, -230), Bezier(0.33, 0, 0.67, 0.33)), (0.8, (0, 0), Bezier(0.33, 0.67, 0.67, 1)),
+          (0.87, (0, 26), Bezier(0.4, 0, 0.6, 1)), (1.0, (0, 0)),
+        ]),
+        "torso": (
+          rotate: [(0.0, 0), (0.11, 12), (0.2, -4), (0.47, 2), (0.8, 6), (0.87, 12), (1.0, 0)],
+          scale: [(0.0, (1, 1)), (0.11, (0.93, 1.05)), (0.2, (1.06, 0.97)), (0.47, (1, 1)), (0.8, (1.03, 0.98)), (0.87, (0.92, 1.06)), (1.0, (1, 1))],
+        ),
+        "head": (rotate: [(0.0, 0), (0.11, -6), (0.2, 6), (0.47, -2), (0.8, 4), (0.87, -8), (1.0, 0)]),
+        // On the ground the legs slide up as the hips sink; in the air they
+        // tuck, the near knee forward
+        "leg_near": (
+          rotate: [(0.0, 0), (0.11, 6), (0.16, 8), (0.3, -34, Bezier(0.4, 0, 0.6, 1)), (0.62, -30), (0.8, -4), (0.87, 4), (1.0, 0)],
+          translate: [(0.0, (0, 0), Bezier(0.4, 0, 0.6, 1)), (0.11, (0, -30)), (0.14, (0, -12)), (0.3, (0, -26)), (0.62, (0, -22)), (0.8, (0, 0), Bezier(0.33, 0.67, 0.67, 1)), (0.87, (0, -26), Bezier(0.4, 0, 0.6, 1)), (1.0, (0, 0))],
+        ),
+        "leg_far": (
+          rotate: [(0.0, 0), (0.11, -6), (0.16, 4), (0.3, 30, Bezier(0.4, 0, 0.6, 1)), (0.62, 22), (0.8, 2), (0.87, -6), (1.0, 0)],
+          translate: [(0.0, (0, 0), Bezier(0.4, 0, 0.6, 1)), (0.11, (0, -30)), (0.14, (0, -12)), (0.3, (0, -10)), (0.62, (0, -12)), (0.8, (0, 0), Bezier(0.33, 0.67, 0.67, 1)), (0.87, (0, -26), Bezier(0.4, 0, 0.6, 1)), (1.0, (0, 0))],
+        ),
+        "shoe_near": (rotate: [(0.0, 0), (0.11, -6), (0.2, 24), (0.47, 30), (0.74, 16), (0.8, 4), (0.87, -4), (1.0, 0)]),
+        "shoe_far": (rotate: [(0.0, 0), (0.11, 6), (0.2, 26), (0.47, 14), (0.74, 4), (0.8, -2), (0.87, 6), (1.0, 0)]),
+        // The arms swing back in the crouch, up with the leap and down again
+        "arm_near": (rotate: [(0.0, 0), (0.11, 40, Bezier(0.3, 0, 0.5, 1)), (0.24, -118, Bezier(0.4, 0, 0.6, 1)), (0.47, -96, Bezier(0.4, 0, 0.6, 1)), (0.8, -20), (0.87, 24, Bezier(0.4, 0, 0.6, 1)), (1.0, 0)]),
+        "arm_far": (rotate: [(0.0, 0), (0.11, 34, Bezier(0.3, 0, 0.5, 1)), (0.24, -128, Bezier(0.4, 0, 0.6, 1)), (0.47, -104, Bezier(0.4, 0, 0.6, 1)), (0.8, -16), (0.87, 20, Bezier(0.4, 0, 0.6, 1)), (1.0, 0)]),
+        "hand_near": (rotate: [(0.0, 0), (0.24, -20), (0.47, 10), (0.87, 14), (1.0, 0)]),
+        "hand_far": (rotate: [(0.0, 0), (0.24, -20), (0.47, 10), (0.87, 14), (1.0, 0)]),
+        "face": (translate: [(0.0, (0, 0)), (0.11, (0, 4)), (0.24, (2, -6)), (0.6, (2, 4)), (0.87, (0, 5)), (1.0, (0, 0))]),
+      },
+      slots: {
+        "mouth": (attachment: [(0.0, "glad"), (0.14, "oh"), (0.9, "glad")]),
+      },
+      events: [(0.8, "footstep", (string: "both", float: 2.5, volume: 1.0))],
+    ),
+
+    // A wave, for a second track: it keys the far arm, the head and the
+    // mouth, and leaves the rest of the body to the track below. The far
+    // arm is behind the head, so the raised hand shows beside the face
+    "wave": (
+      duration: 1.2,
+      bones: {
+        "arm_far": (rotate: [
+          (0.0, -150, Bezier(0.4, 0, 0.6, 1)), (0.3, -124, Bezier(0.4, 0, 0.6, 1)), (0.6, -150, Bezier(0.4, 0, 0.6, 1)),
+          (0.9, -124, Bezier(0.4, 0, 0.6, 1)), (1.2, -150),
+        ]),
+        "hand_far": (rotate: [
+          (0.0, -22, Bezier(0.4, 0, 0.6, 1)), (0.3, 24, Bezier(0.4, 0, 0.6, 1)), (0.6, -22, Bezier(0.4, 0, 0.6, 1)),
+          (0.9, 24, Bezier(0.4, 0, 0.6, 1)), (1.2, -22),
+        ]),
+        "head": (rotate: [(0.0, -7, Bezier(0.4, 0, 0.6, 1)), (0.6, -4, Bezier(0.4, 0, 0.6, 1)), (1.2, -7)]),
+      },
+      slots: {
+        "mouth": (attachment: [(0.0, "happy")]),
+      },
+    ),
+
+    // The near arm held out ahead, for a second track
+    "aim": (
+      duration: 1.0,
+      bones: {
+        "arm_near": (rotate: [(0.0, -100, Bezier(0.4, 0, 0.6, 1)), (0.5, -96, Bezier(0.4, 0, 0.6, 1)), (1.0, -100)]),
+        "hand_near": (rotate: [(0.0, 0), (1.0, 0)]),
+        "head": (rotate: [(0.0, -2), (1.0, -2)]),
+      },
+    ),
+
+    // A cut with the blade the weapon bone carries: the arm winds up
+    // behind the head, comes down ahead in 0.16 s, and recovers. The blade
+    // turns in the fist to lie along the arm. The hit box is on only while
+    // the blade cuts
+    "slash": (
+      duration: 0.6,
+      bones: {
+        "hip": (translate: [(0.0, (0, 0)), (0.14, (-10, 4)), (0.3, (22, 10)), (0.4, (16, 6), Bezier(0.4, 0, 0.6, 1)), (0.6, (0, 0))]),
+        "leg_near": (
+          rotate: [(0.0, 0), (0.14, -3), (0.3, 8), (0.4, 6), (0.6, 0)],
+          translate: [(0.0, (0, 0)), (0.14, (0, -4)), (0.3, (0, -10)), (0.4, (0, -6)), (0.6, (0, 0))],
+        ),
+        "leg_far": (
+          rotate: [(0.0, 0), (0.14, -3), (0.3, 8), (0.4, 6), (0.6, 0)],
+          translate: [(0.0, (0, 0)), (0.14, (0, -4)), (0.3, (0, -10)), (0.4, (0, -6)), (0.6, (0, 0))],
+        ),
+        "torso": (rotate: [(0.0, 0, Bezier(0.4, 0, 0.6, 1)), (0.14, -8), (0.3, 14), (0.4, 10, Bezier(0.4, 0, 0.6, 1)), (0.6, 0)]),
+        "head": (rotate: [(0.0, 0), (0.14, 4), (0.3, -8), (0.4, -6), (0.6, 0)]),
+        "arm_near": (rotate: [
+          (0.0, 0, Bezier(0.3, 0, 0.5, 1)), (0.14, -200, Bezier(0.4, 0.1, 0.7, 0.8)), (0.3, -70, Bezier(0.3, 0.6, 0.6, 1)),
+          (0.4, -50, Bezier(0.4, 0, 0.6, 1)), (0.6, 0),
+        ]),
+        "weapon": (rotate: [(0.0, 0, Bezier(0.3, 0, 0.5, 1)), (0.14, 115), (0.4, 112, Bezier(0.4, 0, 0.6, 1)), (0.6, 0)]),
+        "arm_far": (rotate: [(0.0, 0), (0.14, -30), (0.3, 40), (0.4, 30), (0.6, 0)]),
+      },
+      slots: {
+        "hit": (attachment: [(0.0, None), (0.15, "hit"), (0.34, None)]),
+        "mouth": (attachment: [(0.0, "glad"), (0.14, "oh"), (0.45, "glad")]),
+      },
+    ),
+  },
+
+  // Seconds to crossfade from one animation to the next
+  mixes: {
+    default: 0.2,
+    pairs: [
+      ("walk", "idle", 0.25), ("run", "idle", 0.3), ("run", "walk", 0.25),
+      ("idle", "jump", 0.08), ("walk", "jump", 0.08), ("run", "jump", 0.08),
+      ("jump", "idle", 0.15), ("jump", "walk", 0.15), ("jump", "run", 0.15),
+      ("idle", "slash", 0.06), ("slash", "idle", 0.2),
+    ],
+  },
+)

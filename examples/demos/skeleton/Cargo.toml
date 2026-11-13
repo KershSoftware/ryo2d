@@ -1,0 +1,17 @@
+[package]
+name = "skeleton-demo"
+version = "0.1.0"
+edition = "2024"
+description = "Skeleton demo - a cutout hero: crossfades, layers, events, sockets, skins, aiming and a crowd"
+
+[lib]
+name = "skeleton_demo"
+path = "src/lib.rs"
+
+[[bin]]
+name = "skeleton-demo"
+path = "src/main.rs"
+
+[dependencies]
+ryo2d = { path = "../../.." }
+demo-kit = { path = "../../demo-kit" }

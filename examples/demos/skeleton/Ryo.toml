@@ -1,0 +1,11 @@
+[project]
+name = "Skeleton Demo"
+
+[system]
+show_fps = true
+
+[debug]
+show_colliders = false
+show_velocities = false
+show_origins = false
+show_frame_timing = false

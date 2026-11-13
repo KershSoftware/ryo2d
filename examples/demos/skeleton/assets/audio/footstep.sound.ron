@@ -1,0 +1,16 @@
+// A footstep, the sound the skeleton file's "footstep" event names: four
+// takes, never the same one twice in a row, each a little louder or
+// quieter, higher or lower. It is heard from where the foot lands
+(
+  clips: [
+    (path: "audio/step-1.wav"),
+    (path: "audio/step-2.wav"),
+    (path: "audio/step-3.wav"),
+    (path: "audio/step-4.wav"),
+  ],
+  volume: -4.0,
+  volume_range: 2.0,
+  pitch_range: 1.0,
+  no_repeat: 1,
+  spatial: (min_distance: 300.0, max_distance: 2000.0, curve: Linear, pan_width: 640.0),
+)
