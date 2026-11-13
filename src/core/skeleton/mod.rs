@@ -1,4 +1,5 @@
-//! 2D skeletal animation (being rebuilt; see the module notes).
+//! 2D skeletal animation: characters built of parts on a hierarchy of
+//! bones, posed by animations that are mixed, layered and queued.
 //!
 //! [`SkeletonData`] is the immutable asset: bones, slots, image regions,
 //! skins of attachments, animations of timelines, and events, following
@@ -10,7 +11,11 @@
 //! entity rides one of its bones; and [`SkeletonEvent`] and
 //! [`SkeletonTrackEvent`] messages tell the game what its animations did.
 //! An entity with a `Renderable::skeleton()` draws its skeleton, sorted,
-//! lit and shadowed as a sprite is.
+//! lit and shadowed as a sprite is, and between fixed steps as an
+//! interpolated entity is.
+//!
+//! Not built: meshes and deform keys, IK, transform and path constraints,
+//! clipping, and reading another tool's files.
 
 mod animation;
 mod apply;
@@ -42,7 +47,6 @@ pub use data::{
 };
 pub(crate) use draw::{Carrier, RegionQuad};
 pub use event::{SkeletonEvent, SkeletonTrackEvent};
-pub use pose::BonePose;
 pub(crate) use scope::{SkeletonStore, hold_scenes, in_scene, release_scene};
 pub use skin::Skin;
 pub use socket::BoneSocket;

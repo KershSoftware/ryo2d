@@ -31,9 +31,24 @@ const MAX_TOLD: usize = 1024;
 /// The most spare sets of per-timeline buffers a state keeps
 const MAX_SPARE: usize = 16;
 
+/// The most entries a track's queue holds. Past it `add_animation` is
+/// refused, with one warning: a game that queues every step cannot grow
+/// the queue without bound
+const MAX_QUEUE: usize = 64;
+
+/// The most names a state remembers having warned about. Past it, a name
+/// the data lacks is ignored without a warning
+const MAX_WARNED: usize = 64;
+
 /// A track entry's handle, from [`SkeletonAnimation::set_animation`] and
 /// [`SkeletonAnimation::add_animation`]. It finds the entry until the entry
-/// is gone (its [`TrackEventKind::Dispose`])
+/// is gone (its [`TrackEventKind::Dispose`]).
+///
+/// It is unique within its own [`SkeletonAnimation`] only: every skeleton
+/// numbers its entries from the same start, so two skeletons' handles can
+/// be equal. To find an entry's
+/// [`SkeletonTrackEvent`](super::SkeletonTrackEvent)s, match the event's
+/// `entity` as well as its `entry`
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TrackEntryId(u32);
 
@@ -445,10 +460,11 @@ pub struct SkeletonAnimation {
   /// Buffers finished entries left, for the entries made next (at most
   /// [`MAX_SPARE`] sets)
   spare: Vec<Buffers>,
-  /// Names already warned about
+  /// Names already warned about (at most [`MAX_WARNED`])
   warned: Vec<Arc<str>>,
   warned_track: bool,
   warned_kept: bool,
+  warned_queue: bool,
   warned_start: bool,
   next_id: u32,
   empty_name: Arc<str>,
@@ -484,6 +500,7 @@ impl SkeletonAnimation {
       warned: Vec::new(),
       warned_track: false,
       warned_kept: false,
+      warned_queue: false,
       warned_start: false,
       next_id: 0,
       empty_name: Arc::from(Self::EMPTY),
@@ -536,7 +553,11 @@ impl SkeletonAnimation {
   /// `delay <= 0`. Unknown names and calls before the data lands are
   /// handled as [`set_animation`](Self::set_animation) handles them, so a
   /// kept call's handle can likewise end with a lone
-  /// [`Dispose`](TrackEventKind::Dispose)
+  /// [`Dispose`](TrackEventKind::Dispose).
+  ///
+  /// A track's queue holds at most 64 entries. A call it has no room for
+  /// does nothing and returns `None`, with one warning per skeleton, so
+  /// queue an animation once, not every step
   pub fn add_animation(
     &mut self,
     track: usize,
@@ -561,6 +582,9 @@ impl SkeletonAnimation {
       self.warn_unknown(name);
       return None;
     };
+    if !self.can_queue(track) {
+      return None;
+    }
     let mut entry = self.make_entry(name.clone(), looping);
     entry.animation = Some(index);
     entry.duration = catalogue.duration(index);
@@ -570,7 +594,12 @@ impl SkeletonAnimation {
   /// Mixes `track` out over `mix` seconds, to the setup pose on track 0 or
   /// to the tracks below on a higher one, then clears it. It plays the
   /// empty animation, so an entry queued after it mixes in from nothing (a
-  /// layer fading in)
+  /// layer fading in).
+  ///
+  /// While the track is already fading out (the empty animation is its
+  /// current entry and nothing is queued after it), another call does
+  /// nothing: the fade keeps the mix it started with, so a game may ask
+  /// every step. To cut a fade short, call [`clear`](Self::clear)
   pub fn set_empty(&mut self, track: usize, mix: f32) {
     if !self.track_ok(track) {
       return;
@@ -582,6 +611,14 @@ impl SkeletonAnimation {
       }
       return;
     };
+    // Already fading out, with no queue to drop: another empty entry would
+    // start the fade over, and one a step would never let it end
+    let fading = self.tracks.get(track).is_some_and(|lane| {
+      lane.queue.is_empty() && lane.chain.last().is_some_and(|current| current.empty)
+    });
+    if fading {
+      return;
+    }
     let mut entry = self.make_entry(self.empty_name.clone(), false);
     entry.empty = true;
     entry.mix_duration = non_negative(mix);
@@ -603,6 +640,24 @@ impl SkeletonAnimation {
     }
     for entry in lane.queue.drain(..) {
       retire(entry, track, false, &mut self.told, &mut self.spare);
+    }
+  }
+
+  /// Stops every track at once, as [`clear`](Self::clear) stops one, the
+  /// lowest track first: the next animation set on a track has nothing to
+  /// mix from and shows at once. For a skeleton taken from a pool, whose
+  /// tracks are still its last life's
+  pub fn clear_all(&mut self) {
+    if self.catalogue.is_none() {
+      for kept in self.kept.drain(..) {
+        if let Some(entry) = kept.entry() {
+          tell(&mut self.told, kept.track(), entry, TrackEventKind::Dispose);
+        }
+      }
+      return;
+    }
+    for track in 0..self.tracks.len() {
+      self.clear(track);
     }
   }
 
@@ -745,11 +800,14 @@ impl SkeletonAnimation {
     false
   }
 
+  /// Warns that the data lacks `name`, once per skeleton per name, for the
+  /// first [`MAX_WARNED`] names
   fn warn_unknown(&mut self, name: &str) {
-    if !self.warned.iter().any(|warned| &**warned == name) {
-      self.warned.push(Arc::from(name));
-      log::warn!("skeleton animation {name:?} is not in the skeleton's data; ignored");
+    if self.warned.iter().any(|warned| &**warned == name) || self.warned.len() >= MAX_WARNED {
+      return;
     }
+    self.warned.push(Arc::from(name));
+    log::warn!("skeleton animation {name:?} is not in the skeleton's data; ignored");
   }
 
   /// Drops the calls kept for `track`, which a new call replaces, and
@@ -773,6 +831,20 @@ impl SkeletonAnimation {
       }
       keep
     });
+  }
+
+  /// Whether `track`'s queue has room for one more entry. Past
+  /// [`MAX_QUEUE`] an entry is refused, with one warning
+  fn can_queue(&mut self, track: usize) -> bool {
+    let queued = self.tracks.get(track).map_or(0, |lane| lane.queue.len());
+    if queued < MAX_QUEUE {
+      return true;
+    }
+    if !self.warned_queue {
+      self.warned_queue = true;
+      log::warn!("skeleton track {track} has {MAX_QUEUE} animations queued; more are ignored");
+    }
+    false
   }
 
   /// Whether one more call can be kept until the data lands. Past
@@ -906,8 +978,13 @@ impl SkeletonAnimation {
         }
         Kept::Add(track, entry) => {
           if let Some(entry) = self.resolve(track, entry, catalogue) {
-            let delay = entry.delay;
-            self.enqueue(track, entry, delay, catalogue);
+            if self.can_queue(track) {
+              let delay = entry.delay;
+              self.enqueue(track, entry, delay, catalogue);
+            } else {
+              // No room in the queue: its handle ends with a Dispose
+              retire(entry, track, false, &mut self.told, &mut self.spare);
+            }
           }
         }
         Kept::Empty(track, mix) => self.set_empty(track, mix),
@@ -1084,9 +1161,14 @@ fn advance(
   {
     head.waited = finite_time(head.waited + step);
   }
+  // Seconds of the step the current entry has had: the whole step, or what
+  // was left of it when an entry started in this pass
+  let mut left = step;
   while let Some(head) = track.queue.front() {
     let trigger = non_negative(head.delay);
-    // Seconds of the step left after the head is due
+    // Seconds of the step left after the head is due: no more than the
+    // entry it follows had, so one due before that entry's start gets what
+    // that entry got
     let over = match track.chain.last_mut() {
       Some(current) => {
         if current.track_time < trigger {
@@ -1094,14 +1176,17 @@ fn advance(
         }
         let speed = current.speed();
         let over = if speed > 0.0 && step > 0.0 {
-          ((current.track_time - trigger) / speed).clamp(0.0, step)
+          ((current.track_time - trigger) / speed).clamp(0.0, left)
         } else {
           0.0
         };
         if let Some(from) = current_from.take() {
           complete(current, index, from, trigger.min(current.track_time), told);
         }
-        current.out_at = Some(trigger);
+        // Replaced where the head was due, or where it began this step if
+        // that is later (a start past the head's delay): its event
+        // threshold counts from a time it was at
+        current.out_at = Some(trigger.max(current.step_origin));
         tell(told, index, current, TrackEventKind::Interrupt);
         over
       }
@@ -1109,9 +1194,10 @@ fn advance(
         if head.waited < trigger {
           break;
         }
-        (head.waited - trigger).clamp(0.0, step)
+        (head.waited - trigger).clamp(0.0, left)
       }
     };
+    left = over;
     let Some(mut entry) = track.queue.pop_front() else {
       break;
     };
@@ -2381,6 +2467,22 @@ mod tests {
       ]
     );
     close(rig.degrees(), 0.0);
+    // A reload leaves a started entry's time alone: its start is not
+    // applied again. "ninety", started at 0.5 and stepped to 0.8, reads
+    // 0.8 once the new data is taken up, goes on to 0.9, and is told no
+    // second Start
+    let mut rig = Rig::new();
+    let ninety = rig.set(0, "ninety", true);
+    rig.entry(ninety).start = 0.5;
+    rig.step(0.3);
+    close(rig.entry(ninety).track_time(), 0.8);
+    rig.reload(reloaded(&rig.data));
+    pose_unadvanced(&mut rig);
+    close(rig.entry(ninety).track_time(), 0.8);
+    let fired = rig.step(0.1);
+    close(rig.entry(ninety).track_time(), 0.9);
+    assert_eq!(fired.kinds(), vec![]);
+    close(rig.degrees(), 90.0);
   }
 
   #[test]
@@ -2652,6 +2754,23 @@ mod tests {
         ("ninety", Dispose),
       ]
     );
+    // An entry that starts in a step has what was left of the step, and
+    // one that starts behind it in the same step has no more than that.
+    // "ninety", started 0.75 into itself, takes over from "short" with
+    // 0.02 s of a 0.12 s step left, and "thirty", due 0.5 s into "ninety",
+    // is due at once: it gets those 0.02 s, not the step
+    let mut rig = Rig::new();
+    rig.set(0, "short", false);
+    let ninety = rig.add(0, "ninety", false, 0.0);
+    rig.entry(ninety).start = 0.75;
+    let thirty = rig.add(0, "thirty", false, 0.5);
+    rig.step(0.4);
+    rig.step(0.12);
+    assert_eq!(rig.state.current(0), Some(thirty));
+    close(rig.entry(ninety).track_time(), 0.77);
+    close(rig.entry(thirty).track_time(), 0.02);
+    // Its mix has run as long: a tenth of the data's 0.2 s
+    close(rig.state.mix_progress(0).unwrap_or(f32::NAN), 0.1);
   }
 
   #[test]
@@ -3004,6 +3123,241 @@ mod tests {
     assert_eq!(capture.containing("waiting for its data"), 1);
   }
 
+  /// How many of `fired`'s track events are of `kind`
+  fn told(fired: &Fired, kind: TrackEventKind) -> usize {
+    fired
+      .track
+      .iter()
+      .filter(|event| event.kind == kind)
+      .count()
+  }
+
+  #[test]
+  fn a_track_queues_at_most_sixty_four_entries() {
+    use TrackEventKind::*;
+    let capture = capture_log();
+    let mut rig = Rig::new();
+    rig.step(0.0);
+    rig.set(0, "zero", false);
+    // A game that queues the same animation every step, 1,000 steps at
+    // 60 Hz: each entry is due at the end of the one before it, a second
+    // on, so they start far slower than they are asked for. The queue
+    // fills, and a call it has no room for is refused and tells nothing
+    let (mut made, mut refused, mut started, mut told_in_all) = (0, 0, 0, 0);
+    for _ in 0..1000 {
+      match rig.state.add_animation(0, "ninety", false, 0.0) {
+        Some(_) => made += 1,
+        None => refused += 1,
+      }
+      let lane = &rig.state.tracks[0];
+      assert!(lane.queue.len() <= MAX_QUEUE, "queued {}", lane.queue.len());
+      let fired = rig.step(1.0 / 60.0);
+      assert!(rig.state.tracks[0].chain.len() <= 2);
+      started += told(&fired, Start);
+      told_in_all += fired.track.len();
+    }
+    assert_eq!(rig.state.tracks[0].queue.len(), MAX_QUEUE);
+    // One a second started, sixteen in all, and each start made room for
+    // one more
+    assert_eq!(made, MAX_QUEUE + 16);
+    assert_eq!(refused, 1000 - made);
+    assert_eq!(capture.containing("queued"), 1);
+    // When the calls stop the queue plays out, and every entry that was
+    // taken starts once: nothing is told for a call that was refused
+    for _ in 0..70 {
+      let fired = rig.step(1.0);
+      started += told(&fired, Start);
+      told_in_all += fired.track.len();
+    }
+    assert!(rig.state.tracks[0].queue.is_empty());
+    assert_eq!(rig.state.tracks[0].chain.len(), 1);
+    assert_eq!(started, made + 1);
+    // Start, Complete, Interrupt, End and Dispose for each but the last
+    assert_eq!(told_in_all, 5 * made + 2);
+    // Calls kept until the data lands fill the queue the same way: of 100
+    // on one track the first is current at once, 64 are queued, and the
+    // rest are disposed, each handle with it
+    let mut state = SkeletonAnimation::new();
+    let kept: Vec<TrackEntryId> = (0..100)
+      .filter_map(|_| state.add_animation(0, "ninety", false, 0.0))
+      .collect();
+    assert_eq!(kept.len(), 100);
+    let mut rig = Rig::new();
+    rig.state = state;
+    let fired = rig.step(0.1);
+    assert_eq!(rig.state.current(0), Some(kept[0]));
+    assert_eq!(rig.state.tracks[0].queue.len(), MAX_QUEUE);
+    assert_eq!(told(&fired, Dispose), 35);
+    assert!(kept[65..].iter().all(|id| rig.state.entry(*id).is_none()));
+    assert!(kept[..65].iter().all(|id| rig.state.entry(*id).is_some()));
+    assert_eq!(capture.containing("queued"), 2);
+  }
+
+  #[test]
+  fn set_empty_again_while_a_track_fades_out_changes_nothing() {
+    use TrackEventKind::*;
+    let mut rig = Rig::new();
+    rig.set(0, "ninety", true);
+    rig.step(0.1);
+    // The second call finds the empty animation current with nothing
+    // queued behind it, and changes nothing: the fade the first started
+    // ends when it would have, and no second empty entry joins the chain
+    rig.state.set_empty(0, 0.2);
+    let first = rig.step(0.1);
+    close(rig.degrees(), 45.0);
+    rig.state.set_empty(0, 5.0);
+    assert_eq!(rig.state.tracks[0].chain.len(), 2);
+    let second = rig.step(0.1);
+    close(rig.degrees(), 0.0);
+    assert!(rig.state.tracks[0].chain.is_empty());
+    let empty = SkeletonAnimation::EMPTY;
+    assert_eq!(first.kinds(), vec![("ninety", Interrupt), (empty, Start)]);
+    assert_eq!(
+      second.kinds(),
+      vec![
+        ("ninety", End),
+        ("ninety", Dispose),
+        (empty, End),
+        (empty, Dispose),
+      ]
+    );
+    // A game that asks every step, 1,000 steps at 60 Hz: the fade keeps
+    // its timing (half way after 0.1 s), the chain never holds more than
+    // the entry fading out and the empty one, and nothing is queued
+    let mut rig = Rig::new();
+    rig.set(0, "ninety", true);
+    rig.step(0.1);
+    let mut busy = 0;
+    for step in 0..1000 {
+      rig.state.set_empty(0, 0.2);
+      let fired = rig.step(1.0 / 60.0);
+      let lane = &rig.state.tracks[0];
+      assert!(lane.chain.len() <= 2, "a chain of {}", lane.chain.len());
+      assert!(lane.queue.is_empty());
+      if step == 5 {
+        close(rig.degrees(), 45.0);
+      }
+      if step >= 12 {
+        close(rig.degrees(), 0.0);
+      }
+      if !fired.track.is_empty() {
+        busy += 1;
+      }
+    }
+    // Once the fade is over the track is clear, and the next call starts
+    // an empty entry afresh, which lasts its mix: track events come once a
+    // fade (a Start, then an End and a Dispose 0.2 s on), not once a step
+    assert!(
+      busy <= 2 * (1000 / 12 + 1),
+      "{busy} steps told track events"
+    );
+    // When the calls stop, the track clears within one mix
+    for _ in 0..13 {
+      rig.step(1.0 / 60.0);
+    }
+    assert!(rig.state.tracks[0].chain.is_empty());
+    assert_eq!(rig.state.mix_progress(0), None);
+    // With an entry queued behind the empty one the call is made as ever:
+    // it drops the queue, and the new empty entry mixes in from the old
+    let mut rig = Rig::new();
+    rig.step(0.0);
+    rig.state.set_empty(0, 0.2);
+    let queued = rig.add(0, "ninety", true, 0.5);
+    rig.state.set_empty(0, 0.2);
+    assert!(rig.state.entry(queued).is_none());
+    assert_eq!(rig.state.tracks[0].chain.len(), 2);
+    rig.state.set_empty(0, 0.2);
+    assert_eq!(rig.state.tracks[0].chain.len(), 2);
+  }
+
+  #[test]
+  fn unknown_names_warn_up_to_a_bound() {
+    let capture = capture_log();
+    let mut rig = Rig::new();
+    rig.step(0.1);
+    // A game that makes names up without end is warned about the first 64
+    // only, and the state remembers no more
+    for made_up in 0..200 {
+      let name = format!("dance {made_up}");
+      assert_eq!(rig.state.set_animation(0, &name, true), None);
+      assert_eq!(rig.state.add_animation(0, &name, true, 0.0), None);
+    }
+    assert_eq!(rig.state.warned.len(), MAX_WARNED);
+    assert_eq!(capture.containing("dance"), MAX_WARNED);
+  }
+
+  #[test]
+  fn an_entry_s_handle_is_unique_within_its_own_state_only() {
+    // Each state numbers its entries from 0: two skeletons' first entries
+    // have the same handle, and one state's never repeat
+    let (mut one, mut other) = (Rig::new(), Rig::new());
+    let first = one.set(0, "zero", true);
+    assert_eq!(other.set(0, "ninety", true), first);
+    assert_ne!(one.set(0, "ninety", true), first);
+    assert_ne!(one.add(0, "thirty", true, 0.0), first);
+  }
+
+  #[test]
+  fn clear_all_stops_every_track_at_once() {
+    use TrackEventKind::*;
+    let mut rig = Rig::new();
+    rig.set(0, "zero", true);
+    rig.step(0.1);
+    rig.set(0, "thirty", true);
+    rig.add(0, "slide", true, 5.0);
+    rig.set(3, "ninety", true);
+    rig.step(0.1);
+    close(rig.degrees(), 90.0);
+    // Every track ends as `clear` ends it, the lowest first, and the pose
+    // is the setup pose from the next step: nothing fades
+    rig.state.clear_all();
+    assert_eq!(rig.state.animation(0), None);
+    assert_eq!(rig.state.animation(3), None);
+    let fired = rig.step(0.1);
+    assert_eq!(
+      fired.kinds(),
+      vec![
+        ("thirty", End),
+        ("thirty", Dispose),
+        ("zero", End),
+        ("zero", Dispose),
+        ("slide", Dispose),
+        ("ninety", End),
+        ("ninety", Dispose),
+      ]
+    );
+    close(rig.degrees(), 0.0);
+    // An animation set next has nothing to mix from: it shows at once
+    rig.set(0, "ninety", true);
+    assert_eq!(rig.state.mix_progress(0), None);
+    rig.step(0.0);
+    close(rig.degrees(), 90.0);
+    // Before the data lands it drops every kept call, each entry disposed
+    let mut state = SkeletonAnimation::new();
+    let kept = [
+      state.set_animation(0, "zero", true),
+      state.add_animation(0, "thirty", true, 0.0),
+      state.set_animation(2, "ninety", true),
+    ];
+    state.set_empty(1, 0.2);
+    state.clear_all();
+    assert!(state.kept.is_empty());
+    let mut rig = Rig::new();
+    rig.state = state;
+    let fired = rig.step(0.1);
+    assert_eq!(
+      fired.kinds(),
+      vec![("zero", Dispose), ("thirty", Dispose), ("ninety", Dispose)]
+    );
+    assert!(
+      kept
+        .iter()
+        .flatten()
+        .all(|id| rig.state.entry(*id).is_none())
+    );
+    close(rig.degrees(), 0.0);
+  }
+
   #[test]
   fn track_events_from_calls_are_bounded_between_steps() {
     let capture = capture_log();
@@ -3288,6 +3642,22 @@ mod tests {
     assert_eq!(times.len(), 2, "{times:?}");
     close(times[0], 0.5);
     close(times[1], 0.6);
+    // So does an entry whose follower was due before its start: "ticks"
+    // started at 0.75, with "zero" queued 0.5 s into it, is replaced where
+    // it starts, and its event threshold counts from there. At a threshold
+    // of 1 it fires through the 0.2 s mix, (0.75, 0.95]
+    let mut rig = Rig::new();
+    let ticks = rig.set(0, "ticks", true);
+    rig.entry(ticks).start = 0.75;
+    rig.entry(ticks).event_threshold = 1.0;
+    rig.add(0, "zero", true, 0.5);
+    let mut times = Vec::new();
+    for _ in 0..5 {
+      times.extend(rig.step(0.1).times());
+    }
+    assert_eq!(times.len(), 2, "{times:?}");
+    close(times[0], 0.8);
+    close(times[1], 0.9);
   }
 
   #[test]

@@ -65,7 +65,9 @@ pub struct SkeletonTrackEvent {
   /// The skeleton's entity
   pub entity: Entity,
   pub track: usize,
-  /// The entry's handle, as `set_animation` and `add_animation` gave it
+  /// The entry's handle, as `set_animation` and `add_animation` gave it.
+  /// It is unique within `entity`'s own animation state only, so compare
+  /// `entity` as well: another skeleton's entry can have the same handle
   pub entry: TrackEntryId,
   /// The entry's animation's name
   pub animation: Arc<str>,

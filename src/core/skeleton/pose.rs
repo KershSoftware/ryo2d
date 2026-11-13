@@ -14,22 +14,22 @@ use crate::core::ui::Color;
 /// animations set. Angles are radians, y down and positive rotation
 /// clockwise
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct BonePose {
-  pub x: f32,
-  pub y: f32,
+pub(crate) struct BonePose {
+  pub(crate) x: f32,
+  pub(crate) y: f32,
   /// Radians
-  pub rotation: f32,
-  pub scale_x: f32,
-  pub scale_y: f32,
+  pub(crate) rotation: f32,
+  pub(crate) scale_x: f32,
+  pub(crate) scale_y: f32,
   /// Radians
-  pub shear_x: f32,
+  pub(crate) shear_x: f32,
   /// Radians
-  pub shear_y: f32,
+  pub(crate) shear_y: f32,
 }
 
 impl BonePose {
   /// The bone's setup pose
-  pub fn setup(bone: &BoneData) -> Self {
+  pub(crate) fn setup(bone: &BoneData) -> Self {
     Self {
       x: bone.x,
       y: bone.y,
