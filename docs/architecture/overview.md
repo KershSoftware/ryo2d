@@ -70,15 +70,19 @@ Engine::frame()
  │                       sync colliders, push changes, move characters, sync joints, step,
  │                       read back, messages, trigger contents
  │        Transforms ... propagate GlobalTransform, then the tile maps' floor lift
- │        Skeletons ..... empty: skeletal animation is being rebuilt
+ │        Skeletons .... update_skeletons: each skeleton's animation state advances and applies
+ │                       over the setup pose, the game's attachments and bone overrides go
+ │                       over that, its bones are placed under its entity, its sockets and what
+ │                       is below them are placed, and its events and track events are written
  │        Particles .... game-time emitters spawn, their particles move and die
  │        Trails ....... record trail points
  ├─ settings ..... a changed Settings applies (volumes to the mixer, the window's size and mode
  │                 to its request, vsync, the FPS overlay); a second after the last change
  │                 the settings writer queues system.json on the save service
  ├─ Update ....... UpdateSet::Game: the scenes' own per-frame systems; builder ones by default
- ├─ PostUpdate ... tile maps' occluder sync, then Transforms (propagation), Camera (shake, every
- │                 camera's view), Extract (timed effects, unscaled particle emitters on real time);
+ ├─ PostUpdate ... tile maps' occluder sync, then Transforms (propagation), a pose for each skeleton
+ │                 added or reloaded this frame, Camera (shake, every camera's view), Extract (timed
+ │                 effects, unscaled particle emitters on real time);
  │                 audio_system after Camera (voices, buses, music, listener and emitters, game clock)
  ├─ render ....... Scene::render, query the world into the draw list (tile maps' visible chunks
  │                 from the batch's chunk store; one run per visible particle emitter), plan
@@ -108,6 +112,7 @@ Engine::frame()
 ## ECS: Transforms, Hierarchy, Interpolation
 
 - `Transform` is local (`translation: Vec2`, `rotation` in radians, `scale: Vec2`). `GlobalTransform` is world space and written only by the engine; `Transform` requires it, and inserting a `Transform` places the `GlobalTransform` at once.
+- A negative scale on one axis mirrors what is under it (`GlobalTransform::is_mirrored`), and what draws or collides by a `GlobalTransform` does so mirrored: single sprites, skeletons, world text, tile layers, colliders. The blend between steps keeps a mirror.
 - The hierarchy is the kernel's `ChildOf(parent)` / `Children`. Despawning a parent despawns its children. `WorldExt` adds `spawn_child`, `detach_keep_world` and `skip_interpolation`.
 - Propagation runs at the end of each fixed step, in physics' own schedule and again in `PostUpdate`. A run starts from the entities that changed since its last run and walks only their subtrees, each from its parent's stored `GlobalTransform`, so a still subtree (a big tile map's thousands of collider parts and shadow chains) is not visited, and an unmoved entity's `GlobalTransform` is not rewritten. Finding the changed entities is still a change-tick check per entity per run. Once a fifth of the entities with a `Transform` changed (and more than 64), a run walks every hierarchy instead, where the two walks cost about the same (`src/core/ecs/AGENTS.md`; `docs/backlog/tilemap.md`, Limits).
 - Interpolation is opt-in with `Interpolated` (covers descendants): each fixed step snapshots `GlobalTransform` into `PreviousGlobalTransform`, and the renderer draws between the two at the render alpha. Gameplay always reads the true `GlobalTransform`.
@@ -116,8 +121,9 @@ Engine::frame()
 | Area | Components |
 |------|------------|
 | Placement | `Transform`, `GlobalTransform`, `ChildOf`, `Children`, `Interpolated`, `PreviousGlobalTransform` |
-| Drawing | `Renderable` (sprite or tiled run, `Anchor` default `Center`, z order, tint, shadows, sprite shader), `Material`, `YSort`, `CompositeTile` |
+| Drawing | `Renderable` (sprite, tiled run or the entity's skeleton, `Anchor` default `Center`, z order, tint, shadows, sprite shader), `Material`, `YSort`, `CompositeTile` |
 | Animation | `Animator`, `AnimationController`, `ValidatedAnimator` |
+| Skeletons | `Skeleton`, `SkeletonAnimation`, `BoneSocket` |
 | Juice | `Tween`, `TweenSequence`, `PropertyTween<T>`, `Knockback`, `SquashStretch` |
 | Physics | `RigidBody`, `Collider`, `Joint`, `Velocity`, `AngularVelocity`, `CharacterController` (and the engine-written `CharacterState`), `TileColliders`, `TriggerContents` (engine-written) |
 | Gameplay | `MoveIntent`, `MoveBindings`, `PlatformerMovement`, `TopDownMovement` (and the engine-written `PlatformerState`, `TopDownState`), `Pickup`, `KillZone`, `Checkpoint`, `Respawn` |
@@ -140,7 +146,7 @@ SceneManager (engine-owned stack over the one shared world)
 
 ## Messages
 
-- A message type derives `Message`. The engine's (`CollisionStarted`/`Stopped`, `TriggerEntered`/`Exited`, `ContactForce`, `JointBroken`, `MovementEvent`, `PickedUp`, `Killed`, `CheckpointReached`, `TweenStarted`/`Completed`, `KnockbackStarted`/`Finished`, `SquashStretchStarted`/`Finished`, `ParticleCollision`, `EmitterFinished`, `MapEvent`, `UiEvent`, `UiReloaded`, `UiListBind`) are registered at build, and each asset type's `AssetEvent<T>` with its type; a game's register with `EngineBuilder::add_message::<T>()` or on the first `ctx.write_message`.
+- A message type derives `Message`. The engine's (`CollisionStarted`/`Stopped`, `TriggerEntered`/`Exited`, `ContactForce`, `JointBroken`, `MovementEvent`, `PickedUp`, `Killed`, `CheckpointReached`, `TweenStarted`/`Completed`, `KnockbackStarted`/`Finished`, `SquashStretchStarted`/`Finished`, `ParticleCollision`, `EmitterFinished`, `SkeletonEvent`, `SkeletonTrackEvent`, `MapEvent`, `UiEvent`, `UiReloaded`, `UiListBind`) are registered at build, and each asset type's `AssetEvent<T>` with its type; a game's register with `EngineBuilder::add_message::<T>()` or on the first `ctx.write_message`.
 - Buffers advance in `First`, but only once a fixed step has run since the last advance: a message stays readable until two fixed steps have run after it was written, so every reader, per-frame or fixed-step, sees it at any frame rate. While no fixed step runs (the game clock paused) nothing is dropped.
 - Systems use `MessageWriter<T>` / `MessageReader<T>`; scenes use `ctx.write_message(m)` and `ctx.messages::<T>()`, which keeps a cursor per scene so each scene sees each message once.
 - Modules define no message type they do not write; games define their own notifications.
@@ -268,7 +274,7 @@ PreUpdate pump: lands finished loads (once their dependencies have, and the load
 - One registry for every asset type: `AssetServer` (a resource) loads by asset path, relative to the project's `assets/` folder, through `AssetLoader`s chosen by extension, and each type's values are in its `Assets<T>` resource. Scenes reach both through `ctx.assets()`; systems take `Res<AssetServer>` and `Res<Assets<T>>`.
 - A `Handle<T>` keeps its asset alive, and the pump frees an asset at its first run after the last handle drops. The engine's caches (textures, compiled shaders, text layouts) key by `AssetId`, so the renderer never keeps alive what the game let go.
 - An asset is its type, its path and its loader's settings (`load_with`): asking again gives the same handle, and one file at two SVG sizes is two images. Each value has a content version, and what is built from an asset (a texture, a UI tree, a text layout) is built again when it moves.
-- The engine's types are `Image` (raster formats and SVG), `Shader` (WGSL), `Font` and `BitmapFont`, `UiFile`, `Theme`, `AudioClip` (WAV, OGG Vorbis, MP3, FLAC), `Sound` and `Music` (definitions) and `Mixer`, and for tile maps `TileMap` and `Tileset` (Tiled), `TileWorld` (Tiled worlds) and `LdtkProject`; a game adds its own (`impl Asset`, an `AssetLoader`, `EngineBuilder::asset_loader`). A UI file's imports and images, a theme's skin images and sounds, a bitmap font's sheet and a sound definition's clips are dependencies: the asset is inserted once they have loaded and its loader's `check` passes.
+- The engine's types are `Image` (raster formats and SVG), `Shader` (WGSL), `Font` and `BitmapFont`, `UiFile`, `Theme`, `AudioClip` (WAV, OGG Vorbis, MP3, FLAC), `Sound` and `Music` (definitions) and `Mixer`, `ParticleEffect`, `SkeletonData`, and for tile maps `TileMap` and `Tileset` (Tiled), `TileWorld` (Tiled worlds) and `LdtkProject`; a game adds its own (`impl Asset`, an `AssetLoader`, `EngineBuilder::asset_loader`). A UI file's imports and images, a theme's skin images and sounds, a bitmap font's sheet, a sound definition's clips, a particle effect's image and a skeleton's images are dependencies: the asset is inserted once they have loaded and its loader's `check` passes.
 - An image that is not loaded draws a magenta checker in debug builds and nothing in release ones.
 - **Hot reload** is on in debug builds with a window (`EngineBuilder::hot_reload`): the asset folder is watched, a saved file reloads under the same handle about 100 ms after its last write, the assets that hold it are checked again, and a reload that fails keeps the last good value.
 
@@ -299,6 +305,20 @@ Details: `src/core/audio/AGENTS.md`; usage: the `ryo-audio` skill; measurements:
 ## Particles
 
 A game describes a kind of particle once, as a `ParticleEffect` asset (built in code or read from a hot-reloading `.particles.ron` file), and places it with `ParticleEmitter` entities; `ctx.particles().play_at` plays one once where something happened. The engine does the rest, with no per-frame call from the game. One `step_particles` system in `FixedSet::Particles`, after propagation and floors, runs every game-time emitter in entity order, each from its own random stream: spawns, forces, attractors, collisions through a grid of the colliders, sub-emitters, removal, then `ParticleCollision` and `EmitterFinished`. Unscaled emitters step once a frame on real time, in `PostUpdateSet::Extract`. A game-time emitter steps while its scene updates, so not under a scene that stops it; a scene transition doesn't stop it; an emitter added outside every scene is held while any scene is held. Each frame `ParticleDrawer` pushes one run per emitter a camera sees into the draw list, its particles blended between their last two steps. The simulation runs on the CPU, one pool of field-by-field arrays per emitter, within a budget of live particles (`EngineBuilder::particle_budget`, 20,000 by default). See `src/core/particles/AGENTS.md`; measured figures and limits are in `docs/backlog/particles.md`.
+
+## Skeletons
+
+A character made of parts on bones is a `SkeletonData` asset: bones in a tree, slots in draw order, the region, point and bounding-box attachments each slot can show, skins that say what each attachment name means, animations of keyed timelines, and events. It follows Spine's model, written clean-room from Spine's public documentation, and is read from a hot-reloading `.skeleton.ron` file or built in code and checked once. An entity shows one with a `Skeleton`, plays its animations with a `SkeletonAnimation`, and draws it with `Renderable::skeleton()`; the engine does the rest, with no per-frame call from the game.
+
+- **The step.** One `update_skeletons` system in `FixedSet::Skeletons`, after propagation and floors and before particles, runs every skeleton whose data has loaded, in entity order: the animation state advances its tracks by the fixed timestep (current entries, the entries they mix from, queues), collects the event keys crossed, then starts from the setup pose and applies the tracks from the lowest up; the game's attachments and bone overrides are written over that; the bones' world transforms are computed under the entity's `GlobalTransform`; each `BoneSocket` child is placed on its bone, with everything below it, as propagation would place it; and the `SkeletonEvent`s and `SkeletonTrackEvent`s are written. A scene's `update` runs earlier in the step, so it reads a skeleton one step behind.
+- **A pose in the frame it appears.** `pose_new_skeletons`, in `PostUpdate` after propagation, gives a skeleton added, or whose data landed or reloaded, in a frame that runs no fixed step its animation's first pose and its sockets their places, sending nothing. A steady frame looks through no skeleton.
+- **Mixing.** A track's current entry mixes in from the entries it replaced, each fading linearly, so a crossfade never dips where both animations key a property; higher tracks apply over lower ones by their alpha, replacing or adding; attachment and draw-order keys belong to the newest entry with weight. The rules, each with its test, are in the module notes.
+- **Holds and time.** A skeleton animates on game time, in fixed steps, while the scene that added it updates, by the scene-scope mechanism particles and audio use, with a store of its own (`SkeletonStore`): under a scene that stops its own it neither advances nor sends its events, and carries on where it was.
+- **Drawing.** The entity drawer treats a skeleton as one drawable among the entities, so it takes its z, its `YSort` order (by where it stands), its floor, its layers, lighting, tint, flips and sprite shadows as a sprite does. Its regions join the draw list as runs, one for each stretch of quads of one image and blend, each bone blended between its last two steps when its entity is `Interpolated`. A sprite shader applies to each region; a drop shadow is cast part by part.
+- **Reloads.** A skeleton follows its data by `(AssetId, version)`: a saved file makes the pose anew, keeps each entry by its animation's name with its time, and finds skins, attachments, overrides and sockets' bones again by name.
+- **Cost** (an Apple M5 Pro): 200 skeletons of 30 bones and 25 regions, two tracks mixing, about 0.5 ms a fixed step and 0.16 ms of a frame's drawing from one atlas; a steady step and frame allocate nothing.
+
+Details: `src/core/skeleton/AGENTS.md`; usage: the `ryo-skeleton` skill; measurements and limits: `docs/backlog/skeleton.md`.
 
 ## Tile Maps
 
@@ -402,7 +422,7 @@ The tools are in a build only under the cfg `dev_tools` (debug assertions, or th
 - **The log:** engine code logs with the `log` crate's macros, a game with the prelude's `info!`, `warn!`, `warn_once!` and the rest (under `game::`). Levels are per target (`info` for the game and the engine, `warn` for other crates), set by `RYO_LOG` and the console's `log:level`. It goes to the terminal in a development build, the browser console on the web and, for every windowed native run, `logs/latest.log` in the save folder (a panic is written there too); with the tools, to a ring of the last 10,000 records that the console and the logger window read. Tests read it through `ryo2d::testing::capture_log()`.
 - **Profiler (F10):** a puffin flamegraph with game, CPU and GPU scopes; `profile_scope!` / `profile_function!` record only with the engine's `profiler` feature (`ryo2d dev -p`) and while scopes are on (the window open, or `[debug] enable_profiler`).
 - **Logger (F9):** the log as it is written, with level and origin (engine, game, library) filters, timestamps, selection and copy.
-- **Console:** built-in commands (overlays, time scale, the scene stack, log levels) plus the game's: a scene's (`ctx.console().command`, leaving with the scene; the uppermost scene's answers) and the run's (`EngineBuilder::console_command`). It shows the log's warnings and errors.
+- **Console:** built-in commands (overlays, among them `debug:ui` and `debug:skeletons`, time scale, the scene stack, log levels) plus the game's: a scene's (`ctx.console().command`, leaving with the scene; the uppermost scene's answers) and the run's (`EngineBuilder::console_command`). It shows the log's warnings and errors.
 - **Scripting:** `RYO_HEADLESS`, `RYO_INPUT` and `RYO_CAPTURE_*` drive a game without a window; see the `ryo-cli` skill.
 
 ## CLI
@@ -470,6 +490,7 @@ Client-server multiplayer with listen-server support. See [the network architect
 | `shaders/` | The engine's WGSL and its shared includes, post-process effects and custom shaders |
 | `lighting/`, `trail/` | Feature renderers (lighting) and components (trails and lines) |
 | `particles/` | Particle effects (assets), emitters, the fixed step and the unscaled pass, collisions and attractors, sub-emitters, the drawer |
+| `skeleton/` | Skeletal animation: skeleton data (assets) and its builder and checks, the animation state (tracks, mixing, queues, events), skeletons with their skins, attachments and bone overrides, bone sockets, the fixed step and the frame's pose pass, the region quads the entity drawer draws, the `debug:skeletons` overlay |
 | `tilemap/` | Tile maps: the data model, the Tiled and LDtk readers, maps spawned as entities and landed off the main thread, reads and edits with Wang terrain, collision and occluders kept in step with the tiles, worlds, hot reload; drawn by `render/tiles.rs` |
 | `physics/` | Rapier integration, colliders, bodies, joints, the character controller, one-way colliders, triggers, tile colliders |
 | `gameplay/` | Movement input and presets, knockback, trigger behaviours |

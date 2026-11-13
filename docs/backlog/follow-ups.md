@@ -123,7 +123,7 @@ Items from 4f on were copied from their execution records. Items from earlier su
 - Limits recorded (`docs/backlog/particles.md`, Limits):
   - CPU simulation on the main thread, bounded by the 20,000 budget; collisions in ground space on storeys; `Local` effects don't collide or feel attractors; sub-emitters go one level deep.
   - Whole runs are culled, not particles; the cull box ignores glow and outline padding, particles spawned larger under an earlier version, and a fast stretched (`Align::Velocity`) quad's length.
-  - A `Local` emitter not stepped (held, or speed 0) whose entity moves can be culled on screen. A mirrored emitter that turns or scales between steps draws its `Local` particles unmirrored between steps.
+  - A `Local` emitter not stepped (held, or speed 0) whose entity moves can be culled on screen.
   - Prewarm is paid at once in the emitter's first step. Web effect files must be embedded by a hand-kept list. One distant or huge collider coarsens the grid.
   - An unscaled emitter over several steps in one frame gets lumpy inherited velocity, can finish and despawn in one frame before any scene reads `EmitterFinished`, and its turbulence attractor time stops while the game is paused or no game-time emitter steps.
   - A `speed_over_life` curve starting at 0 leaves particles no speed of their own for life. A `play_at` whose effect never loads (a typo'd path) leaves its entity waiting, a slow leak in a game that plays it on every hit: finish an emitter whose handle's `LoadState` is `Failed`, or warn once. `alive` goes stale on held emitters after `ParticlesView::clear`, and `PreviousGlobalTransform.skip` on unscaled interpolated emitters while paused.

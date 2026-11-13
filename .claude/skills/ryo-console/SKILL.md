@@ -2,7 +2,7 @@
 name: ryo-console
 description: Developer console - registering commands for a scene (ctx.console().command) or the whole run (EngineBuilder::console_command), Command's arguments and printing, scene changes from a command, the built-in commands (debug overlays, time scale, log levels), help and Tab completion, the log's warnings in the console, and what a shipped build has (none of it).
 metadata:
-  version: 1.4.0
+  version: 1.5.0
 ---
 
 # Ryo2D Developer Console
@@ -161,6 +161,7 @@ fn register(ctx: &mut SceneContext) {
 | `debug:origins` | F4 | Toggle entity origin points |
 | `debug:ui` | | Outline every UI widget with its id: hot yellow, active orange, focused green |
 | `debug:ui-rebuilds` | | Outline the UI nodes rebuilt each frame (fading orange), with counters of nodes rebuilt and replayed, fragments kept and the render line, updated once a second (`ryo-ui`) |
+| `debug:skeletons` | | Draw every skeleton's bones (amber, a white ring at each origin), the outlines of the regions it draws (blue), its bounding boxes (green) and its points (magenta), where the frame draws it (`ryo-skeleton`) |
 | `debug:capture [path]` | F12 | Save the next frame as a PNG (default `captures/`, or `RYO_CAPTURE_DIR`) |
 | `ui:cache [on\|off]` | | Show or set UI node tree caching; off builds every node every frame (the same UI, slower), to rule caching in or out of a UI bug |
 | `ui:fragments [on\|off]` | | Show or set UI fragments; off replays and lays out every unchanged subtree each frame (needs `ui:cache on`) |

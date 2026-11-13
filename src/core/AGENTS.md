@@ -72,5 +72,6 @@ The `dev_tools` cfg (`src/build.rs`: debug assertions or the `dev-tools` feature
 - Messages (`messages/`): skill `ryo-messages`
 - Audio (`audio/`): skill `ryo-audio`, and its own module notes (`audio/AGENTS.md`)
 - Tile maps (`tilemap/`): skill `ryo-tilemap`, and its own module notes (`tilemap/AGENTS.md`)
+- Skeletal animation (`skeleton/`): skill `ryo-skeleton`, and its own module notes (`skeleton/AGENTS.md`)
 - Project configuration (`config/`), the player's settings (`settings/`) and game saves (`saves/`): skill `ryo-config-save`, and their own module notes
 - Debug overlays and frame timings (`diagnostics/`): its own module notes, and skill `ryo-profiler` for profiling

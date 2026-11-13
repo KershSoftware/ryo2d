@@ -15,7 +15,7 @@ Conventions: 2D with +Y down, units are pixels, rotation is radians unless a nam
 use ryo2d::prelude::*;
 ```
 
-Contents: [ECS kernel](#ecs-kernel) · [Transform and hierarchy](#transform-and-hierarchy) · [Engine components](#engine-components) · [Juice](#juice-tweens-knockback-squash) · [Pooling](#pooling) · [Time](#time) · [Phases](#phases-and-sets) · [Scenes](#scenes) · [SceneContext](#scenecontext) · [EngineBuilder](#enginebuilder) · [Messages](#messages) · [Input](#input) · [Audio](#audio) · [Cameras](#cameras) · [Images](#images) · [Sprite animation](#sprite-animation) · [GPU sprites and parallax](#gpu-sprites-and-parallax) · [Composite tiles](#composite-tiles) · [Physics](#physics) · [Characters and gameplay](#characters-and-gameplay) · [Lighting](#lighting) · [Assets](#assets) · [Window and cursor](#window-and-cursor) · [Post-processing](#post-processing) · [Trails and lines](#trails-and-lines) · [Debug drawing](#debug-drawing) · [Particles](#particles) · [Tilemaps](#tilemaps) · [Render pipeline](#render-pipeline) · [Config, settings and saves](#config-settings-and-saves) · [Text](#text) · [UI](#ui) · [Errors](#errors) · [Navigation](#navigation) · [State machines](#state-machines) · [Networking](#networking) · [Profiling, console, logging](#profiling-console-logging) · [Optional crates](#optional-crates) · [Testing](#testing-ryo2dtesting)
+Contents: [ECS kernel](#ecs-kernel) · [Transform and hierarchy](#transform-and-hierarchy) · [Engine components](#engine-components) · [Juice](#juice-tweens-knockback-squash) · [Pooling](#pooling) · [Time](#time) · [Phases](#phases-and-sets) · [Scenes](#scenes) · [SceneContext](#scenecontext) · [EngineBuilder](#enginebuilder) · [Messages](#messages) · [Input](#input) · [Audio](#audio) · [Cameras](#cameras) · [Images](#images) · [Sprite animation](#sprite-animation) · [GPU sprites and parallax](#gpu-sprites-and-parallax) · [Composite tiles](#composite-tiles) · [Physics](#physics) · [Characters and gameplay](#characters-and-gameplay) · [Lighting](#lighting) · [Assets](#assets) · [Window and cursor](#window-and-cursor) · [Post-processing](#post-processing) · [Trails and lines](#trails-and-lines) · [Debug drawing](#debug-drawing) · [Skeletons](#skeletal-animation) · [Particles](#particles) · [Tilemaps](#tilemaps) · [Render pipeline](#render-pipeline) · [Config, settings and saves](#config-settings-and-saves) · [Text](#text) · [UI](#ui) · [Errors](#errors) · [Navigation](#navigation) · [State machines](#state-machines) · [Networking](#networking) · [Profiling, console, logging](#profiling-console-logging) · [Optional crates](#optional-crates) · [Testing](#testing-ryo2dtesting)
 
 ---
 
@@ -109,9 +109,10 @@ pub struct Transform { pub translation: Vec2, pub rotation: f32, pub scale: Vec2
 | `rotation_degrees(&self) -> f32` / `set_rotation_degrees(&mut self, f32)` | degree helpers |
 | `to_affine(&self) -> Affine2` | as a matrix |
 
-`GlobalTransform` (world space, written only by the engine): `IDENTITY`, `from_transform(&Transform)`, `translation() -> Vec2`, `rotation() -> f32`, `scale() -> Vec2`, `affine() -> Affine2`, `transform_point(Vec2) -> Vec2`, `to_transform() -> Transform`, `mul_transform(&Transform) -> Self` (a child's global), `lerp(&Self, t) -> Self`.
+`GlobalTransform` (world space, written only by the engine): `IDENTITY`, `from_transform(&Transform)`, `translation() -> Vec2`, `rotation() -> f32` (the turn of its x axis), `scale() -> Vec2` (axis lengths, never negative), `is_mirrored() -> bool` (a negative scale on one axis, on the entity or above it; both axes negative is a half turn, not a mirror), `affine() -> Affine2`, `transform_point(Vec2) -> Vec2`, `to_transform() -> Transform` (a mirror kept as a negative height), `mul_transform(&Transform) -> Self` (a child's global), `lerp(&Self, t) -> Self` (keeps a mirror; between a mirrored transform and one that is not, each axis goes straight to where it ends).
 
 - Inserting a `Transform` (spawn or `insert`) sets `GlobalTransform` at once (under the parent's current global for a child). Later edits through `get_mut::<Transform>` reach `GlobalTransform` at propagation: the end of each fixed step (`FixedSet::Transforms`, after physics) and in `PostUpdate`.
+- **A negative scale mirrors.** A `Transform` scaled by -1 on one axis mirrors what is under it, and what draws by a `GlobalTransform` draws mirrored: a sprite (across its x axis, with its anchor's offset; a tiled run and a composite tile are not mirrored), a skeleton, world text, a tile layer, a collider. So a sprite on a mirrored parent, or on a flipped skeleton's socket, mirrors with it. A light occluder is placed by its entity's translation and turn alone, and is not mirrored.
 - Draw order is `Renderable.z_order`; a sprite's placement is its `Anchor`; there is no `z`, pivot or offset on `Transform`.
 
 Hierarchy (`ChildOf(parent)` / `Children`, plus `trait WorldExt for World`):
@@ -140,7 +141,7 @@ Engine systems for tests and tools, outside the prelude: `ryo2d::ecs::propagate:
 
 ### Renderable
 
-An image, or a tiled run of one, on an entity with a `Transform`.
+An image, a tiled run of one, or the entity's skeleton, on an entity with a `Transform`.
 
 ```rust,ignore
 // Fields
@@ -156,7 +157,7 @@ pub struct Renderable {
   pub lighting: bool,    // default true; false draws it (and its shadows) after lighting
   pub emission: f32,     // default 1; above 1 it glows past white and feeds bloom
 }
-pub enum RenderStyle { Single, Tiled { direction: TileDirection, target_size: f32 } }
+pub enum RenderStyle { Single, Tiled { direction: TileDirection, target_size: f32 }, Skeleton }
 ```
 
 | Method | |
@@ -164,6 +165,7 @@ pub enum RenderStyle { Single, Tiled { direction: TileDirection, target_size: f3
 | `image(Handle<Image>) -> Self` | a single sprite, placed by its anchor; it holds the image. An image that is not loaded draws the checker in debug builds and nothing in release ones |
 | `render_target(RenderTarget) -> Self` | shows a render target at its size, placed, tinted, faded, scaled, turned and flipped like a sprite (see [Cameras](#cameras)); blends `Premultiplied` |
 | `tiled(Handle<Image>, TileDirection, target_size: f32) -> Self` | repeated to fill `target_size`, laid out from the entity's position (first tile's top-left); ignores `anchor` |
+| `skeleton() -> Self` | draws the entity's `Skeleton` (see [Skeletons](#skeletal-animation)): its regions where its bones put them, sorted, lit, lifted and shadowed as a sprite is. `z_order`, `visible`, `lighting` and `filter` are the whole skeleton's; `alpha`, `tint`, `blend`, `emission` and the sprite `shader` apply to each region; `flip_x` and `flip_y` mirror it about the entity's position, bones and sockets with it; the drop shadow is cast part by part (darker where parts overlap); `image`, `anchor` and `target` are not used. Put `Interpolated` on the entity for bones drawn between fixed steps |
 | `with_anchor(Anchor)`, `with_z_order(i32)`, `with_visible(bool)`, `with_flip_x(bool)`, `with_flip_y(bool)`, `with_alpha(f32)`, `with_tint(Color)` | builders |
 | `with_shader(SpriteShader)`, `with_drop_shadow(DropShadow)`, `with_blob_shadow(BlobShadow)`, `with_contact_shadow(ContactShadow)` | effects |
 | `with_blend(BlendMode)`, `with_filter(Filter)`, `with_lighting(bool)` | how it is drawn (shadows always blend `Alpha`) |
@@ -180,7 +182,7 @@ Blend and filter modes (on `Renderable`, `ParticleEffect`, `SpriteDraw`, `Parall
 | `Screen` | lightens what is below without blowing out; a 0..1 formula, so over pixels brighter than white (HDR light, emission) it dims them, and an emissive Screen drawable over a bright pixel can go below zero and show black: use `Additive` for light above white |
 
 `enum Filter { Default, Nearest, Linear }`: `Default` is nearest under `pixel_art` and linear otherwise. Linear sampling uses mipmaps, so sprites drawn small stay smooth; nearest keeps hard texels.
-| `has_shader`, `has_drop_shadow`, `has_blob_shadow`, `has_contact_shadow`, `is_single`, `is_tiled`, `tile_count(&Assets<Image>) -> u32` | queries |
+| `has_shader`, `has_drop_shadow`, `has_blob_shadow`, `has_contact_shadow`, `is_single`, `is_tiled`, `is_skeleton`, `tile_count(&Assets<Image>) -> u32` | queries |
 
 Shadows (all `Default`, builder style):
 
@@ -192,7 +194,7 @@ Shadows (all `Default`, builder style):
 
 - `Velocity { pub dx: f32, pub dy: f32 }` (pixels per second): `new(dx, dy)`, `zero()`, `from_vec2(Vec2)`, `as_vec2()`. Physics integrates it for `RigidBody` entities, and sweeps a character (`CharacterController`) by it, leaving the real velocity; nothing integrates it otherwise.
 - `ZLayer { Background = -1000, Default = 0, Foreground = 1000, UI = 2000 }`: `as_z_order(self) -> i32`.
-- `YSort { foot_offset, sort_offset, depth_scale_enabled, scale_min, scale_max, y_min, y_max }`: sort y-sorted entities by their feet, wherever the anchor is. `new()` (feet at the bottom, `foot_offset` 1.0), `with_foot_offset(0..1)`, `with_sort_offset(px)`, `with_depth_scale(scale_min, scale_max, y_min, y_max)`, `without_depth_scale()`, `calculate_sort_y(top_y, sprite_height)`, `calculate_depth_scale(y) -> (f32, f32)`. Order is by `z_order` first; within one `z_order`, plain sprites draw first, then y-sorted ones by sort y.
+- `YSort { foot_offset, sort_offset, depth_scale_enabled, scale_min, scale_max, y_min, y_max }`: sort y-sorted entities by their feet, wherever the anchor is. `new()` (feet at the bottom, `foot_offset` 1.0), `with_foot_offset(0..1)`, `with_sort_offset(px)`, `with_depth_scale(scale_min, scale_max, y_min, y_max)`, `without_depth_scale()`, `calculate_sort_y(top_y, sprite_height)`, `calculate_depth_scale(y) -> (f32, f32)`. Order is by `z_order` first; within one `z_order`, plain sprites draw first, then y-sorted ones by sort y. A skeleton has no image to measure down: it sorts by its entity's y plus `sort_offset`, and `foot_offset` plays no part.
 
 ### Material, SpriteShader, SpriteEffect
 
@@ -331,9 +333,9 @@ pub struct Time { pub real: RealClock, pub game: GameClock, pub fixed: FixedCloc
 | `First` | advance clocks, publish `Input`, advance message buffers |
 | `PreUpdate` | a running scene transition, then the asset pump (loads and reloads land, unheld assets are freed, `AssetEvent`s sent), then tile maps (those whose assets are ready start landing, landings that came back land with `MapEvent::Spawned`, spawned maps follow saved files with `MapEvent::Reloaded`, streamed maps unload (keeping the chunks a player changed, despawning their `ChunkOwned` entities) and land chunks round their anchors with `ChunkEvent`s, class tiles follow the chunks); then the console |
 | UI pass | `Scene::ui` for visible scenes, bottom-up; input it consumes never reaches gameplay |
-| `FixedUpdate` × 0..N | `FixedSet::Snapshot` → `Juice` → `Scene` (`Scene::update`) → `Game` (scene and game systems) → `Movement` (climbers changing storey on tile maps' stairs, before the kill zones' respawns; trigger behaviours, tile maps' collision kept in step with their tiles, tile collider rebuilds, movement input, knockback, movement presets) → `Physics` (one system: the whole physics step) → `Transforms` → `Particles` (emitters spawn, particles move and die) → `Trails` |
+| `FixedUpdate` × 0..N | `FixedSet::Snapshot` → `Juice` → `Scene` (`Scene::update`) → `Game` (scene and game systems) → `Movement` (climbers changing storey on tile maps' stairs, before the kill zones' respawns; trigger behaviours, tile maps' collision kept in step with their tiles, tile collider rebuilds, movement input, knockback, movement presets) → `Physics` (one system: the whole physics step) → `Transforms` → `Skeletons` (skeletons advance, pose their bones, place their sockets and send their events) → `Particles` (emitters spawn, particles move and die) → `Trails` |
 | `Update` | `UpdateSet::Game` (scene per-frame systems) |
-| `PostUpdate` | tile maps' shadows kept in step with their tiles, then `PostUpdateSet::Transforms` → `Camera` (shake, then every camera's `CameraView`) → `Extract` (unscaled particle emitters step here) |
+| `PostUpdate` | tile maps' shadows kept in step with their tiles, then `PostUpdateSet::Transforms`, then a skeleton added or reloaded this frame gets its pose → `Camera` (shake, then every camera's `CameraView`) → `Extract` (unscaled particle emitters step here) |
 | render | draw list from the world, `Scene::render`, the engine's particles, render pipeline |
 | `Last` | tracker clearing |
 
@@ -580,6 +582,8 @@ Engine messages (all `Message + Clone`):
 | `AssetEvent<T>` (one per asset type) | `Added { id }`, `Modified { id }`, `Removed { id }`, `Failed { id, error }`, `ReloadFailed { id, error }` | the asset pump (`PreUpdate`) put an asset in its store, changed it, freed it, or could not load or reload it; `load_now` sends its own at once (see [Assets](#assets)) |
 | `ParticleCollision` | see [Particles](#particles) | a particle met a collider, in the particle step (`FixedSet::Particles`), so a scene's `update` reads it on the next step |
 | `EmitterFinished` | `entity` | an emitter stopped (or ended its one cycle) and its last particle died, once per finish, in the particle step (see [Particles](#particles)) |
+| `SkeletonEvent` | `entity`, `track: usize`, `animation: Arc<str>`, `name: Arc<str>`, `int: i32`, `float: f32`, `string: Arc<str>`, `audio: Option<SkeletonEventAudio>`, `time: f32` | a skeleton's animation crossed an event key, in the skeletons' step (`FixedSet::Skeletons`), so a scene's `update` reads it on the next step; a step's events are in the order they happened (see [Skeletons](#skeletal-animation)) |
+| `SkeletonTrackEvent` | `entity`, `track: usize`, `entry: SkeletonTrackEntryId`, `animation: Arc<str>`, `kind: SkeletonTrackEventKind` (`Start`, `Interrupt`, `End`, `Complete`, `Dispose`) | something happened to a track entry, in the skeletons' step; what a call causes is sent with the skeleton's next step |
 | `MapEvent` | `Spawned { map }`, `Reloaded { map }`, `Failed { map, error: Arc<AssetError> }` | a tile map landed whole (layers, objects, colliders, shadows), followed a saved file, or did not load (see [Tilemaps](#tilemaps)) |
 | `FloorChanged` | `entity`, `from: Floor`, `to: Floor` | a `Climber` changed storey halfway along a tile map's stairs, in `FixedSet::Movement` (see [Tilemaps](#tilemaps)) |
 | `ChunkEvent` | `Loaded { map, chunk: IVec2 }`, `Unloading { map, chunk, changed: Option<ChunkTiles> }` | a streamed map's chunk landed (its class tiles in), or unloaded: gone from the map by the time it is read, `changed` holding its tiles if the player changed it (see [Tilemaps](#tilemaps)) |
@@ -960,7 +964,7 @@ One registry for every asset type. `AssetServer` (a resource; systems take `Res<
 - `Progress { loaded, failed, pending }` (`Copy`, `Eq`, `Default`): `is_done()` (nothing pending), `fraction()` (the share loaded or failed; 1 for an empty group). `AssetStats { types: Vec<TypeStats> }`, `TypeStats { name, loaded, loading, failed }`, one per registered type.
 - `enum AssetEvent<T: Asset> { Added { id }, Modified { id }, Removed { id }, Failed { id, error: Arc<AssetError> }, ReloadFailed { id, error } }` (`Clone`, `Debug`): a message per asset type (`ctx.messages::<AssetEvent<Image>>()`, `MessageReader<AssetEvent<T>>`). The pump sends them in `PreUpdate`, `load_now` its own at once; an asset's events come in the order its changes happened, `Removed` last, and only for an asset that was `Added` (a load dropped before it landed, or a failed one, is freed with no event).
 - `AssetPath` (`Clone`, `Eq`, `Hash`, `Ord`, `Display`): `parse(&str) -> Result<AssetPath, AssetError>` (`\` to `/`, `.` dropped, `..` resolved; absolute or leaving the root is `InvalidPath`), `as_str()`, `extensions()` (longest first: `"ui.ron"`, `"ron"`), `parent()`.
-- The engine's types and loaders, in every registry: `Image` (`ImageLoader`: `png`, `jpg`, `jpeg`, `bmp`, `gif`, `webp`, `tga`, `tif`, `tiff`, `qoi`, `ico`, `svg`; settings `ImageSettings { svg: SvgSize }`, `enum SvgSize { Native (default), Scale(f32), Fit { width: u32, height: u32 } }`), `Shader` (`ShaderLoader`: `wgsl`), `Font` (`FontLoader`: `ttf`, `otf`, `ttc`; `FontSettings { face: u32 }`), `BitmapFont` (`BitmapFontLoader`: `bitmap.ron`), `UiFile` (`UiFileLoader`: `ui.ron`), `Theme` (`ThemeLoader`: `theme.ron`), `AudioClip` (`AudioClipLoader`: `wav`, `ogg`, `mp3`, `flac`; settings `AudioClipSettings { mode: ClipMode }`), `Sound` (`SoundLoader`: `sound.ron`), `Music` (`MusicLoader`: `music.ron`) and `Mixer` (`MixerLoader`: `mixer.ron`), see [Audio](#audio); `ParticleEffect` (`ParticleEffectLoader`: `particles.ron`), see [Particles](#particles); `TileMap` (`TiledMapLoader`: `tmx`, `tmj`), `Tileset` (`TiledTilesetLoader`: `tsx`, `tsj`), `LdtkProject` (`LdtkLoader`: `ldtk`) and `TileWorld` (`TileWorldLoader`: `world`), see [Tilemaps](#tilemaps). A path's loader is the one taking its longest extension.
+- The engine's types and loaders, in every registry: `Image` (`ImageLoader`: `png`, `jpg`, `jpeg`, `bmp`, `gif`, `webp`, `tga`, `tif`, `tiff`, `qoi`, `ico`, `svg`; settings `ImageSettings { svg: SvgSize }`, `enum SvgSize { Native (default), Scale(f32), Fit { width: u32, height: u32 } }`), `Shader` (`ShaderLoader`: `wgsl`), `Font` (`FontLoader`: `ttf`, `otf`, `ttc`; `FontSettings { face: u32 }`), `BitmapFont` (`BitmapFontLoader`: `bitmap.ron`), `UiFile` (`UiFileLoader`: `ui.ron`), `Theme` (`ThemeLoader`: `theme.ron`), `AudioClip` (`AudioClipLoader`: `wav`, `ogg`, `mp3`, `flac`; settings `AudioClipSettings { mode: ClipMode }`), `Sound` (`SoundLoader`: `sound.ron`), `Music` (`MusicLoader`: `music.ron`) and `Mixer` (`MixerLoader`: `mixer.ron`), see [Audio](#audio); `ParticleEffect` (`ParticleEffectLoader`: `particles.ron`), see [Particles](#particles); `SkeletonData` (`SkeletonLoader`: `skeleton.ron`), see [Skeletons](#skeletal-animation); `TileMap` (`TiledMapLoader`: `tmx`, `tmj`), `Tileset` (`TiledTilesetLoader`: `tsx`, `tsj`), `LdtkProject` (`LdtkLoader`: `ldtk`) and `TileWorld` (`TileWorldLoader`: `world`), see [Tilemaps](#tilemaps). A path's loader is the one taking its longest extension.
 - A type of your own: `trait Asset: Send + Sync + 'static {}`, and for files a loader registered with `EngineBuilder::asset_loader(loader)`:
 
   ```rust
@@ -1036,7 +1040,79 @@ Bloom's `threshold` is linear luminance, 0 or more and unbounded above (default 
 | `arrow(from: Vec2, to: Vec2, Color)`, `cross(at: Vec2, size, Color)` | markers (world units; the arrow's head is a few pixels) |
 | `width(pixels) -> DebugPen`, `layers(RenderLayers) -> DebugPen` | a pen with the same methods, chainable: `debug.width(3.0).layers(RenderLayers::layer(1)).circle(..)` |
 
-Shapes added in a fixed step (`update`, fixed systems) are drawn until the next step begins; shapes added elsewhere for one frame. The engine's collider, velocity and origin overlays use it.
+Shapes added in a fixed step (`update`, fixed systems) are drawn until the next step begins; shapes added elsewhere for one frame. The engine's collider, velocity, origin and skeleton (`debug:skeletons`) overlays use it.
+
+---
+
+## Skeletal animation
+
+A rig (`SkeletonData`, an asset: bones, slots, attachments, skins, animations and events) is read from a `.skeleton.ron` file or built in code; an entity with a `Skeleton` shows one, posed by its `SkeletonAnimation` in each fixed step (`FixedSet::Skeletons`: after propagation, before particles) and drawn by its `Renderable::skeleton()` as a sprite is. A game calls nothing each frame. Coordinates are y down and positive rotation clockwise; angles are radians in code and degrees in files. The guide, with the file format, every rule and the limits, is `ryo-skeleton`.
+
+| `Skeleton` (component, requires `Transform`) | |
+|---|---|
+| `new(data: Handle<SkeletonData>) -> Self` | shows `data` where its entity stands, in its setup pose and default skin. Until the data has loaded it has no bones and waits; what is set on it meanwhile is kept by name |
+| `data(&self) -> &Handle<SkeletonData>` | the data it shows |
+| `set_skin(&mut self, name: &str)`, `set_skins(&mut self, names: &[&str])` | wears one skin, or several as one, over the default skin (an empty list: the default alone). An attachment is looked up in the last skin worn that has it, then in the default. A name the data lacks warns once per skeleton per name and is left out |
+| `skins(&self) -> impl Iterator<Item = &str>` | the skins worn, in order, without the default; a `set_skins` reads back at once |
+| `set_attachment(&mut self, slot: &str, attachment: Option<&str>)` | shows an attachment in a slot whatever animations key there (`None` hides the slot), until cleared |
+| `clear_attachment(&mut self, slot: &str)` | hands the slot back to the animations' keys, else its setup attachment |
+| `attachment(&self, slot: &str) -> Option<&str>` | the name the slot shows as the last step left it (the game's, else the animations' key, else the setup attachment). `None` for a hidden slot, a name no skin worn has in the slot, a slot the data lacks, and before the data has loaded |
+| `override_bone(&mut self, bone: &str, o: BoneOverride)`, `clear_override(&mut self, bone: &str)` | sets a bone after animation, every step until cleared; its children follow |
+| `bone_world(&self, name: &str) -> Option<Affine2>` | a bone's world transform as the last step left it: its origin and its axes |
+| `point(&self, name: &str) -> Option<(Vec2, f32)>` | a point attachment a slot shows, in the world: its place and its direction in radians |
+| `bounding_box(&self, name: &str, out: &mut Vec<Vec2>) -> bool` | fills `out` with the world corners of a bounding box a slot shows; false, leaving `out` empty, when none shows (an animation switches a hit box by keying its slot) |
+
+- What a game sets shows from the skeleton's next step. What it reads in a scene's `update` is as the last step left it, one step behind that step's motion; a `BoneSocket`, or a system added with `EngineBuilder::add_systems` and ordered `.after(FixedSet::Skeletons)`, is in step.
+- `BoneOverride { rotation: Option<f32>, translation: Option<Vec2>, scale: Option<Vec2>, space: BoneSpace, mix: f32 }` (`Default`: nothing set, `Local`, mix 1): each value given replaces the animated one by `mix` (0 to 1), a rotation the short way round. `enum BoneSpace { Local (default), World }`: in `World` a rotation is the way the bone's x axis points and a translation is where its origin is; `scale` is always the bone's own. A value that is not finite is ignored, with one warning per skeleton.
+- `BoneSocket { bone: String, offset: Transform, inherit_scale: bool }` (component, requires `Transform`; on a child of the skeleton's entity): `new(bone)` (at the bone's origin, taking its scale), `with_offset(Transform)`, `without_scale()`. The engine sets the entity's `Transform` to the bone's followed by the offset in the skeletons' step, and places everything below it in the same step. A bone the skeleton lacks warns once for that name. A skew in the bone is dropped; a collider on a socket follows its bone one physics step late.
+
+| `SkeletonAnimation` (component) | |
+|---|---|
+| `new() -> Self` (`Default`) | no track playing; without the component a skeleton holds its setup pose |
+| `time_scale: f32` (public field, 1) | multiplies every track's time; a negative or non-finite scale holds the skeleton still |
+| `MAX_TRACKS: usize` (64), `EMPTY: &'static str` (`"<empty>"`) | tracks are 0 to 63; the empty animation's name, as its track events carry it |
+| `set_animation(&mut self, track: usize, name: &str, looping: bool) -> Option<SkeletonTrackEntryId>` | plays `name` at once: the entry it replaces mixes out over the new entry's `mix_duration`, and the queue is dropped. On an empty track it shows at once. `None` for a name the data lacks (warned once per skeleton per name) and a track past 63 |
+| `add_animation(&mut self, track: usize, name: &str, looping: bool, delay: f32) -> Option<SkeletonTrackEntryId>` | queues `name`: it starts `delay` seconds into the entry before it, or with `delay <= 0` at that entry's end plus `delay` (a looping entry's end is the end of the loop it is in); on an empty track, after `delay` seconds |
+| `set_empty(&mut self, track: usize, mix: f32)` | fades the track out over `mix` seconds, then clears it; an entry queued after it mixes in from nothing (a layer fading in) |
+| `clear(&mut self, track: usize)` | stops the track at once and drops its queue |
+| `entry(&self, id: SkeletonTrackEntryId) -> Option<&SkeletonTrackEntry>`, `entry_mut(&mut self, id) -> Option<&mut SkeletonTrackEntry>` | the entry a handle names (playing, mixing out, queued), until its `Dispose` |
+| `current(&self, track: usize) -> Option<SkeletonTrackEntryId>` | the entry playing (the one mixing in, during a mix); never the empty animation's |
+| `animation(&self, track: usize) -> Option<&str>` | the name of the animation playing; `None` for an empty track and one `set_empty` is fading out. An animation set reads back at once |
+| `mix_progress(&self, track: usize) -> Option<f32>` | how far the playing entry has mixed in, 0 up to 1; `None` when the track is not mixing |
+
+- `SkeletonTrackEntry` (public fields, changed through `entry_mut`): `speed: f32` (1), `alpha: f32` (1, how much it applies over what is under it), `mix_duration: f32` (the data's mix for the pair, else its default mix), `mix_blend: SkeletonMixBlend` (`Replace`), `event_threshold: f32` (0: an entry mixing out fires no event keys), `reverse: bool`, `hold_previous: bool` (the entry it replaced holds its time while this one mixes in), `looping: bool`, `delay: f32`, `start: f32` (0: seconds into the animation at which it begins, read at its first step; the event keys at or before a start past 0 do not fire, and an entry that is not looping started at or past its end holds its last frame and sends no `Complete`). Methods: `animation() -> &str`, `track_time() -> f32` (seconds played, counting every loop, from its start; before its first step, its start), `is_complete() -> bool`.
+- `enum SkeletonMixBlend { Replace, Add }`: `Replace` moves the pose toward the animation by the entry's alpha; `Add` adds the animation's change from the setup pose. `SkeletonTrackEntryId` (`Copy`, `Eq`, `Hash`).
+- `enum SkeletonTrackEventKind { Start, Interrupt, End, Complete, Dispose }`: it became its track's playing entry; another entry replaced it; it will never be applied again; it passed its animation's end while playing (each loop when looping; never while mixing out, never the empty animation's); it is gone and its handle finds nothing.
+- `SkeletonEvent` and `SkeletonTrackEvent`: see [Messages](#messages). The engine plays no sound for an event: `audio` (`SkeletonEventAudio { path: Arc<str>, volume: f32, balance: f32 }`) is the game's to play.
+
+| `SkeletonData` (asset; `SkeletonLoader` reads `skeleton.ron`) | |
+|---|---|
+| `builder() -> SkeletonDataBuilder` | builds one in code |
+| `DEFAULT_SKIN: &'static str` (`"default"`) | the skin every skeleton has |
+| `bones() -> &[BoneData]`, `slots() -> &[SlotData]`, `regions() -> &[SkeletonRegion]`, `events() -> &[SkeletonEventData]`, `animations() -> &[SkeletonClip]` | bones parents first, slots in setup draw order |
+| `skins() -> &[SkeletonSkin]`, `default_skin() -> &SkeletonSkin`, `skin(name: &str) -> Option<&SkeletonSkin>` | the default skin first |
+| `bone(name: &str) -> Option<BoneId>`, `slot(name: &str) -> Option<SlotId>`, `animation(name: &str) -> Option<&SkeletonClip>` | by name |
+| `mix(from: &str, to: &str) -> f32`, `default_mix() -> f32` | the seconds a crossfade takes: the pair's own, else the default |
+
+| `SkeletonDataBuilder` (each call returns the builder) | |
+|---|---|
+| `bone(name, parent: Option<&str>, BoneSetup)` | a bone under a bone added before it, or a root |
+| `slot(name, bone: &str, SlotSetup)` | a slot on a bone, drawn over the slots already added |
+| `region(SkeletonRegion)`, `event(SkeletonEventData)`, `animation(SkeletonClip)` | region attachments and event keys index regions and events in the order added |
+| `skin(name)`, `attachment(skin: &str, slot: &str, name, SkeletonAttachment)` | declares a skin (the default always exists); puts an attachment in a skin's slot under a name |
+| `mix(from: &str, to: &str, seconds: f32)`, `default_mix(seconds: f32)` | mixes |
+| `bone_id(&self, name) -> Option<BoneId>`, `slot_id(&self, name) -> Option<SlotId>`, `region_index(&self, name) -> Option<usize>`, `event_index(&self, name) -> Option<usize>` | the ids and indices animations and attachments use |
+| `build(self) -> Result<SkeletonData, SkeletonError>` | checks everything and names the first thing wrong: `SkeletonError { item: String, problem: String }` (`Display`, `Error`) |
+
+- `BoneSetup { length, x, y, rotation, scale_x, scale_y, shear_x, shear_y: f32, inherit: BoneInherit }` (`Default`: at its parent's origin, unit scale, no length); `BoneData` has the same fields with `name: Arc<str>` and `parent: Option<BoneId>`. `enum BoneInherit { Normal (default), OnlyTranslation, NoRotationOrReflection, NoScale, NoScaleOrReflection }`. `BoneId(pub u8)` and `SlotId(pub u8)`: `index() -> usize`; a skeleton has at most 255 of each.
+- `SlotSetup { color: Color, attachment: Option<Arc<str>>, blend: SlotBlend }` (`Default`: white, no attachment, `Normal`); `SlotData` has the same fields with `name` and `bone: BoneId`. `enum SlotBlend { Normal (default), Additive, Multiply, Screen }`.
+- `SkeletonRegion { name: Arc<str>, image: Handle<Image>, x: u32, y: u32, width: u32, height: u32 }`: a named pixel rectangle of an image.
+- `enum SkeletonAttachment { Region(RegionAttachment), Point(PointAttachment), BoundingBox(BoundingBoxAttachment) }`. `RegionAttachment { region: usize, x, y, rotation, scale_x, scale_y, width, height: f32, color: Color }`: `new(region, width, height)` (centred on the bone, white). `PointAttachment { x, y, rotation: f32 }` (`Default`). `BoundingBoxAttachment { vertices: Vec<Vec2> }` (at least three).
+- `SkeletonSkin { name: Arc<str> }`: `attachment(slot: SlotId, name: &str) -> Option<&SkeletonAttachment>`, `attachments() -> impl Iterator<Item = (SlotId, &Arc<str>, &SkeletonAttachment)>`.
+- `SkeletonClip { name: Arc<str>, duration: f32, timelines: Vec<SkeletonTimeline> }`. `enum SkeletonTimeline`, a value key being `(time, value, SkeletonCurve)`: `Rotate { bone: BoneId, frames }` (`f32` radians), `Translate`, `Scale`, `Shear { bone, frames }` (`Vec2`), `TranslateX`, `TranslateY`, `ScaleX`, `ScaleY`, `ShearX`, `ShearY { bone, frames }` (`f32`), `Attachment { slot: SlotId, frames: Vec<(f32, Option<Arc<str>>)> }`, `Color { slot, frames }` (`Color`), `DrawOrder { frames: Vec<(f32, Option<Vec<SlotId>>)> }`, `Event { frames: Vec<(f32, usize, SkeletonEventValues)> }`; `kind() -> &'static str`. Bone keys are changes from the setup pose (scale a factor of it).
+- `enum SkeletonCurve { Linear (default), Stepped, Bezier { cx1, cy1, cx2, cy2 } }` (`cx1` and `cx2` within 0 to 1): `value(t: f32) -> f32`.
+- `SkeletonEventData { name: Arc<str>, int: i32, float: f32, string: Arc<str>, audio: Option<SkeletonEventAudio> }`: `new(name)`. `SkeletonEventValues { int: Option<i32>, float: Option<f32>, string: Option<Arc<str>>, volume: Option<f32>, balance: Option<f32> }` (`Default`): what an event key overrides.
+- The console command `debug:skeletons` (a development build) draws every skeleton's bones, region outlines, bounding boxes and points.
 
 ---
 

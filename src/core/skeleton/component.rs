@@ -337,8 +337,10 @@ impl Skeleton {
   /// motion: the skeleton's step runs after the scene's `update` in each
   /// fixed step (and its `SkeletonEvent`s likewise arrive in the next
   /// step's `update`). For the bone in the same step, use a
-  /// [`BoneSocket`](super::BoneSocket) or a system ordered after
-  /// `FixedSet::Skeletons`
+  /// [`BoneSocket`](super::BoneSocket), or a system ordered after
+  /// `FixedSet::Skeletons` and added with `EngineBuilder::add_systems`: a
+  /// scene's own `add_systems` runs its systems before the skeletons'
+  /// step, and refuses a call that names an engine set
   pub fn bone_world(&self, name: &str) -> Option<Affine2> {
     let bone = self.index.as_ref()?.bone_names.get(name)?;
     self.pose.world.get(bone.index()).copied()
@@ -459,7 +461,10 @@ impl Skeleton {
   /// with [`set_attachment`](Self::set_attachment) reads back here after
   /// the skeleton's next step. `None` when the slot shows nothing (it is
   /// hidden, or no skin worn has an attachment of that name for it), for a
-  /// slot the skeleton lacks, and until the data has loaded
+  /// slot the skeleton lacks, and until the data has loaded. The name is
+  /// the last step's, but whether a skin worn has it is looked up as this
+  /// is asked, so [`set_skins`](Self::set_skins) changes the answer at
+  /// once
   pub fn attachment(&self, slot: &str) -> Option<&str> {
     let slot = *self.index.as_ref()?.slot_names.get(slot)?;
     let name = self.pose.slot_attachments.get(slot.index())?.as_deref()?;
@@ -520,8 +525,9 @@ impl Skeleton {
   /// found. Read from a scene's `update`, it is as the skeleton's last step
   /// left it, one step behind that step's motion (see
   /// [`bone_world`](Self::bone_world)); for the same step, use a
-  /// [`BoneSocket`](super::BoneSocket) or a system ordered after
-  /// `FixedSet::Skeletons`
+  /// [`BoneSocket`](super::BoneSocket), or a system ordered after
+  /// `FixedSet::Skeletons` and added with `EngineBuilder::add_systems` (a
+  /// scene's own `add_systems` cannot order one there)
   pub fn point(&self, name: &str) -> Option<(Vec2, f32)> {
     self.shown(name).find_map(|(world, attachment)| {
       let Attachment::Point(point) = attachment else {
@@ -541,7 +547,9 @@ impl Skeleton {
   /// Read from a scene's `update`, the corners are as the skeleton's last
   /// step left them, one step behind that step's motion (see
   /// [`bone_world`](Self::bone_world)); for the same step, read them in a
-  /// system ordered after `FixedSet::Skeletons`
+  /// system ordered after `FixedSet::Skeletons` and added with
+  /// `EngineBuilder::add_systems` (a scene's own `add_systems` cannot
+  /// order one there)
   pub fn bounding_box(&self, name: &str, out: &mut Vec<Vec2>) -> bool {
     out.clear();
     let found = self

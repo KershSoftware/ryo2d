@@ -99,7 +99,10 @@ pub struct TrackEntry {
   /// entry takes its first step, so set it before then (as the entry is
   /// set or queued, while it waits in the queue, or while it is kept until
   /// the data lands): setting it after that step does nothing. To restore
-  /// a saved time, give it what [`track_time`](Self::track_time) gave
+  /// a saved time, give it what [`track_time`](Self::track_time) gave;
+  /// after a restore, read [`is_complete`](Self::is_complete) once the
+  /// entry has stepped, since an entry restored at or past its end sends
+  /// no `Complete`
   pub start: f32,
   id: TrackEntryId,
   name: Arc<str>,

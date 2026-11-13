@@ -185,11 +185,14 @@ Each stage gets its own plan, reviews and hand-play. The old module and its demo
 ## Public API and migration
 
 - **Removed:** every old export (`BoneDef`, `BoneTransform`, `BoneWorldTransform`, `Pose`, `SkeletalAnimation`, `SkeletalAnimator`, `SkeletalBlender`, `SkeletalController`, `Skeleton`, `SkeletonDef`, `draw_skeleton`), `update_skeletons` and its registration in `FixedSet::Juice`, and the old demo.
-- **Added to the prelude:**
-  - `SkeletonData` and its builder, `Skeleton`, `SkeletonAnimation`, `TrackEntry`, `MixBlend`, `BoneOverride`, `BoneSocket`;
+- **Added to the prelude** (the module's short, generic names are prefixed there, so they stay distinct from the rest of a flat prelude; the types keep their short names in `ryo2d::core::skeleton`):
+  - `SkeletonData` and its builder `SkeletonDataBuilder` (with `BoneSetup`, `SlotSetup` and `SkeletonError`), `Skeleton`, `SkeletonAnimation`, `BoneOverride` with `BoneSpace` (`Space`), `BoneSocket`;
+  - the animation state's `SkeletonTrackEntry` (`TrackEntry`), `SkeletonTrackEntryId` (`TrackEntryId`), `SkeletonTrackEventKind` (`TrackEventKind`) and `SkeletonMixBlend` (`MixBlend`);
   - `SkeletonEvent`, `SkeletonTrackEvent`;
-  - `Inherit`, and the attachment, region and curve types a builder needs.
-  - Exact names are settled in the plan, and kept consistent with the engine's naming.
+  - `BoneInherit` (`Inherit`), `BoneData`, `BoneId`, `SlotData`, `SlotId`, `SlotBlend`;
+  - `SkeletonAttachment` (`Attachment`) with `RegionAttachment`, `PointAttachment` and `BoundingBoxAttachment`, `SkeletonRegion` (`Region`), `SkeletonSkin` (`Skin`);
+  - `SkeletonClip` (`Animation`), `SkeletonTimeline` (`Timeline`), `SkeletonCurve` (`Curve`), `SkeletonEventData` (`EventData`), `SkeletonEventValues` (`EventValues`), `SkeletonEventAudio` (`EventAudio`);
+  - `SkeletonLoader`, with the other loaders.
 - The loader for `.skeleton.ron` is registered with the asset registry.
 - Tests that used the old module (`tests/e2e/gpu_world.rs` "Skeletal" scene) are replaced with tests of the new one.
 

@@ -62,15 +62,21 @@ Engine::frame
 │   │                 sync colliders, push, move characters, sync joints, step, read back, messages,
 │   │                 trigger contents
 │   ├─ Transforms     propagation, then the tile maps' floor lift
-│   ├─ Skeletons      no systems yet
+│   ├─ Skeletons      update_skeletons: each skeleton whose data is loaded, in entity order: its pose made
+│   │                 anew for new data, its animation state advanced and applied over the setup pose,
+│   │                 the game's attachments and bone overrides written over that, its bones placed under
+│   │                 its entity's GlobalTransform, its sockets and what is below them placed, then its
+│   │                 SkeletonEvents and SkeletonTrackEvents written
 │   ├─ Particles      step_particles: game-time emitters spawn, their particles move and die
 │   └─ Trails         trail point recording; later debug shapes last one frame
 ├─ settings           Engine::apply_settings: a changed Settings goes to the mixer, the window
 │                     request, vsync and the FPS overlay; Engine::save_settings: the changed
 │                     bindings, then the settings writer's debounced system.json write
 ├─ Update             UpdateSet::Game: the scenes' own Update schedules; builder systems by default
-├─ PostUpdate         tile maps' occluder sync, then Transforms (propagation) → Camera (shake on
-│                     real time, every CameraView)
+├─ PostUpdate         tile maps' occluder sync, then Transforms (propagation), then pose_new_skeletons
+│                     (a skeleton added this frame, or whose data landed or reloaded in it, is posed
+│                     where it stands and its sockets placed; a steady frame looks through none)
+│                     → Camera (shake on real time, every CameraView)
 │                     → Extract (parallax auto-scroll, timed effects, text reveals, unscaled particle
 │                     emitters on real time); after Camera,
 │                     audio_system: voice commands, mixer rebuilds, reloads, music, the listener
@@ -99,7 +105,7 @@ Engine::frame
 
 | In the world (resources) | Engine-owned (fields of `Engine`) |
 |--------------------------|-----------------------------------|
-| `Time`, `Input`, `ScreenMapping`, `AssetServer` and one `Assets<T>` per asset type, `AudioEngine` (kira's manager, the buses and the voices; `ctx.audio()`), `ParticleStore` (the emitters' pools, the live count and the budget; `ctx.particles()`), `SaveService` (the storage, the version chains and the save thread; `ctx.saves()`), `Settings` (the player's settings; `ctx.settings()`), `SettingsWriter` (when the game keeps settings), `EffectsManager`, `LightingSettings`, `Look`, `WindowRequest`, `CursorRequest`, `WindowInfo`, `RenderPipeline`, `RenderTargets`, `Fonts`, `TextIcons`, `TextEffects`, `Gpu` (after GPU init), `PhysicsPaused`, `PhysicsConfig`, `Physics`, `Console`, `ConsoleCommands` (with the dev tools), `FallbackErrorHandler`, `Messages<T>` per type | The window, the wgpu renderer (with the camera images), the sprite textures, the 2D batch and the lighting renderer, the camera uniforms, the draw list, the particle drawer, the tile drawer (`render/tiles.rs`; the padded tilesets it shares with map landings are the crate's `PaddedCache` resource), the text engine (layout cache), the UI's image sizes (`ImageSizes`, the image store's follower) and the frame's UI commands, the console's cursor override, debug config and overlays, dev windows, gilrs, capture state |
+| `Time`, `Input`, `ScreenMapping`, `AssetServer` and one `Assets<T>` per asset type, `AudioEngine` (kira's manager, the buses and the voices; `ctx.audio()`), `ParticleStore` (the emitters' pools, the live count and the budget; `ctx.particles()`), `SkeletonStore` (crate-internal: which scenes' skeletons are held, and the numbers the step and the sockets' placings take), `SaveService` (the storage, the version chains and the save thread; `ctx.saves()`), `Settings` (the player's settings; `ctx.settings()`), `SettingsWriter` (when the game keeps settings), `EffectsManager`, `LightingSettings`, `Look`, `WindowRequest`, `CursorRequest`, `WindowInfo`, `RenderPipeline`, `RenderTargets`, `Fonts`, `TextIcons`, `TextEffects`, `Gpu` (after GPU init), `PhysicsPaused`, `PhysicsConfig`, `Physics`, `Console`, `ConsoleCommands` (with the dev tools), `FallbackErrorHandler`, `Messages<T>` per type | The window, the wgpu renderer (with the camera images), the sprite textures, the 2D batch and the lighting renderer, the camera uniforms, the draw list, the particle drawer, the tile drawer (`render/tiles.rs`; the padded tilesets it shares with map landings are the crate's `PaddedCache` resource), the text engine (layout cache), the UI's image sizes (`ImageSizes`, the image store's follower) and the frame's UI commands, the console's cursor override, debug config and overlays, dev windows, gilrs, capture state |
 | Non-send `SceneHost` (the scene stack), taken out by the scene systems while they run | |
 
 - `init_world_resources` (`engine/mod.rs`) inserts the resources when the engine is built, windowed or headless; `Gpu` follows in `init_gpu`.
@@ -125,6 +131,7 @@ Engine::frame
 | `physics/` | Rapier integration, `RigidBody`, `Collider`, `Physics`, the character controller, one-way colliders, triggers, tile colliders |
 | `gameplay/` | On top of physics: `MoveIntent` and bindings, the platformer and top-down presets, knockback, trigger behaviours (`Pickup`, `KillZone`, `Checkpoint`, `Respawn`) |
 | `tilemap/` | Tile maps: the data model, the Tiled and LDtk readers (registry loaders), `MapRoot` and the landing on the map builder thread, `MapsView` (`ctx.maps()`) with edits and Wang terrain, map collision and occluders kept in step with the tiles, worlds, hot reload, padded tilesets; drawn by `render/tiles.rs`; `src/core/tilemap/AGENTS.md` |
+| `skeleton/` | Skeletal animation: `SkeletonData` and its builder and validation, the animation state (tracks, mixing, queues, events), `Skeleton` with its skins, attachments and bone overrides, `BoneSocket`, the fixed step and the frame's pose pass, scene holds (`SkeletonStore`), the region quads the entity drawer pushes as runs, the `debug:skeletons` overlay; the `.skeleton.ron` loader is `asset/loaders/skeleton.rs`; `src/core/skeleton/AGENTS.md` |
 | `particles/`, `trail/`, `navigation/`, `state_machine/` | Feature modules |
 | `text/` | Fonts (`Fonts`), `TextStyle`, rich text and markup, layout (Parley), glyph rasterization (swash, fdsm), effects, reveal, `Text2d` and `CpuText` for the dev windows; GPU-free |
 | `ui/` | `UiContext` and absolute drawing (`immediate/`); ids (`id.rs`), `UiMemory` (records, widget state, focus memory), layout over Taffy (`layout/`, the only Taffy code), the subtree and its resolution (`tree.rs`), containers, widgets (`widgets/`), popups and modals, the pointer and wheel resolve (`interact.rs`), focus and navigation (`nav.rs`), the theme (`theme/`), node trees (`nodes/`) and their cache (`nodes/cache.rs`, the records and the dirty set; `tape.rs`, what a build pushed and its replay; `fragment.rs`, the unchanged subtrees kept and copied), UI files (`file/`), virtual lists (`widgets/list.rs`, `nodes/list.rs`), the `debug:ui` and `debug:ui-rebuilds` overlays (`debug.rs`) |

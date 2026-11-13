@@ -139,7 +139,7 @@ fn main() -> EngineResult<()> {
 ### Rendering
 - **Sprites** — One GPU batch for sprites, particles, trails and lines, with z-ordering, per-sprite shaders, blend modes (alpha, additive, multiply, screen) and mipmapped textures
 - **Animation** — Sprite sheets and state machine controllers
-- **Skeletal Animation** — Bone hierarchies, per-bone keyframe tracks, crossfade blending, FSM controllers
+- **Skeletal Animation** — Cutout characters on bones, Spine-like: rigs in hot-reloading `.skeleton.ron` files or built in code, skins, crossfades, layered and additive tracks, queues, events as messages, items on bone sockets, bone overrides for aiming; drawn, sorted, lit and shadowed as sprites are
 - **Tweening** — Transform tweens, generic property tweens, sequences, 25 easing functions
 - **Parallax** — Layered scrolling backgrounds with infinite scroll, laid out for every camera
 - **2D Lighting** — Point lights, spotlights, volumetric effects, atmospheric scattering

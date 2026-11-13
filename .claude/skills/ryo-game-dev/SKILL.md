@@ -2,14 +2,14 @@
 name: ryo-game-dev
 description: Building games with Ryo2D - scenes, entities, queries, systems, resources, messages, time and input, logging (info!, warn!, warn_once! and the log file), a scene's console commands, and headless tests.
 metadata:
-  version: 2.12.0
+  version: 2.13.0
 ---
 
 # Ryo2D Game Developer
 
 You help users build complete games with Ryo2D: scenes on a stack, entities in one shared ECS world, systems in the engine's phases.
 
-**Complete signatures: the `ryo-api` skill.** Feature skills: `ryo-physics`, `ryo-character` (players, enemies, movement presets, pickups, kill zones, checkpoints, tile levels), `ryo-assets` (loading images, fonts, shaders, UI files, themes and audio; handles and hot reload), `ryo-animation`, `ryo-ui`, `ryo-text` (fonts, rich text, world text), `ryo-audio` (sound definitions, the mixer, volume settings, spatial sound, music), `ryo-tilemap` (levels from Tiled and LDtk: layers, objects, collision, editing, worlds), `ryo-particles`, `ryo-lighting`, `ryo-messages`, `ryo-config-save`, `ryo-console`, `ryo-controller`, `ryo-procgen`, `ryo-cli`.
+**Complete signatures: the `ryo-api` skill.** Feature skills: `ryo-physics`, `ryo-character` (players, enemies, movement presets, pickups, kill zones, checkpoints, tile levels), `ryo-assets` (loading images, fonts, shaders, UI files, themes and audio; handles and hot reload), `ryo-animation`, `ryo-skeleton` (characters made of parts on bones: rigs, crossfades and layers, events, items on bones, skins), `ryo-ui`, `ryo-text` (fonts, rich text, world text), `ryo-audio` (sound definitions, the mixer, volume settings, spatial sound, music), `ryo-tilemap` (levels from Tiled and LDtk: layers, objects, collision, editing, worlds), `ryo-particles`, `ryo-lighting`, `ryo-messages`, `ryo-config-save`, `ryo-console`, `ryo-controller`, `ryo-procgen`, `ryo-cli`.
 
 ## Project Setup
 
@@ -273,7 +273,7 @@ fn add_score(mut coins: MessageReader<CoinCollected>, mut score: ResMut<Score>) 
 ```
 
 - A message stays readable until two fixed steps have run after it was written, so per-frame and fixed-step readers both see it; each scene and each reader sees it once. Read a type in one place per scene.
-- Engine messages: `CollisionStarted`/`CollisionStopped` and `TriggerEntered`/`TriggerExited` (physics), `MovementEvent`, `PickedUp`, `Killed`, `CheckpointReached` (gameplay), `TweenStarted`/`TweenCompleted`, `KnockbackStarted`/`KnockbackFinished`, `SquashStretchStarted`/`SquashStretchFinished`, `ParticleCollision` and `EmitterFinished` (`ryo-particles`), `MapEvent` (a tile map landed, reloaded or failed: `ryo-tilemap`), `ChunkEvent` (a streamed map's chunk landed or unloaded: `ryo-tilemap`), and an `AssetEvent<T>` per asset type (`ryo-assets`). Details: `ryo-messages`.
+- Engine messages: `CollisionStarted`/`CollisionStopped` and `TriggerEntered`/`TriggerExited` (physics), `MovementEvent`, `PickedUp`, `Killed`, `CheckpointReached` (gameplay), `TweenStarted`/`TweenCompleted`, `KnockbackStarted`/`KnockbackFinished`, `SquashStretchStarted`/`SquashStretchFinished`, `ParticleCollision` and `EmitterFinished` (`ryo-particles`), `SkeletonEvent` and `SkeletonTrackEvent` (a skeleton's animation crossed an event key, or a track entry started, completed or ended: `ryo-skeleton`), `MapEvent` (a tile map landed, reloaded or failed: `ryo-tilemap`), `ChunkEvent` (a streamed map's chunk landed or unloaded: `ryo-tilemap`), and an `AssetEvent<T>` per asset type (`ryo-assets`). Details: `ryo-messages`.
 
 <!-- self: score: u32 -->
 <!-- given: player: Entity -->
