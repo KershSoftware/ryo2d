@@ -195,6 +195,8 @@ impl DemoPage for SocketsPage {
       &[
         "A sword on each weapon bone".to_string(),
         hit,
+        "The red box is a bounding-box attachment; the trail is an entity at the blade's tip"
+          .to_string(),
         "The right-hand hero is flipped".to_string(),
       ],
     );

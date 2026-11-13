@@ -443,7 +443,7 @@
   mixes: {
     default: 0.2,
     pairs: [
-      ("walk", "idle", 0.25), ("run", "idle", 0.3), ("run", "walk", 0.25),
+      ("walk", "idle", 0.25), ("run", "idle", 0.3), ("run", "walk", 0.25), ("walk", "run", 0.25),
       ("idle", "jump", 0.08), ("walk", "jump", 0.08), ("run", "jump", 0.08),
       ("jump", "idle", 0.15), ("jump", "walk", 0.15), ("jump", "run", 0.15),
       ("idle", "slash", 0.06), ("slash", "idle", 0.2),

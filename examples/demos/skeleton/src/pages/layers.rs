@@ -25,6 +25,10 @@ pub struct LayersPage {
   /// What the tracks were last asked to play
   playing_layer: Option<usize>,
   playing_base: usize,
+  /// The layer's own entry on track 1, which takes the alpha: a handle
+  /// finds its entry whether it is queued, playing or fading out, and
+  /// never the empty entry a fade plays
+  layer_entry: Option<SkeletonTrackEntryId>,
 }
 
 impl Default for LayersPage {
@@ -38,6 +42,7 @@ impl Default for LayersPage {
       on: true,
       playing_layer: None,
       playing_base: 0,
+      layer_entry: None,
     }
   }
 }
@@ -72,7 +77,7 @@ impl DemoPage for LayersPage {
     if let Some(mut state) = ctx.world.get_mut::<SkeletonAnimation>(hero) {
       state.set_animation(0, BASES[self.base].0, true);
       // The first entry on an empty track shows at once
-      state.set_animation(1, LAYERS[self.layer], true);
+      self.layer_entry = state.set_animation(1, LAYERS[self.layer], true);
     }
     self.playing_base = self.base;
     self.playing_layer = Some(self.layer);
@@ -95,12 +100,13 @@ impl DemoPage for LayersPage {
         match (wanted, self.playing_layer) {
           // Another layer: the track crossfades to it
           (Some(layer), Some(_)) => {
-            state.set_animation(1, LAYERS[layer], true);
+            self.layer_entry = state.set_animation(1, LAYERS[layer], true);
           }
           // In from nothing: an entry queued after an empty one mixes in
           (Some(layer), None) => {
             state.set_empty(1, 0.0);
-            if let Some(entry) = state.add_animation(1, LAYERS[layer], true, 0.0)
+            self.layer_entry = state.add_animation(1, LAYERS[layer], true, 0.0);
+            if let Some(entry) = self.layer_entry
               && let Some(entry) = state.entry_mut(entry)
             {
               entry.mix_duration = FADE;
@@ -111,7 +117,9 @@ impl DemoPage for LayersPage {
         }
         self.playing_layer = wanted;
       }
-      if let Some(entry) = state.current(1)
+      // The alpha goes on the layer's own entry, from the step it is made
+      // in (a queued entry has it before it starts) and while it fades out
+      if let Some(entry) = self.layer_entry
         && let Some(entry) = state.entry_mut(entry)
       {
         entry.alpha = self.alpha;

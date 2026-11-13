@@ -180,7 +180,10 @@ impl DemoPage for AimingPage {
       ui,
       &[
         aim.to_string(),
-        format!("Arm mix {:.1}, head mix {:.1}", self.arm, self.head),
+        format!(
+          "Arm mix {:.1}, head mix {:.1} (0: the animated pose, 1: the override)",
+          self.arm, self.head
+        ),
         hero::track_line(ctx, hero, 0),
       ],
     );

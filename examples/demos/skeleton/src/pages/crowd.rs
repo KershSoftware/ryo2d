@@ -1,5 +1,6 @@
 //! Crowd: two hundred heroes at once (or fifty to four hundred), each its
-//! own skeleton with its own skins, animation and pace, sorted by their feet
+//! own skeleton with its own skins, animation and pace, started somewhere
+//! of its own in its animation, and sorted by their feet
 
 use demo_kit::prelude::*;
 
@@ -13,11 +14,6 @@ const SIZE: f32 = 0.2;
 const FIELD: f32 = 230.0;
 /// How far past an edge a hero walks before it comes in at the other
 const MARGIN: f32 = 50.0;
-
-/// A hero that crosses the field: how fast, in pixels a second (negative
-/// to the left)
-#[derive(Component)]
-struct Crossing(f32);
 
 /// A small repeatable generator, so the crowd is the same each time
 struct Dice(u32);
@@ -34,9 +30,20 @@ impl Dice {
   }
 }
 
+/// How long the animation called `name` lasts, in seconds
+fn length(ctx: &mut SceneContext, data: &Handle<SkeletonData>, name: &str) -> f32 {
+  let assets = ctx.assets();
+  let clip = assets.get(data).and_then(|data| data.animation(name));
+  clip.map_or(0.0, |clip| clip.duration)
+}
+
 pub struct CrowdPage {
   data: Option<Handle<SkeletonData>>,
   heroes: Vec<Entity>,
+  /// The heroes that cross the field, each with how fast, in pixels a
+  /// second (negative to the left). Kept here, so a step walks this list
+  /// and builds nothing
+  crossing: Vec<(Entity, f32)>,
   /// Setting: which of `COUNTS`
   count: usize,
   spawned: Option<usize>,
@@ -47,6 +54,7 @@ impl Default for CrowdPage {
     Self {
       data: None,
       heroes: Vec::new(),
+      crossing: Vec::new(),
       count: 2,
       spawned: None,
     }
@@ -62,7 +70,11 @@ impl CrowdPage {
     for hero in self.heroes.drain(..) {
       ctx.world.despawn(hero);
     }
+    self.crossing.clear();
     let mut dice = Dice(7);
+    // The starts come from a generator of their own, so the crowd's places
+    // and looks are the same whatever the starts
+    let mut phase = Dice(11);
     for _ in 0..COUNTS[self.count].0 {
       let at = Vec2::new(
         dice.roll() * CANVAS.x,
@@ -93,14 +105,23 @@ impl CrowdPage {
       let pace = 0.8 + dice.roll() * 0.4;
       let left = dice.below(2) == 0;
       let waves = speed == 0.0 && dice.below(3) == 0;
+      // Out of step with the others from the first frame: each entry starts
+      // somewhere of its own in its loop. The pace alone would take many
+      // loops to pull a crowd apart
+      let start = phase.roll() * length(ctx, &data, animation);
+      let wave_start = phase.roll() * length(ctx, &data, "wave");
       if let Some(mut state) = ctx.world.get_mut::<SkeletonAnimation>(hero) {
         if let Some(entry) = state.set_animation(0, animation, true)
           && let Some(entry) = state.entry_mut(entry)
         {
+          entry.start = start;
           entry.speed = pace;
         }
-        if waves {
-          state.set_animation(1, "wave", true);
+        if waves
+          && let Some(entry) = state.set_animation(1, "wave", true)
+          && let Some(entry) = state.entry_mut(entry)
+        {
+          entry.start = wave_start;
         }
       }
       if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(hero) {
@@ -108,10 +129,7 @@ impl CrowdPage {
       }
       if speed > 0.0 {
         let heading = if left { -1.0 } else { 1.0 };
-        ctx
-          .world
-          .entity_mut(hero)
-          .insert(Crossing(heading * speed * pace * SIZE));
+        self.crossing.push((hero, heading * speed * pace * SIZE));
       }
       self.heroes.push(hero);
     }
@@ -144,22 +162,26 @@ impl DemoPage for CrowdPage {
       self.fill(ctx);
     }
     // Those crossing the field walk on, and come in again at the far side
-    let mut wrapped = Vec::new();
-    let mut crossing = ctx.world.query::<(Entity, &mut Transform, &Crossing)>();
-    for (hero, mut transform, crossing) in crossing.iter_mut(ctx.world) {
-      let mut x = transform.translation.x + crossing.0 * dt;
-      if x > CANVAS.x + MARGIN {
+    for &(hero, speed) in &self.crossing {
+      let Some(mut transform) = ctx.world.get_mut::<Transform>(hero) else {
+        continue;
+      };
+      let mut x = transform.translation.x + speed * dt;
+      let wrapped = if x > CANVAS.x + MARGIN {
         x = -MARGIN;
-        wrapped.push(hero);
+        true
       } else if x < -MARGIN {
         x = CANVAS.x + MARGIN;
-        wrapped.push(hero);
-      }
+        true
+      } else {
+        false
+      };
       transform.translation.x = x;
-    }
-    // A hero that went round is drawn where it is, not sliding back across
-    for hero in wrapped {
-      ctx.skip_interpolation(hero);
+      // A hero that went round is drawn where it is, not sliding back
+      // across
+      if wrapped {
+        ctx.skip_interpolation(hero);
+      }
     }
   }
 

@@ -51,8 +51,7 @@ fn hero(engine: &mut HeadlessEngine) -> Entity {
 /// The animation playing on `track` of `hero`
 fn playing(engine: &HeadlessEngine, hero: Entity, track: usize) -> Option<String> {
   let state = engine.world().get::<SkeletonAnimation>(hero)?;
-  let entry = state.entry(state.current(track)?)?;
-  Some(entry.animation().to_owned())
+  state.animation(track).map(str::to_owned)
 }
 
 fn bone(engine: &HeadlessEngine, hero: Entity, name: &str) -> Affine2 {
@@ -187,6 +186,11 @@ fn the_character_idles_walks_runs_turns_and_jumps_on_keys() {
   engine.press_key(KeyCode::ShiftLeft);
   engine.step_frames(30).unwrap();
   assert_eq!(playing(&engine, hero, 0).as_deref(), Some("run"));
+  // Walk to run mixes over the pair's own time in the file, as run to walk
+  // does, not the default
+  let state = engine.world().get::<SkeletonAnimation>(hero).unwrap();
+  let run = state.entry(state.current(0).unwrap()).unwrap();
+  assert_eq!(run.mix_duration, 0.25);
   let ran = x(&engine) - start - walked;
   assert!(ran > walked, "running is faster: {ran} against {walked}");
 
@@ -242,6 +246,20 @@ fn the_layers_page_plays_a_second_track_over_the_walk_at_its_alpha() {
   engine.step_frames(60).unwrap();
   assert_eq!(playing(&engine, hero, 1), None);
   assert_eq!(playing(&engine, hero, 0).as_deref(), Some("walk"));
+
+  // Space again fades it in, at the alpha set, from the step it starts in
+  engine.tap_key(KeyCode::Space);
+  for _ in 0..5 {
+    engine.step().unwrap();
+    if playing(&engine, hero, 1).is_some() {
+      break;
+    }
+  }
+  assert_eq!(playing(&engine, hero, 1).as_deref(), Some("aim"));
+  assert!(
+    alpha(&engine) < 1.0,
+    "the layer starts at the alpha set, not at full"
+  );
 }
 
 #[test]
@@ -323,7 +341,23 @@ fn the_skins_page_changes_outfit_and_puts_the_hat_on_and_off() {
     return;
   };
   engine.step_frames(20).unwrap();
+  let hero = hero(&mut engine);
+  // What the skeleton says it wears, and what its hat's slot shows
+  fn worn(engine: &HeadlessEngine, hero: Entity) -> Vec<&str> {
+    engine
+      .world()
+      .get::<Skeleton>(hero)
+      .unwrap()
+      .skins()
+      .collect()
+  }
+  let hat = |engine: &HeadlessEngine| {
+    let skeleton = engine.world().get::<Skeleton>(hero).unwrap();
+    skeleton.attachment("hat").map(str::to_owned)
+  };
   // The page opens on the ranger with the hat on
+  assert_eq!(worn(&engine, hero), ["ranger", "hat"]);
+  assert_eq!(hat(&engine).as_deref(), Some("hat"));
   assert!(pixels_near(&mut engine, CAP, 6) > 200, "the hat is on");
   assert!(
     pixels_near(&mut engine, GREEN, 6) > 200,
@@ -335,6 +369,7 @@ fn the_skins_page_changes_outfit_and_puts_the_hat_on_and_off() {
   engine.step_frames(2).unwrap();
   engine.tap_key(KeyCode::ArrowRight);
   engine.step_frames(5).unwrap();
+  assert_eq!(worn(&engine, hero), ["sailor", "hat"]);
   assert_eq!(pixels_near(&mut engine, GREEN, 6), 0, "another outfit");
   assert!(pixels_near(&mut engine, CAP, 6) > 200, "the hat stays on");
 
@@ -342,6 +377,10 @@ fn the_skins_page_changes_outfit_and_puts_the_hat_on_and_off() {
   engine.step_frames(2).unwrap();
   engine.tap_key(KeyCode::ArrowRight);
   engine.step_frames(5).unwrap();
+  // Without the hat's skin its slot shows nothing: no skin worn has the
+  // attachment the slot names
+  assert_eq!(worn(&engine, hero), ["sailor"]);
+  assert_eq!(hat(&engine), None);
   assert_eq!(pixels_near(&mut engine, CAP, 6), 0, "the hat is off");
 }
 
@@ -385,4 +424,34 @@ fn the_crowd_page_animates_two_hundred_heroes() {
   animations.sort();
   animations.dedup();
   assert!(animations.len() >= 3, "varied animations: {animations:?}");
+}
+
+#[test]
+fn the_crowd_starts_out_of_step() {
+  let Some(mut engine) = engine_on(CROWD) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  let heroes = heroes(&mut engine);
+  // How far through its loop each idling hero is as the page opens: the
+  // idle lasts two seconds
+  let phases: Vec<f32> = heroes
+    .iter()
+    .filter_map(|&hero| {
+      let state = engine.world().get::<SkeletonAnimation>(hero)?;
+      let entry = state.entry(state.current(0)?)?;
+      (entry.animation() == "idle").then(|| (entry.track_time() / 2.0).fract())
+    })
+    .collect();
+  assert!(phases.len() > 20, "idlers: {}", phases.len());
+  // Each starts somewhere of its own in the loop: there are idlers in
+  // every quarter of it
+  for quarter in 0..4 {
+    let from = quarter as f32 * 0.25;
+    let within = phases
+      .iter()
+      .filter(|&&phase| phase >= from && phase < from + 0.25)
+      .count();
+    assert!(within > 0, "no idler in quarter {quarter}: {phases:?}");
+  }
 }

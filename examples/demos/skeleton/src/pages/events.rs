@@ -12,7 +12,7 @@ use crate::hero::{self, GROUND, Patrol, RUN_SPEED, SCALE, WALK_SPEED};
 /// The gaits, and how fast each carries the hero
 const GAITS: [(&str, f32); 2] = [("walk", WALK_SPEED), ("run", RUN_SPEED)];
 /// The events the readout keeps
-const LOG: usize = 7;
+const LOG: usize = 6;
 
 pub struct EventsPage {
   hero: Option<Entity>,
@@ -225,7 +225,12 @@ impl DemoPage for EventsPage {
   }
 
   fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
-    let mut lines = vec![format!("{} events", self.count)];
+    let mut lines = vec![
+      format!("{} events", self.count),
+      // What the description's second line says, which the shell does not
+      // show
+      "The page plays each sound from its event's path; the engine plays none itself".to_string(),
+    ];
     lines.extend(self.log.iter().cloned());
     hero::readout(ui, &lines);
   }
