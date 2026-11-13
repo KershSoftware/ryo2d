@@ -1650,6 +1650,12 @@ impl Engine {
     self.ui_renderer.as_ref()
   }
 
+  /// The last frame's draw list, in draw order
+  #[cfg(test)]
+  pub(crate) fn draw_list(&self) -> &DrawList {
+    &self.draw_list
+  }
+
   /// The lighting renderer, once the renderers exist (tests)
   #[cfg(test)]
   pub(crate) fn lighting(&self) -> Option<&LightingRenderer> {

@@ -3,7 +3,7 @@
 //! each frame: a skeleton with no pose yet gets one. The module notes give
 //! the order and the rules.
 
-use super::component::{Fired, Skeleton};
+use super::component::{Fired, Flip, Skeleton, Stand};
 use super::data::{DataVersion, SkeletonData};
 use super::event::{SkeletonEvent, SkeletonTrackEvent};
 use super::scope::SkeletonStore;
@@ -11,8 +11,8 @@ use super::socket::{BoneSocket, FoundBone, SocketState};
 use super::state::SkeletonAnimation;
 use crate::core::asset::Assets;
 use crate::core::ecs::{
-  Children, DetectChangesMut, Entity, GlobalTransform, Has, Local, MessageWriter, Mut,
-  PreviousGlobalTransform, Query, Res, ResMut, Transform, entity_order,
+  Changed, Children, DetectChangesMut, Entity, GlobalTransform, Has, Local, MessageWriter, Mut,
+  ParamSet, PreviousGlobalTransform, Query, Renderable, Res, ResMut, Transform, entity_order,
 };
 use crate::core::particles::ParticleEmitter;
 use crate::core::time::Time;
@@ -25,8 +25,14 @@ type Skeletons<'w, 's> = Query<
     &'static mut Skeleton,
     Option<&'static mut SkeletonAnimation>,
     Option<&'static Children>,
+    Option<&'static Renderable>,
   ),
 >;
+
+/// The skeletons whose `Renderable` changed since the frame's pass last
+/// ran: one of them may have been flipped
+type Redressed<'w, 's> =
+  Query<'w, 's, (&'static Skeleton, &'static Renderable), Changed<Renderable>>;
 
 /// Whatever a socket's placing can move: the socket, and everything below
 /// it
@@ -67,9 +73,10 @@ pub(crate) struct StepState {
 /// particles). Each enabled skeleton whose data has loaded, in entity
 /// order: its animation state advances by the step and poses it, the
 /// game's attachments and bone overrides are put over that, its bones'
-/// world transforms are computed under its entity's, its sockets (and what
-/// is below them) are placed on their bones, and its events and track
-/// events are written. One whose data is still loading waits, silently
+/// world transforms are computed under its entity's (mirrored as its
+/// `Renderable` flips it), its sockets (and what is below them) are placed
+/// on their bones, and its events and track events are written. One whose
+/// data is still loading waits, silently
 #[allow(clippy::too_many_arguments)] // a resource, query or writer per input
 pub(crate) fn update_skeletons(
   time: Option<Res<Time>>,
@@ -86,6 +93,8 @@ pub(crate) fn update_skeletons(
     return;
   };
   let dt = time.fixed.timestep();
+  // The step's number, which each skeleton it steps keeps
+  let number = store.as_mut().map(|store| store.next_step());
   let StepState {
     order,
     fired,
@@ -99,7 +108,8 @@ pub(crate) fn update_skeletons(
   order.sort_unstable();
   moved.clear();
   for &(_, entity) in order.iter() {
-    let Ok((entity, mut skeleton, animation, children)) = skeletons.get_mut(entity) else {
+    let Ok((entity, mut skeleton, animation, children, renderable)) = skeletons.get_mut(entity)
+    else {
       continue;
     };
     // A skeleton whose scene is stopped under another is frozen with it:
@@ -122,7 +132,17 @@ pub(crate) fn update_skeletons(
     fired.events.clear();
     fired.track_events.clear();
     let animation = animation.map(Mut::into_inner);
-    skeleton.step(rig, (id, version), animation, dt, root.affine(), fired);
+    let stand = Stand {
+      root: root.affine(),
+      flip: Flip::of(renderable),
+    };
+    // Flipped since its last pose, its sockets land across it: they do not
+    // travel there
+    let turned = skeleton.seen().is_some() && skeleton.flip() != stand.flip;
+    skeleton.step(rig, (id, version), animation, dt, stand, fired);
+    if let Some(number) = number {
+      skeleton.took_step(number);
+    }
     skeleton.new_placing(store.as_mut().map(|store| store.next_placing()));
     let mut sockets = Sockets {
       placed: &mut placed,
@@ -131,7 +151,7 @@ pub(crate) fn update_skeletons(
       entity,
       seen: (id, version),
       root,
-      teleported,
+      teleported: teleported || turned,
       stood: skeleton.placings(),
       warn: true,
     };
@@ -173,15 +193,19 @@ pub(crate) struct AppearState {
 /// and nothing is sent before a step runs ([`Skeleton::appear`]). A held
 /// skeleton gets its pose too. And a socket added to a skeleton that has
 /// its pose is put on its bone, where it would otherwise sit at its own
-/// transform until the next step.
+/// transform until the next step. And a skeleton flipped since its last
+/// pose (its `Renderable`'s `flip_x` or `flip_y`) has its bones and
+/// sockets placed the new way round, as a flipped sprite shows at once.
 ///
 /// The pass looks through the skeletons only in a frame since whose last
 /// look a skeleton or a socket was added or the store of their data gave a
-/// version: any other frame it compares two counts and returns
+/// version, or in which a skeleton's `Renderable`, changed since the last
+/// frame, flips it another way than it is posed: any other frame it
+/// compares two counts, finds no such renderable and returns
 pub(crate) fn pose_new_skeletons(
   data: Option<Res<Assets<SkeletonData>>>,
   store: Option<ResMut<SkeletonStore>>,
-  mut skeletons: Skeletons,
+  mut queries: ParamSet<(Skeletons, Redressed)>,
   mut placed: Placed,
   mut state: Local<AppearState>,
 ) {
@@ -193,9 +217,14 @@ pub(crate) fn pose_new_skeletons(
   let now = store
     .as_ref()
     .map(|store| (store.additions(), data.versions_given()));
-  if now.is_some() && state.looked_at == now {
+  // One with a pose, flipped another way since
+  let flipped = queries.p1().iter().any(|(skeleton, renderable)| {
+    skeleton.seen().is_some() && skeleton.flip() != Flip::of(Some(renderable))
+  });
+  if now.is_some() && state.looked_at == now && !flipped {
     return;
   }
+  let mut skeletons = queries.p0();
   crate::profile_scope!("cpu:skeletons");
   let AppearState {
     looked_at,
@@ -207,7 +236,7 @@ pub(crate) fn pose_new_skeletons(
     store.looked();
   }
   moved.clear();
-  for (entity, mut skeleton, animation, children) in &mut skeletons {
+  for (entity, mut skeleton, animation, children, renderable) in &mut skeletons {
     let id = skeleton.data().id();
     let (Some(version), Some(rig)) = (data.version(id), data.get(id)) else {
       continue;
@@ -215,15 +244,29 @@ pub(crate) fn pose_new_skeletons(
     let Some((root, teleported)) = standing(&placed, entity) else {
       continue;
     };
+    let stand = Stand {
+      root: root.affine(),
+      flip: Flip::of(renderable),
+    };
     // One with its pose already keeps it; its sockets are placed on it, so
     // one added since the last step is on its bone (the rest stand where
     // they stood). Its placing is the same one, which only they stood in
     let mut stood = skeleton.placings();
+    let mut turned = false;
     if skeleton.seen() == Some((id, version)) {
+      if skeleton.flip() != stand.flip {
+        // Flipped with no step to pose it again: its bones are placed the
+        // new way round as they are posed, and its sockets land across it
+        skeleton.place_again(rig, stand);
+        turned = true;
+      }
       stood[1] = stood[0];
     } else {
       let animation = animation.map(Mut::into_inner);
-      skeleton.appear(rig, (id, version), animation, root.affine());
+      skeleton.appear(rig, (id, version), animation, stand);
+      if let Some(store) = &store {
+        skeleton.posed_after(store.step());
+      }
       skeleton.new_placing(store.as_mut().map(|store| store.next_placing()));
       stood = skeleton.placings();
     }
@@ -234,7 +277,7 @@ pub(crate) fn pose_new_skeletons(
       entity,
       seen: (id, version),
       root,
-      teleported,
+      teleported: teleported || turned,
       stood,
       warn: true,
     };
@@ -263,7 +306,7 @@ fn place_moved(
   let mut next = 0;
   while let Some(&entity) = moved.get(next).filter(|_| next < most) {
     next += 1;
-    let Ok((entity, mut skeleton, _, children)) = skeletons.get_mut(entity) else {
+    let Ok((entity, mut skeleton, _, children, _)) = skeletons.get_mut(entity) else {
       continue;
     };
     let id = skeleton.data().id();
@@ -277,7 +320,11 @@ fn place_moved(
     if skeleton.seen() != Some((id, version)) || skeleton.root() == root.affine() {
       continue;
     }
-    skeleton.place_again(rig, root.affine());
+    let stand = Stand {
+      root: root.affine(),
+      flip: skeleton.flip(),
+    };
+    skeleton.place_again(rig, stand);
     let mut sockets = Sockets {
       placed: &mut *placed,
       walk: &mut *walk,

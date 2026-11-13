@@ -9,8 +9,8 @@ use crate::core::ecs::{Allow, Disabled, Resource, World};
 /// What the world keeps of its skeletons as a whole: the scene whose code
 /// runs, which a skeleton added now belongs to, the scenes held, how many
 /// skeletons and sockets have been added, which tells the frame's pass
-/// when there may be one without a pose or a place, and the number of the
-/// last placing
+/// when there may be one without a pose or a place, the number of the
+/// last placing, and the number of the last fixed step
 #[derive(Resource, Debug, Default)]
 pub(crate) struct SkeletonStore {
   /// The scene whose code runs now; `None` is the engine's own code
@@ -25,6 +25,8 @@ pub(crate) struct SkeletonStore {
   /// How many times a skeleton has been posed anew for its sockets to be
   /// placed on
   placings: u64,
+  /// How many fixed steps the skeletons' step has run
+  steps: u64,
 }
 
 impl SkeletonStore {
@@ -50,6 +52,20 @@ impl SkeletonStore {
   pub(crate) fn next_placing(&mut self) -> u64 {
     self.placings += 1;
     self.placings
+  }
+
+  /// A fixed step of the skeletons begins: its number, from 1. A skeleton
+  /// keeps the number of its last step, which tells a step that follows
+  /// on from one that follows a step it missed, and a skeleton drawn
+  /// between its last two steps from one that stands still
+  pub(crate) fn next_step(&mut self) -> u64 {
+    self.steps += 1;
+    self.steps
+  }
+
+  /// The number of the last fixed step (0: none yet)
+  pub(crate) fn step(&self) -> u64 {
+    self.steps
   }
 
   /// The frame's pass looked through the skeletons for one without a pose

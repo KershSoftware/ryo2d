@@ -1764,3 +1764,173 @@ fn two_cameras_share_one_atlas() {
     );
   }
 }
+
+/// A skeleton whose five slots, back to front, show: two regions of one
+/// image, one of another, a second of that one that adds light, and a
+/// third of the first image
+fn banded_skeleton(world: &mut World) -> Handle<SkeletonData> {
+  use crate::core::skeleton::{Attachment, Region, RegionAttachment};
+  use std::sync::Arc;
+  let mut images = world.resource_mut::<Assets<Image>>();
+  let first = images.add(Image::solid_rect(16, 8, 220, 30, 40, 255));
+  let second = images.add(Image::solid_rect(8, 8, 40, 200, 60, 255));
+  let slots = [
+    ("a", 0, SlotBlend::Normal),
+    ("b", 1, SlotBlend::Normal),
+    ("c", 2, SlotBlend::Normal),
+    ("d", 2, SlotBlend::Additive),
+    ("e", 0, SlotBlend::Normal),
+  ];
+  let mut builder = SkeletonData::builder()
+    .bone("root", None, BoneSetup::default())
+    .region(Region {
+      name: Arc::from("left"),
+      image: first.clone(),
+      x: 0,
+      y: 0,
+      width: 8,
+      height: 8,
+    })
+    .region(Region {
+      name: Arc::from("right"),
+      image: first,
+      x: 8,
+      y: 0,
+      width: 8,
+      height: 8,
+    })
+    .region(Region {
+      name: Arc::from("other"),
+      image: second,
+      x: 0,
+      y: 0,
+      width: 8,
+      height: 8,
+    });
+  for (index, (name, region, blend)) in slots.into_iter().enumerate() {
+    let setup = SlotSetup {
+      attachment: Some(Arc::from(name)),
+      blend,
+      ..SlotSetup::default()
+    };
+    let shown = RegionAttachment {
+      x: index as f32 * 10.0,
+      ..RegionAttachment::new(region, 8.0, 8.0)
+    };
+    builder = builder.slot(name, "root", setup).attachment(
+      SkeletonData::DEFAULT_SKIN,
+      name,
+      name,
+      Attachment::Region(shown),
+    );
+  }
+  let data = builder.build().expect("a valid skeleton");
+  world.resource_mut::<Assets<SkeletonData>>().add(data)
+}
+
+#[test]
+fn a_skeleton_s_regions_are_entity_runs_split_where_the_image_or_blend_changes() {
+  use crate::core::render::{DrawKind, DrawPayload};
+  let scene = Fixture { setup: |_| {} };
+  let Some(mut engine) = engine(EngineBuilder::new().resolution(120, 90).start_scene(scene)) else {
+    return;
+  };
+  // A sprite, the skeleton and another sprite in entity order at one z
+  let world = engine.world_mut();
+  let plain = world
+    .resource_mut::<Assets<Image>>()
+    .add(Image::solid_rect(4, 4, 255, 255, 255, 255));
+  let sprite = |world: &mut World| {
+    world.spawn((
+      Transform::from_xy(20.0, 60.0),
+      Renderable::image(plain.clone()),
+    ));
+  };
+  sprite(world);
+  let data = banded_skeleton(world);
+  let hero = world
+    .spawn((
+      Transform::from_xy(30.0, 30.0),
+      Skeleton::new(data),
+      Renderable::skeleton(),
+    ))
+    .id();
+  sprite(world);
+  engine.step_frames(2).unwrap();
+
+  // What the frame drew, in order: each item's kind, and for a run its
+  // texture, blend and how many quads
+  type Drawn = (DrawKind, Option<(u8, BlendMode, usize)>);
+  let drawn = |engine: &HeadlessEngine| -> Vec<Drawn> {
+    let list = engine.engine.draw_list();
+    let mut textures = Vec::new();
+    let items = list.items().iter().map(|item| {
+      let run = match item.payload {
+        DrawPayload::Run(index) => list.run(index).map(|run| {
+          let texture = match textures.iter().position(|&seen| seen == run.texture) {
+            Some(known) => known,
+            None => {
+              textures.push(run.texture);
+              textures.len() - 1
+            }
+          };
+          (texture as u8, run.blend, list.run_quads(run).len())
+        }),
+        _ => None,
+      };
+      (item.kind, run)
+    });
+    items.collect()
+  };
+  let (entity, alpha, additive) = (DrawKind::Entity, BlendMode::Alpha, BlendMode::Additive);
+  // The five regions as four runs, every one an entity item, between the
+  // two sprites: a and b of the first image together, c of the second, d
+  // of the second adding light, and e of the first again
+  assert_eq!(
+    drawn(&engine),
+    [
+      (entity, None),
+      (entity, Some((0, alpha, 2))),
+      (entity, Some((1, alpha, 1))),
+      (entity, Some((1, additive, 1))),
+      (entity, Some((0, alpha, 1))),
+      (entity, None),
+    ]
+  );
+  assert_eq!(engine.engine.draw_list().sprite_count(), 2);
+
+  // With a drop shadow, the shadows first: they blend over what is below
+  // whatever their region's blend, so c's and d's are one run
+  let mut renderable = engine.world_mut().get_mut::<Renderable>(hero).unwrap();
+  renderable.drop_shadow = Some(DropShadow::new());
+  engine.step_frames(1).unwrap();
+  assert_eq!(
+    drawn(&engine),
+    [
+      (entity, None),
+      (entity, Some((0, alpha, 2))),
+      (entity, Some((1, alpha, 2))),
+      (entity, Some((0, alpha, 1))),
+      (entity, Some((0, alpha, 2))),
+      (entity, Some((1, alpha, 1))),
+      (entity, Some((1, additive, 1))),
+      (entity, Some((0, alpha, 1))),
+      (entity, None),
+    ]
+  );
+
+  // Out of every camera's view it submits nothing, and neither does a
+  // skeleton that is not visible
+  engine
+    .world_mut()
+    .get_mut::<Transform>(hero)
+    .unwrap()
+    .translation = Vec2::new(5000.0, 5000.0);
+  engine.step_frames(1).unwrap();
+  assert_eq!(drawn(&engine), [(entity, None), (entity, None)]);
+  let world = engine.world_mut();
+  world.get_mut::<Transform>(hero).unwrap().translation = Vec2::new(30.0, 30.0);
+  world.get_mut::<Renderable>(hero).unwrap().visible = false;
+  engine.step_frames(1).unwrap();
+  assert_eq!(drawn(&engine), [(entity, None), (entity, None)]);
+}

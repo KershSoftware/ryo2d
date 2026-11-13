@@ -38,7 +38,8 @@ pub(crate) enum DrawPayload {
   Glyph(usize),
   /// Index into the list's tile chunks
   Chunk(usize),
-  /// Index into the list's runs (an emitter's particles)
+  /// Index into the list's runs (an emitter's particles, or a stretch of
+  /// a skeleton's regions)
   Run(usize),
 }
 
@@ -177,9 +178,11 @@ pub(crate) struct DrawChunk {
 }
 
 /// A run of quads of one texture and look, waiting to be drawn: an
-/// emitter's particles. Sorts as one sprite item; its instances, world-space
-/// quads in the list's run instances, are placed in the texture's atlas slot
-/// one after another when the batch is prepared.
+/// emitter's particles, or the regions a skeleton draws one after another
+/// from one image with one blend. Sorts as one item (a sprite for
+/// particles, an entity for a skeleton's); its instances, world-space quads
+/// in the list's run instances, are placed in the texture's atlas slot one
+/// after another when the batch is prepared.
 #[derive(Debug, Clone)]
 pub(crate) struct DrawRun {
   pub(crate) texture: TextureId,
@@ -338,9 +341,22 @@ impl DrawList {
   /// Add a run at `z`, sorted as one sprite item, for the cameras on its
   /// layers that see its box; `lit` ones draw before lighting.
   pub(crate) fn push_run(&mut self, lit: bool, z: i32, run: DrawRun) {
+    self.push_run_as(DrawKind::Sprite, lit, z, run);
+  }
+
+  /// Add a run at `z`, sorted as one item of `kind` in the order pushed: an
+  /// entity's run (a skeleton's regions) takes its entity's place among
+  /// the entities' draws, where a sprite's follows every entity at its z.
+  pub(crate) fn push_run_as(&mut self, kind: DrawKind, lit: bool, z: i32, run: DrawRun) {
     let payload = DrawPayload::Run(self.runs.len());
     self.runs.push(run);
-    self.push_item(lit, z, DrawKind::Sprite, payload, None);
+    self.push_item(lit, z, kind, payload, None);
+  }
+
+  /// Forget the run instances from the `start`-th on: a run a drawer added
+  /// and then did not push (no camera sees it).
+  pub(crate) fn drop_run_instances(&mut self, start: usize) {
+    self.run_instances.truncate(start);
   }
 
   /// How many glyphs the frame holds
@@ -859,6 +875,45 @@ mod tests {
       list.run_textures().collect::<Vec<_>>(),
       [TextureId::for_test(7)]
     );
+  }
+
+  #[test]
+  fn an_entity_s_run_takes_its_place_among_the_entities() {
+    let mut list = DrawList::default();
+    // A particle run first, then an entity, a skeleton's run and another
+    // entity, all at z 0, and an entity at z 1
+    let run = || run_item(RenderLayers::default(), Vec2::ZERO, Vec2::ONE);
+    list.push_run(true, 0, run());
+    push(&mut list, DrawKind::Entity, 1, 0);
+    push(&mut list, DrawKind::Entity, 0, 1);
+    list.push_run_as(DrawKind::Entity, true, 0, run());
+    push(&mut list, DrawKind::Entity, 0, 2);
+
+    list.sorted();
+
+    // The entity's run draws between the two entities it was pushed
+    // between, where the particles' follows every entity at their z
+    let order: Vec<_> = list
+      .items()
+      .iter()
+      .map(|item| (item.z, item.kind, item.payload))
+      .collect();
+    assert_eq!(
+      order,
+      [
+        (0, DrawKind::Entity, DrawPayload::Sprite(1)),
+        (0, DrawKind::Entity, DrawPayload::Run(1)),
+        (0, DrawKind::Entity, DrawPayload::Sprite(2)),
+        (0, DrawKind::Sprite, DrawPayload::Run(0)),
+        (1, DrawKind::Entity, DrawPayload::Sprite(0)),
+      ]
+    );
+
+    // Instances added for a run that is then not pushed are taken back
+    let start = list.run_instances().len();
+    list.run_instances().extend([SpriteInstance::new(); 4]);
+    list.drop_run_instances(start);
+    assert_eq!(list.run_instances().len(), start);
   }
 
   #[test]

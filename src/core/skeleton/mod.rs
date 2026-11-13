@@ -9,6 +9,8 @@
 //! [`SkeletonAnimation`] in each fixed step; a [`BoneSocket`] on a child
 //! entity rides one of its bones; and [`SkeletonEvent`] and
 //! [`SkeletonTrackEvent`] messages tell the game what its animations did.
+//! An entity with a `Renderable::skeleton()` draws its skeleton, sorted,
+//! lit and shadowed as a sprite is.
 
 mod animation;
 mod apply;
@@ -17,6 +19,8 @@ mod builder;
 mod component;
 mod curve;
 mod data;
+pub(crate) mod debug;
+mod draw;
 mod event;
 mod pose;
 mod scope;
@@ -36,6 +40,7 @@ pub use data::{
   BoneData, BoneId, EventAudio, EventData, Inherit, Region, SkeletonData, SlotBlend, SlotData,
   SlotId,
 };
+pub(crate) use draw::{Carrier, RegionQuad};
 pub use event::{SkeletonEvent, SkeletonTrackEvent};
 pub use pose::BonePose;
 pub(crate) use scope::{SkeletonStore, hold_scenes, in_scene, release_scene};

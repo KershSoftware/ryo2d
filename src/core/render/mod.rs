@@ -64,6 +64,8 @@ pub(crate) mod ui_retain;
 
 pub use context::RenderContext;
 pub(crate) use context::{EffectStages, FrameTargets};
+#[cfg(test)]
+pub(crate) use debug_draw::ShapeKind;
 pub use debug_draw::{DebugDraw, DebugPen};
 pub(crate) use debug_draw::{begin_debug_fixed_step, end_debug_fixed_step};
 pub(crate) use draw_list::{

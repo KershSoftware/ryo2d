@@ -420,6 +420,9 @@ pub enum RenderStyle {
     /// Total size to fill in pixels
     target_size: f32,
   },
+  /// The entity's [`Skeleton`](crate::core::skeleton::Skeleton), drawn as
+  /// the regions its slots show (see [`Renderable::skeleton`])
+  Skeleton,
 }
 
 /// Unified rendering component for sprites and tiles
@@ -492,6 +495,13 @@ pub struct Renderable {
   pub emission: f32,
 }
 
+/// Stands in for the image of a renderable that never draws one (it shows
+/// a render target, or a skeleton's own images)
+fn no_image() -> Handle<Image> {
+  static PLACEHOLDER: OnceLock<Handle<Image>> = OnceLock::new();
+  PLACEHOLDER.get_or_init(Handle::detached).clone()
+}
+
 impl Renderable {
   /// A sprite drawing `image`
   pub fn image(image: Handle<Image>) -> Self {
@@ -522,14 +532,29 @@ impl Renderable {
   ///
   /// A camera never draws a renderable showing its own target.
   pub fn render_target(target: RenderTarget) -> Self {
-    // Stands in for the image, which is never drawn: the target is
-    static PLACEHOLDER: OnceLock<Handle<Image>> = OnceLock::new();
-    let placeholder = PLACEHOLDER.get_or_init(Handle::detached);
     // What a camera draws into a target is premultiplied by alpha
     Renderable {
       target: Some(target),
       blend: BlendMode::Premultiplied,
-      ..Self::image(placeholder.clone())
+      ..Self::image(no_image())
+    }
+  }
+
+  /// Draws the entity's [`Skeleton`](crate::core::skeleton::Skeleton): the
+  /// regions its slots show, back to front in its draw order, where its
+  /// bones put them. The skeleton takes this renderable's place among the
+  /// entities as a sprite would (`z_order`, `YSort`, its floor), and its
+  /// `visible`, `alpha`, `tint`, flips, `lighting`, `filter`, `emission`,
+  /// built-in `shader` effect and shadows apply to it as a whole. `image`,
+  /// `anchor` and `target` are not used: a skeleton's origin is its
+  /// entity's position.
+  ///
+  /// An entity without a `Skeleton`, or whose skeleton's data has not
+  /// loaded, draws nothing.
+  pub fn skeleton() -> Self {
+    Renderable {
+      style: RenderStyle::Skeleton,
+      ..Self::image(no_image())
     }
   }
 
@@ -740,11 +765,16 @@ impl Renderable {
     matches!(self.style, RenderStyle::Tiled { .. })
   }
 
+  /// Check if this draws the entity's skeleton
+  pub fn is_skeleton(&self) -> bool {
+    matches!(self.style, RenderStyle::Skeleton)
+  }
+
   /// Get tile count if tiled, otherwise 1 (0 while a tiled image is not
   /// loaded in `images`)
   pub fn tile_count(&self, images: &Assets<Image>) -> u32 {
     match &self.style {
-      RenderStyle::Single => 1,
+      RenderStyle::Single | RenderStyle::Skeleton => 1,
       RenderStyle::Tiled {
         direction,
         target_size,

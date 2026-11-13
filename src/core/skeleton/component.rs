@@ -15,7 +15,7 @@ use super::state::{FiredEvent, FiredTrackEvent, SkeletonAnimation};
 use super::validate::{MAX_BONES, MAX_SLOTS};
 use crate::core::asset::Handle;
 use crate::core::ecs::kernel::{DeferredWorld, HookContext};
-use crate::core::ecs::{Component, Transform};
+use crate::core::ecs::{Component, Renderable, Transform};
 
 /// The most names a skeleton remembers having warned about. Past it, a
 /// name the data lacks is ignored without a warning
@@ -157,6 +157,81 @@ impl Carried {
   }
 }
 
+/// Which way a skeleton is mirrored about its entity's origin: the flips of
+/// the [`Renderable`] that draws it
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct Flip {
+  pub(crate) x: bool,
+  pub(crate) y: bool,
+}
+
+impl Flip {
+  /// The flips of the renderable that draws its entity's skeleton; none
+  /// for a renderable that draws something else, or with no renderable
+  pub(crate) fn of(renderable: Option<&Renderable>) -> Self {
+    match renderable {
+      Some(renderable) if renderable.is_skeleton() => Self {
+        x: renderable.flip_x,
+        y: renderable.flip_y,
+      },
+      _ => Self::default(),
+    }
+  }
+
+  /// `space` mirrored about its origin along each flipped axis
+  pub(crate) fn over(self, space: Affine2) -> Affine2 {
+    if self == Self::default() {
+      return space;
+    }
+    let scale = Vec2::new(
+      if self.x { -1.0 } else { 1.0 },
+      if self.y { -1.0 } else { 1.0 },
+    );
+    Affine2::from_scale(scale) * space
+  }
+
+  /// `root` with its own axes mirrored: what places a flipped skeleton's
+  /// bones under its entity's transform
+  pub(crate) fn under(self, root: Affine2) -> Affine2 {
+    if self == Self::default() {
+      return root;
+    }
+    let (x, y) = (root.matrix2.x_axis, root.matrix2.y_axis);
+    Affine2::from_cols(
+      if self.x { -x } else { x },
+      if self.y { -y } else { y },
+      root.translation,
+    )
+  }
+}
+
+/// Where a skeleton's bones are placed in the world: under its entity's
+/// transform, mirrored about the entity's origin as its renderable flips
+/// it
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Stand {
+  /// The entity's transform
+  pub(crate) root: Affine2,
+  pub(crate) flip: Flip,
+}
+
+impl Stand {
+  /// What takes the skeleton's own space to the world
+  pub(crate) fn affine(&self) -> Affine2 {
+    self.flip.under(self.root)
+  }
+}
+
+impl From<Affine2> for Stand {
+  /// Under `root`, unflipped
+  fn from(root: Affine2) -> Self {
+    Self {
+      root,
+      flip: Flip::default(),
+    }
+  }
+}
+
 /// A skeleton on an entity: it shows [`SkeletonData`] in its setup pose,
 /// or as the entity's [`SkeletonAnimation`] poses it, where the entity's
 /// transform puts it. The engine steps it in each fixed step
@@ -173,6 +248,11 @@ impl Carried {
 /// not the data's, is kept by name, and shows from the skeleton's next
 /// step; what it answers (`bone_world`, `point`, `bounding_box`) is as its
 /// last step left it.
+///
+/// It is drawn when its entity has a [`Renderable::skeleton`]: its regions
+/// where its bones are, sorted, lit, shadowed and lifted as a sprite is,
+/// and mirrored about the entity's origin by that renderable's `flip_x`
+/// and `flip_y`, its bones (as `bone_world` answers) and sockets with it.
 ///
 /// To give an entity another skeleton, insert the new `Skeleton` over the
 /// old one. Assigning a whole new value through a mutable reference
@@ -197,11 +277,18 @@ pub struct Skeleton {
   index: Option<Arc<SkeletonIndex>>,
   /// The pose as the last step left it; nothing in it until the data lands
   pub(crate) pose: Pose,
-  /// The bones' world transforms a step before `pose.world`'s, for drawing
-  /// between steps. A bone the last step first placed has its current one
-  pub(crate) previous_world: Vec<Affine2>,
-  /// The entity's transform that `pose.world` was last computed from
+  /// The bones' transforms in the skeleton's own space a step before
+  /// `pose.skeleton_space`'s, for drawing between steps. A bone the last
+  /// step first placed has its current one, and so has every bone after a
+  /// pose made outside a step, or a step that follows one it missed
+  pub(crate) previous_space: Vec<Affine2>,
+  /// The entity's transform that `pose.world` was last computed from, and
+  /// the way it was mirrored
   root: Affine2,
+  flip: Flip,
+  /// The number of the fixed step that last stepped it, or after which it
+  /// was last posed outside a step (0: none)
+  stepped: u64,
   /// The numbers of its last two placings: each new pose, for its sockets
   /// to be placed on, takes a number (0: none yet)
   placing: u64,
@@ -223,8 +310,10 @@ impl Skeleton {
       seen: None,
       index: None,
       pose: Pose::default(),
-      previous_world: Vec::new(),
+      previous_space: Vec::new(),
       root: Affine2::IDENTITY,
+      flip: Flip::default(),
+      stepped: 0,
       placing: 0,
       placed_before: 0,
       warned: Vec::new(),
@@ -446,11 +535,12 @@ impl Skeleton {
     self.index.as_ref()?.bone_names.get(name).copied()
   }
 
-  /// A bone's transform in the skeleton's own space (before the entity's
-  /// transform), as the last step left it: what a socket on the bone is
-  /// placed by
+  /// A bone's transform relative to the skeleton's entity, as the last
+  /// step left it: its transform in the skeleton's own space, mirrored as
+  /// the skeleton is. What a socket on the bone is placed by
   pub(crate) fn bone_space(&self, bone: BoneId) -> Option<Affine2> {
-    self.pose.skeleton_space.get(bone.index()).copied()
+    let space = self.pose.skeleton_space.get(bone.index())?;
+    Some(self.flip.over(*space))
   }
 
   /// It has a new pose (a step, or a pose outside one) for its sockets to
@@ -488,27 +578,62 @@ impl Skeleton {
     self.root
   }
 
+  /// The way it was mirrored when its bones were last placed
+  pub(crate) fn flip(&self) -> Flip {
+    self.flip
+  }
+
+  /// The number of the fixed step that last stepped it, or after which it
+  /// was last posed outside a step
+  pub(crate) fn stepped(&self) -> u64 {
+    self.stepped
+  }
+
+  /// Its step was fixed step `number` (the store's count). One that missed
+  /// the step before (disabled, held, or waiting for its data) has no pose
+  /// of that step to be drawn from: this step is a first placing, each
+  /// bone's previous transform its current one
+  pub(crate) fn took_step(&mut self, number: u64) {
+    if self.stepped.wrapping_add(1) != number {
+      self.settle();
+    }
+    self.stepped = number;
+  }
+
+  /// It was posed outside a step, after fixed step `latest`: its next step
+  /// follows on from that pose
+  pub(crate) fn posed_after(&mut self, latest: u64) {
+    self.stepped = latest;
+  }
+
+  /// Nothing is drawn between its last two poses: each bone's previous
+  /// transform becomes its current one
+  fn settle(&mut self) {
+    self.previous_space.clone_from(&self.pose.skeleton_space);
+  }
+
   /// One fixed step. A step that sees other data than the last (the data
   /// landing, or a reload) first makes the pose anew and finds every kept
   /// name's place in it. Then: the animation state advances by `dt` and
   /// poses the skeleton (without one it holds its setup pose), the game's
   /// attachments and bone overrides are put over that, and the bones'
-  /// world transforms are computed under `root`, the entity's transform.
-  /// The event keys crossed and the track events are pushed onto `fired`
+  /// world transforms are computed where it stands (`stand`: under the
+  /// entity's transform, mirrored as its renderable flips it). The event
+  /// keys crossed and the track events are pushed onto `fired`
   pub(crate) fn step(
     &mut self,
     data: &SkeletonData,
     seen: DataVersion,
     animation: Option<&mut SkeletonAnimation>,
     dt: f32,
-    root: Affine2,
+    stand: Stand,
     fired: &mut Fired,
   ) {
     let mut carried = None;
     if self.seen == Some(seen) {
       // The transforms the last step computed become the previous ones,
       // and their buffer is computed over
-      std::mem::swap(&mut self.previous_world, &mut self.pose.world);
+      std::mem::swap(&mut self.previous_space, &mut self.pose.skeleton_space);
     } else {
       carried = Some(self.rebuild(data));
       self.seen = Some(seen);
@@ -523,7 +648,7 @@ impl Skeleton {
       ),
       None => self.pose.reset(data),
     }
-    self.finish(data, root, carried);
+    self.finish(data, stand, carried);
   }
 
   /// A pose outside a step, for a skeleton that has none for `data` as it
@@ -532,28 +657,30 @@ impl Skeleton {
   /// an entry that has yet to start at its first moment. Nothing advances
   /// and nothing is fired: an entry's `Start` and the keys at its start
   /// go out with its first step, which advances it from 0 as if this had
-  /// not run. With no state it is the setup pose
+  /// not run. With no state it is the setup pose. No step made it, so it
+  /// is drawn as it is, not between it and the pose before
   pub(crate) fn appear(
     &mut self,
     data: &SkeletonData,
     seen: DataVersion,
     animation: Option<&mut SkeletonAnimation>,
-    root: Affine2,
+    stand: Stand,
   ) {
-    let carried = self.rebuild(data);
+    self.rebuild(data);
     self.seen = Some(seen);
     match animation {
       Some(animation) => animation.apply_unadvanced(data, &mut self.pose),
       None => self.pose.reset(data),
     }
-    self.finish(data, root, Some(carried));
+    self.finish(data, stand, None);
+    self.settle();
   }
 
   /// The end of a step and of a pose outside one: what the game set is put
-  /// over the animation's result, and the bones are placed under `root`.
-  /// After new data (`carried`), a bone with no transform from the pose
-  /// before takes its current one as its previous one
-  fn finish(&mut self, data: &SkeletonData, root: Affine2, carried: Option<Carried>) {
+  /// over the animation's result, and the bones are placed where it
+  /// stands. After new data (`carried`), a bone with no transform from the
+  /// pose before takes its current one as its previous one
+  fn finish(&mut self, data: &SkeletonData, stand: Stand, carried: Option<Carried>) {
     // The animation state starts each pose from the setup pose, so what
     // the game set is put over its result every time
     for set in &self.attachments {
@@ -569,23 +696,27 @@ impl Skeleton {
         .id
         .and_then(|bone| self.pose.bones.get(bone.index()).copied());
     }
-    self.place(data, root);
+    self.place(data, stand);
     if let Some(carried) = carried {
       // A bone with no transform from the pose before draws where it is
-      let placed = self.previous_world.iter_mut().zip(&self.pose.world);
-      for (bone, (previous, world)) in placed.enumerate() {
+      let placed = self
+        .previous_space
+        .iter_mut()
+        .zip(&self.pose.skeleton_space);
+      for (bone, (previous, space)) in placed.enumerate() {
         if !carried.has(bone) {
-          *previous = *world;
+          *previous = *space;
         }
       }
     }
   }
 
-  /// Computes the bones' world transforms again under another `root`, in
-  /// the step that posed them: the entity was moved after its skeleton's
-  /// step (it sits on another skeleton's socket). The bone overrides are
-  /// applied afresh, as a world-space one depends on the root
-  pub(crate) fn place_again(&mut self, data: &SkeletonData, root: Affine2) {
+  /// Computes the bones' world transforms again where it now stands, with
+  /// the pose it has: the entity was moved after its skeleton's step (it
+  /// sits on another skeleton's socket), or was flipped while no step
+  /// runs. The bone overrides are applied afresh, as a world-space one
+  /// depends on where it stands
+  pub(crate) fn place_again(&mut self, data: &SkeletonData, stand: Stand) {
     for set in &self.overrides {
       if let (Some(bone), Some(animated)) = (set.id, set.animated)
         && let Some(pose) = self.pose.bones.get_mut(bone.index())
@@ -593,14 +724,16 @@ impl Skeleton {
         *pose = animated;
       }
     }
-    self.place(data, root);
+    self.place(data, stand);
   }
 
   /// Applies the bone overrides and computes the bones' transforms, in one
   /// pass from the roots out: a world-space override is converted through
   /// its bone's parent, which is placed by then, overrides and all
-  fn place(&mut self, data: &SkeletonData, root: Affine2) {
-    self.root = root;
+  fn place(&mut self, data: &SkeletonData, stand: Stand) {
+    self.root = stand.root;
+    self.flip = stand.flip;
+    let root = stand.affine();
     // Those of bones the data has come first: with none, the plain pass
     if self.overrides.first().is_none_or(|set| set.id.is_none()) {
       self.pose.compute_world(data, root);
@@ -620,8 +753,9 @@ impl Skeleton {
   }
 
   /// Makes the pose anew for `data` and finds each kept name's place in
-  /// it. A bone the pose before had, by name, keeps its last world
-  /// transform as its previous one; the rest are marked not carried
+  /// it. A bone the pose before had, by name, keeps its last transform in
+  /// the skeleton's space as its previous one; the rest are marked not
+  /// carried
   fn rebuild(&mut self, data: &SkeletonData) -> Carried {
     let index = data.index().clone();
     let pose = Pose::setup(data);
@@ -632,7 +766,7 @@ impl Skeleton {
         let last = old
           .bone_names
           .get(name)
-          .and_then(|was| self.pose.world.get(was.index()));
+          .and_then(|was| self.pose.skeleton_space.get(was.index()));
         if let (Some(last), Some(previous)) = (last, previous.get_mut(bone.index())) {
           *previous = *last;
           carried.set(bone.index());
@@ -640,7 +774,7 @@ impl Skeleton {
       }
     }
     self.pose = pose;
-    self.previous_world = previous;
+    self.previous_space = previous;
     for at in 0..self.skins.len() {
       let name = self.skins[at].name.clone();
       self.skins[at].skin = index.skin_names.get(&*name).copied();
@@ -841,7 +975,14 @@ mod tests {
     let mut skeleton = Skeleton::new(handle.clone());
     set(&mut skeleton);
     let seen = (handle.id(), version);
-    skeleton.step(data, seen, None, 1.0 / 60.0, root, &mut Fired::default());
+    skeleton.step(
+      data,
+      seen,
+      None,
+      1.0 / 60.0,
+      root.into(),
+      &mut Fired::default(),
+    );
     skeleton
   }
 
@@ -1079,36 +1220,51 @@ mod tests {
     assert_eq!(skeleton.overrides.len(), 1);
   }
 
+  /// The child of [`pair`] turned to `turn` by an override
+  fn turn_child(skeleton: &mut Skeleton, turn: f32) {
+    let turned = BoneOverride {
+      rotation: Some(turn),
+      ..BoneOverride::default()
+    };
+    skeleton.override_bone("child", turned);
+  }
+
   #[test]
-  fn the_last_two_steps_world_transforms_are_kept_by_bone_name_across_new_data() {
+  fn the_last_two_steps_transforms_are_kept_by_bone_name_across_new_data() {
     let mut world = asset_world();
     let handle = world
       .resource_mut::<Assets<SkeletonData>>()
       .add(pair(Inherit::Normal));
     let mut skeleton = Skeleton::new(handle.clone());
-    let step = |world: &World, skeleton: &mut Skeleton, x: f32| {
+    // Each step turns the child to another angle, under an entity that
+    // has moved: the transforms kept are in the skeleton's own space, so
+    // the entity's move is no part of them
+    let step = |world: &World, skeleton: &mut Skeleton, turn: f32| {
       let assets = world.resource::<Assets<SkeletonData>>();
       let data = assets.get(&handle).expect("the data");
       let seen = (handle.id(), assets.version(&handle).expect("a version"));
-      let root = Affine2::from_translation(Vec2::new(x, 0.0));
-      skeleton.step(data, seen, None, 1.0 / 60.0, root, &mut Fired::default());
+      turn_child(skeleton, turn);
+      let root = Affine2::from_translation(Vec2::new(turn * 100.0, 0.0));
+      let fired = &mut Fired::default();
+      skeleton.step(data, seen, None, 1.0 / 60.0, root.into(), fired);
     };
     // A first step has nothing before it: each bone's previous transform
     // is its current one
-    step(&world, &mut skeleton, 100.0);
-    let first = skeleton.pose.world.clone();
-    assert_eq!(skeleton.previous_world, first);
+    step(&world, &mut skeleton, 1.0);
+    let first = skeleton.pose.skeleton_space.clone();
+    assert_eq!(skeleton.previous_space, first);
     // From then on the previous ones are the last step's
-    step(&world, &mut skeleton, 200.0);
-    let second = skeleton.pose.world.clone();
-    assert_eq!(skeleton.previous_world, first);
-    assert_ne!(second, first);
-    step(&world, &mut skeleton, 300.0);
-    assert_eq!(skeleton.previous_world, second);
-    let third = skeleton.pose.world.clone();
+    step(&world, &mut skeleton, 2.0);
+    let second = skeleton.pose.skeleton_space.clone();
+    assert_eq!(skeleton.previous_space, first);
+    assert_ne!(second[1], first[1], "the child turned");
+    assert_eq!(second[0], first[0], "the parent stood still in its space");
+    step(&world, &mut skeleton, 3.0);
+    assert_eq!(skeleton.previous_space, second);
+    let third = skeleton.pose.skeleton_space.clone();
     // New data with a bone added first, so every bone's place moves: a
     // bone it had before keeps its last transform as its previous one, by
-    // name, and the new bone's is where it now stands
+    // name, and the new bone's is where it now is
     let longer = SkeletonData::builder()
       .bone("tail", None, BoneSetup::default())
       .bone("parent", None, BoneSetup::default())
@@ -1119,13 +1275,169 @@ mod tests {
       .resource_mut::<Assets<SkeletonData>>()
       .get_mut(&handle)
       .expect("the data") = longer;
-    step(&world, &mut skeleton, 400.0);
-    let now = &skeleton.pose.world;
+    step(&world, &mut skeleton, 4.0);
+    let now = &skeleton.pose.skeleton_space;
     assert_eq!(now.len(), 3);
-    assert_eq!(skeleton.previous_world[1], third[0]);
-    assert_eq!(skeleton.previous_world[2], third[1]);
-    assert_eq!(skeleton.previous_world[0], now[0]);
-    assert_eq!(now[0].translation, Vec2::new(400.0, 0.0));
+    assert_eq!(skeleton.previous_space[1], third[0]);
+    assert_eq!(skeleton.previous_space[2], third[1]);
+    assert_eq!(skeleton.previous_space[0], now[0]);
+    assert_eq!(skeleton.pose.world[0].translation, Vec2::new(400.0, 0.0));
+  }
+
+  #[test]
+  fn a_step_after_a_missed_one_and_a_pose_outside_a_step_are_first_placings() {
+    let mut world = asset_world();
+    let handle = world
+      .resource_mut::<Assets<SkeletonData>>()
+      .add(pair(Inherit::Normal));
+    let assets = world.resource::<Assets<SkeletonData>>();
+    let data = assets.get(&handle).expect("the data");
+    let seen = (handle.id(), assets.version(&handle).expect("a version"));
+    let mut skeleton = Skeleton::new(handle.clone());
+    let step = |skeleton: &mut Skeleton, turn: f32, number: u64| {
+      turn_child(skeleton, turn);
+      let (root, fired) = (Affine2::IDENTITY, &mut Fired::default());
+      skeleton.step(data, seen, None, 1.0 / 60.0, root.into(), fired);
+      skeleton.took_step(number);
+    };
+    // Steps 7 and 8 follow each other: the second keeps the first's
+    // transforms to be drawn from
+    step(&mut skeleton, 1.0, 7);
+    let first = skeleton.pose.skeleton_space.clone();
+    step(&mut skeleton, 2.0, 8);
+    assert_eq!(skeleton.previous_space, first);
+    assert_eq!(skeleton.stepped(), 8);
+    // It missed steps 9 to 11 (disabled, or held): step 12 has no pose of
+    // step 11 to be drawn from, so it is drawn where it is
+    step(&mut skeleton, 3.0, 12);
+    assert_ne!(skeleton.pose.skeleton_space, first);
+    assert_eq!(skeleton.previous_space, skeleton.pose.skeleton_space);
+    // And step 13 follows on again
+    let twelfth = skeleton.pose.skeleton_space.clone();
+    step(&mut skeleton, 4.0, 13);
+    assert_eq!(skeleton.previous_space, twelfth);
+
+    // A pose made outside a step (a reload landing while the clock is
+    // stopped) is drawn as it is, though its bones were carried by name;
+    // and the step after it follows on from it
+    turn_child(&mut skeleton, 5.0);
+    let newer = (seen.0, seen.1 + 1);
+    skeleton.appear(data, newer, None, Affine2::IDENTITY.into());
+    skeleton.posed_after(13);
+    let appeared = skeleton.pose.skeleton_space.clone();
+    assert_eq!(skeleton.previous_space, appeared);
+    turn_child(&mut skeleton, 6.0);
+    let (root, fired) = (Affine2::IDENTITY, &mut Fired::default());
+    skeleton.step(data, newer, None, 1.0 / 60.0, root.into(), fired);
+    skeleton.took_step(14);
+    assert_eq!(skeleton.previous_space, appeared);
+    assert_ne!(skeleton.pose.skeleton_space, appeared);
+  }
+
+  #[test]
+  fn a_flipped_skeleton_s_bones_mirror_about_its_entity_s_origin() {
+    // An entity at (100, 50) turned a quarter turn: its x axis points down
+    // the screen. The child of the pair is at (10, 10) in the skeleton's
+    // space (5 along its parent, which points down from (10, 0) at twice
+    // the length)
+    let root = Affine2::from_angle_translation(FRAC_PI_2, Vec2::new(100.0, 50.0));
+    let flipped = |x: bool, y: bool| {
+      let stand = Stand {
+        root,
+        flip: Flip { x, y },
+      };
+      let mut world = asset_world();
+      let data = pair(Inherit::Normal);
+      let handle = world.resource_mut::<Assets<SkeletonData>>().add(data);
+      let assets = world.resource::<Assets<SkeletonData>>();
+      let data = assets.get(&handle).expect("the data");
+      let seen = (handle.id(), assets.version(&handle).expect("a version"));
+      let mut skeleton = Skeleton::new(handle.clone());
+      let fired = &mut Fired::default();
+      skeleton.step(data, seen, None, 1.0 / 60.0, stand, fired);
+      skeleton
+    };
+    let child = BoneId(1);
+    let plain = flipped(false, false);
+    let space = plain.bone_space(child).expect("the child");
+    same_point(space.translation, Vec2::new(10.0, 10.0));
+    // Unflipped: (10, 10) of the skeleton is 10 down and 10 left of the
+    // entity
+    let world = plain.bone_world("child").expect("the child");
+    same_point(world.translation, Vec2::new(90.0, 60.0));
+
+    // Flipped along the skeleton's x, the bone is at (-10, 10) of it:
+    // mirrored about the entity's origin in the entity's own frame,
+    // wherever the entity points
+    let mirrored = flipped(true, false);
+    assert_eq!(mirrored.flip(), Flip { x: true, y: false });
+    let space = mirrored.bone_space(child).expect("the child");
+    same_point(space.translation, Vec2::new(-10.0, 10.0));
+    let world = mirrored.bone_world("child").expect("the child");
+    same_point(world.translation, Vec2::new(90.0, 40.0));
+    assert!(world.matrix2.determinant() * plain_det(&plain) < 0.0);
+    // What the skeleton keeps to be drawn from is not mirrored: the drawer
+    // mirrors it
+    assert_eq!(
+      mirrored.pose.skeleton_space, plain.pose.skeleton_space,
+      "the skeleton's own space is the same"
+    );
+
+    let both = flipped(true, true);
+    let world = both.bone_world("child").expect("the child");
+    same_point(world.translation, Vec2::new(110.0, 40.0));
+    assert!(world.matrix2.determinant() * plain_det(&plain) > 0.0);
+  }
+
+  fn plain_det(skeleton: &Skeleton) -> f32 {
+    let world = skeleton.bone_world("child").expect("the child");
+    world.matrix2.determinant()
+  }
+
+  fn same_point(actual: Vec2, expected: Vec2) {
+    assert!(
+      actual.abs_diff_eq(expected, 1e-4),
+      "expected {expected}, got {actual}"
+    );
+  }
+
+  #[test]
+  fn a_world_override_still_aims_at_its_point_on_a_flipped_skeleton() {
+    // The child is aimed at a point in the world, and its parent's origin
+    // put on another: both hold whichever way the skeleton is flipped
+    let root = Affine2::from_angle_translation(0.4, Vec2::new(100.0, 50.0));
+    for (x, y) in [(false, false), (true, false), (false, true), (true, true)] {
+      let mut world = asset_world();
+      let data = pair(Inherit::Normal);
+      let handle = world.resource_mut::<Assets<SkeletonData>>().add(data);
+      let assets = world.resource::<Assets<SkeletonData>>();
+      let data = assets.get(&handle).expect("the data");
+      let seen = (handle.id(), assets.version(&handle).expect("a version"));
+      let mut skeleton = Skeleton::new(handle.clone());
+      let placed = BoneOverride {
+        translation: Some(Vec2::new(120.0, 40.0)),
+        space: Space::World,
+        ..BoneOverride::default()
+      };
+      let aimed = BoneOverride {
+        rotation: Some(1.1),
+        space: Space::World,
+        ..BoneOverride::default()
+      };
+      skeleton.override_bone("parent", placed);
+      skeleton.override_bone("child", aimed);
+      let stand = Stand {
+        root,
+        flip: Flip { x, y },
+      };
+      let fired = &mut Fired::default();
+      skeleton.step(data, seen, None, 1.0 / 60.0, stand, fired);
+      let parent = skeleton.bone_world("parent").expect("the parent");
+      same_point(parent.translation, Vec2::new(120.0, 40.0));
+      let child = skeleton.bone_world("child").expect("the child");
+      let points = child.matrix2.x_axis.to_angle();
+      assert!((points - 1.1).abs() < 1e-4, "flipped {x} {y}: {points}");
+    }
   }
 
   #[test]

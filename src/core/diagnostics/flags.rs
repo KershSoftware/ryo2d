@@ -28,6 +28,10 @@ pub struct DebugConfig {
   /// second, in the bottom-left stack above the other overlays
   /// (`debug:ui-rebuilds`; runtime only)
   pub show_ui_rebuilds: bool,
+  /// Whether to draw every skeleton's bones and joints, the outlines of the
+  /// regions it draws, and its bounding boxes and points, over the world
+  /// (`debug:skeletons`; runtime only)
+  pub show_skeletons: bool,
   /// Whether profiler scopes are on for the whole run (`[debug] enable_profiler`;
   /// needs the engine's `profiler` feature, which `ryo2d dev` then adds). F10
   /// opens the window
@@ -70,6 +74,7 @@ impl Default for DebugConfig {
       disable_debug_keys: false,
       show_ui_debug: false,
       show_ui_rebuilds: false,
+      show_skeletons: false,
       enable_profiler: false, // Disabled by default (opt-in)
       logger_window: false,   // Disabled by default (opt-in)
       // The console and the dev window keys follow the build's tools
@@ -99,6 +104,7 @@ impl DebugConfig {
     self.show_stats = false;
     self.show_ui_debug = false;
     self.show_ui_rebuilds = false;
+    self.show_skeletons = false;
   }
 }
 

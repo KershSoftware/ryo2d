@@ -87,5 +87,8 @@ mod tilemap;
 #[path = "e2e/particles.rs"]
 mod particles;
 
+#[path = "e2e/skeleton.rs"]
+mod skeleton;
+
 #[path = "e2e/dev_tools.rs"]
 mod dev_tools;

@@ -154,6 +154,16 @@ pub mod colors {
   pub const ORIGIN: [u8; 4] = [0xff, 0xff, 0x00, 0xff];
   /// Red for error indicators
   pub const ERROR: [u8; 4] = [0xff, 0x00, 0x00, 0xff];
+  /// Amber for a skeleton's bones
+  pub const BONE: [u8; 4] = [0xff, 0xc0, 0x20, 0xff];
+  /// White for a skeleton's joints (its bones' origins)
+  pub const BONE_JOINT: [u8; 4] = [0xff, 0xff, 0xff, 0xff];
+  /// Blue for the outlines of the regions a skeleton draws
+  pub const SKELETON_REGION: [u8; 4] = [0x60, 0x90, 0xff, 0xff];
+  /// Green for a skeleton's bounding boxes
+  pub const BOUNDING_BOX: [u8; 4] = [0x00, 0xff, 0x00, 0xff];
+  /// Magenta for a skeleton's points
+  pub const SKELETON_POINT: [u8; 4] = [0xff, 0x00, 0xff, 0xff];
 }
 
 /// Half the length of an origin crosshair arm, in screen pixels.
@@ -165,13 +175,30 @@ pub(crate) struct OverlayFlags {
   pub(crate) colliders: bool,
   pub(crate) velocities: bool,
   pub(crate) origins: bool,
+  pub(crate) skeletons: bool,
 }
 
 /// Draw the enabled debug overlays into `debug` for this frame: collider
-/// outlines where physics puts them, velocity arrows from the origin and
-/// origin crosses (sized in the main camera's pixels).
-pub(crate) fn overlay_shapes(world: &mut World, flags: OverlayFlags, debug: &mut DebugDraw) {
+/// outlines where physics puts them, velocity arrows from the origin,
+/// origin crosses (sized in the main camera's pixels), and skeletons'
+/// bones, bounding boxes and points where the frame draws them (`alpha` of
+/// the way from the last fixed step to the next).
+pub(crate) fn overlay_shapes(
+  world: &mut World,
+  flags: OverlayFlags,
+  alpha: f32,
+  debug: &mut DebugDraw,
+) {
   let color = |c: [u8; 4]| Color::new(c[0], c[1], c[2], c[3]);
+  // One of the main camera's pixels, in the world
+  let pixel = |world: &mut World| {
+    let scale = main_view(world).scale;
+    if scale.is_finite() && scale > 0.0 {
+      1.0 / scale
+    } else {
+      1.0
+    }
+  };
   if flags.colliders
     && let Some(physics) = world.get_resource::<Physics>()
   {
@@ -193,13 +220,7 @@ pub(crate) fn overlay_shapes(world: &mut World, flags: OverlayFlags, debug: &mut
 
   if flags.origins {
     // `CROSS_SIZE` main-camera pixels either side of the origin's pixel
-    let scale = main_view(world).scale;
-    let pixel = if scale.is_finite() && scale > 0.0 {
-      1.0 / scale
-    } else {
-      1.0
-    };
-    let size = (2.0 * CROSS_SIZE + 1.0) * pixel;
+    let size = (2.0 * CROSS_SIZE + 1.0) * pixel(world);
     // Cameras are not drawn
     for global in world
       .query_filtered::<&GlobalTransform, Without<Camera2d>>()
@@ -207,6 +228,11 @@ pub(crate) fn overlay_shapes(world: &mut World, flags: OverlayFlags, debug: &mut
     {
       debug.cross(global.translation(), size, color(colors::ORIGIN));
     }
+  }
+
+  if flags.skeletons {
+    let pixel = pixel(world);
+    crate::core::skeleton::debug::draw(world, alpha, pixel, debug);
   }
 }
 
@@ -493,7 +519,7 @@ mod tests {
       ..Default::default()
     };
     let mut debug = DebugDraw::default();
-    overlay_shapes(&mut world, colliders, &mut debug);
+    overlay_shapes(&mut world, colliders, 0.0, &mut debug);
     let points: Vec<Vec2> = debug
       .each()
       .flat_map(|(_, points)| points.to_vec())
@@ -512,7 +538,7 @@ mod tests {
       "{max}"
     );
     debug.end_frame();
-    overlay_shapes(&mut world, OverlayFlags::default(), &mut debug);
+    overlay_shapes(&mut world, OverlayFlags::default(), 0.0, &mut debug);
     assert_eq!(debug.len(), 0);
   }
 

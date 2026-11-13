@@ -433,11 +433,12 @@ impl Engine {
         colliders: self.config.debug.show_colliders,
         velocities: self.config.debug.show_velocities,
         origins: self.config.debug.show_origins,
+        skeletons: self.config.debug.show_skeletons,
       };
       self
         .world
         .resource_scope(|world, mut debug: Mut<DebugDraw>| {
-          overlay_shapes(world, flags, &mut debug);
+          overlay_shapes(world, flags, alpha, &mut debug);
         });
       let debug = self.world.resource::<DebugDraw>();
       for camera in &self.camera_draws {

@@ -8,10 +8,11 @@
 //! entity's [`RenderLayers`] can see are skipped before their texture is
 //! uploaded; each camera later keeps the ones it sees.
 //!
-//! Everything an entity emits (its shadows first, then the sprite or its
-//! tiles) is a [`DrawKind::Entity`] item at the entity's `z_order`, submitted
-//! in draw order, so the shadow draws under its entity and YSort orders
-//! entities within their layer; ties go by entity index (`entity_order`).
+//! Everything an entity emits (its shadows first, then the sprite, its
+//! tiles or its skeleton's regions) is a [`DrawKind::Entity`] item at the
+//! entity's `z_order`, submitted in draw order, so the shadow draws under
+//! its entity and YSort orders entities within their layer; ties go by
+//! entity index (`entity_order`).
 //! Draws from outside the entity query take their places in the same order
 //! ([`OrderedDraw`]: tile layers' chunks and y-sorted rows, tile objects).
 //! Composite tiles draw at their own `z_order`; on equal z they follow the
@@ -19,6 +20,12 @@
 //!
 //! A renderable showing a render target draws the target's texture at the
 //! target's size; the camera drawing into that target skips it.
+//!
+//! A renderable drawing its entity's skeleton (`RenderStyle::Skeleton`) is
+//! one drawable like any other: it sorts as a sprite does, and emits the
+//! regions its slots show, back to front in the skeleton's draw order,
+//! each stretch of one image and blend as one run item
+//! ([`DrawList::push_run_as`]), after its shadows.
 //!
 //! Positions come from `GlobalTransform`, interpolated by the frame's alpha
 //! for entities with `PreviousGlobalTransform`, and lifted by `DrawLift` on
@@ -30,7 +37,7 @@ use std::collections::HashSet;
 
 use super::batch::{BlendMode, Filter};
 use super::scratch::recycle;
-use super::{CameraDraw, DrawChunk, DrawKind, DrawList, SpriteLook, SpriteShading};
+use super::{CameraDraw, DrawChunk, DrawKind, DrawList, DrawRun, SpriteLook, SpriteShading};
 use crate::core::asset::{AssetId, Assets};
 use crate::core::ecs::interpolate::render_global;
 use crate::core::ecs::kernel::QueryState;
@@ -45,7 +52,11 @@ use crate::core::graphics::{
   CompositeTile, Image, RenderLayers, RenderTarget, RenderTargets, SpriteGpuRenderer,
   SpriteInstance, TextureId, images_of,
 };
+use crate::core::skeleton::{
+  Carrier, RegionQuad, Skeleton, SkeletonData, SkeletonStore, SlotBlend,
+};
 use crate::core::ui::Color;
+use glam::Affine2;
 
 /// Side of the one white ellipse texture every blob and contact shadow is
 /// drawn from, scaled and tinted.
@@ -186,6 +197,7 @@ type DrawableItem = (
   Option<&'static YSort>,
   Option<&'static RenderLayers>,
   Option<&'static DrawLift>,
+  Option<&'static Skeleton>,
 );
 
 /// One entity's components, borrowed from the world for the frame.
@@ -200,6 +212,8 @@ struct Drawable<'w> {
   layers: RenderLayers,
   /// How far up it draws from where it stands (on a floor)
   lift: Vec2,
+  /// The skeleton a `RenderStyle::Skeleton` renderable draws
+  skeleton: Option<&'w Skeleton>,
 }
 
 /// Turns the world's renderable entities into draw list sprites.
@@ -212,6 +226,11 @@ pub(crate) struct EntityDrawer {
   /// The frame's drawables in order (empty between frames; its allocation
   /// is reused)
   items: Vec<(DrawOrder, Drawable<'static>)>,
+  /// The regions of the skeleton being drawn (its allocation is reused)
+  quads: Vec<RegionQuad>,
+  /// Whether a skeleton drawn with a game shader has been warned about
+  /// (once a run)
+  told_custom: bool,
 }
 
 impl EntityDrawer {
@@ -265,6 +284,12 @@ impl EntityDrawer {
       filter: Filter::Default,
       lit: true,
       ellipse: &mut self.ellipse,
+      rigs: world.get_resource::<Assets<SkeletonData>>(),
+      skeleton_step: world
+        .get_resource::<SkeletonStore>()
+        .map(SkeletonStore::step),
+      quads: &mut self.quads,
+      told_custom: &mut self.told_custom,
     };
     let mut ordered = ordered.iter().peekable();
     for (order, drawable) in &items {
@@ -325,7 +350,7 @@ fn in_draw_order<'w>(
       .iter(world)
       .filter(|(_, renderable, ..)| renderable.visible)
       .map(
-        |(entity, renderable, global, previous, material, y_sort, layers, lift)| {
+        |(entity, renderable, global, previous, material, y_sort, layers, lift, skeleton)| {
           // Sorted where it stands, its floor breaking ties
           let floor = lift.map_or(0, DrawLift::draw_floor);
           let order = match y_sort {
@@ -345,6 +370,7 @@ fn in_draw_order<'w>(
             y_sort,
             layers: layers.copied().unwrap_or_default(),
             lift: lift.map_or(Vec2::ZERO, |drawn| drawn.lift),
+            skeleton,
           };
           (order, drawable)
         },
@@ -540,6 +566,13 @@ struct Emitter<'a> {
   lit: bool,
   /// The shadow ellipse's texture once known (kept across frames)
   ellipse: &'a mut Option<TextureId>,
+  /// The skeletons' data, and the number of their last fixed step
+  rigs: Option<&'a Assets<SkeletonData>>,
+  skeleton_step: Option<u64>,
+  /// The regions of the skeleton being drawn (scratch, kept across frames)
+  quads: &'a mut Vec<RegionQuad>,
+  /// Whether a skeleton with a game shader has been warned about
+  told_custom: &'a mut bool,
 }
 
 impl<'a> Emitter<'a> {
@@ -661,6 +694,147 @@ impl<'a> Emitter<'a> {
   }
 }
 
+/// One quad of a skeleton as a run draws it: the image it shows a
+/// rectangle of, how it blends, where it draws, and its tint (the sRGB
+/// colour with straight alpha)
+struct RunQuad {
+  image: AssetId<Image>,
+  rect: [u32; 4],
+  blend: BlendMode,
+  quad: Affine2,
+  tint: [f32; 4],
+}
+
+/// How every quad of a skeleton's runs is drawn
+#[derive(Clone, Copy)]
+struct RunLook<'a> {
+  /// A built-in effect on every quad
+  effect: Option<&'a SpriteEffect>,
+  emission: f32,
+}
+
+/// A stretch of a skeleton's quads of one image and blend, as it is added
+struct OpenRun<'i> {
+  image: AssetId<Image>,
+  blend: BlendMode,
+  /// What the image draws: itself, or the checker in its place
+  shown: ShownImage<'i>,
+  /// Where its instances start in the list's run instances
+  start: usize,
+  /// The world box its quads stay inside
+  min: Vec2,
+  max: Vec2,
+}
+
+impl<'a> Emitter<'a> {
+  /// Draw a skeleton's `quads`, in order, as entity items at `z`: each
+  /// stretch of quads that share an image and a blend is one run, so a
+  /// skeleton drawn from one atlas is one item. A run no camera on the
+  /// entity's layers can see is not pushed (and its image never uploaded);
+  /// an image that draws nothing (not loaded, in a release build) leaves
+  /// its quads out, as does a quad that is not finite or has no alpha.
+  fn draw_runs(&mut self, z: i32, quads: impl Iterator<Item = RunQuad>, look: RunLook<'_>) {
+    let effect = look
+      .effect
+      .map(|effect| SpriteInstance::new().with_effect(effect));
+    let shading = match effect {
+      Some(_) => SpriteShading::Effect,
+      None => SpriteShading::Plain,
+    };
+    let mut open: Option<OpenRun<'a>> = None;
+    for quad in quads {
+      // No alpha (or one that is not a number) draws nothing
+      let alpha = quad.tint[3];
+      if alpha.is_nan() || alpha <= 0.0 || !quad.quad.is_finite() {
+        continue;
+      }
+      if open
+        .as_ref()
+        .is_some_and(|run| run.image != quad.image || run.blend != quad.blend)
+        && let Some(run) = open.take()
+      {
+        self.push_run(z, run, shading);
+      }
+      let run = match &mut open {
+        Some(run) => run,
+        None => {
+          let Some(shown) = self.gpu.shown_image(quad.image, self.images) else {
+            continue;
+          };
+          open.insert(OpenRun {
+            image: quad.image,
+            blend: quad.blend,
+            shown,
+            start: self.list.run_instances().len(),
+            min: Vec2::INFINITY,
+            max: Vec2::NEG_INFINITY,
+          })
+        }
+      };
+      // Its rectangle of the image as the texture shows it; all of the
+      // checker standing in for an image that is not loaded
+      let uv = if run.shown.id == quad.image {
+        let (width, height) = run.shown.size();
+        let (width, height) = (width.max(1) as f32, height.max(1) as f32);
+        let [x, y, w, h] = quad.rect.map(|texels| texels as f32);
+        [x / width, y / height, (x + w) / width, (y + h) / height]
+      } else {
+        [0.0, 0.0, 1.0, 1.0]
+      };
+      let (x, y, at) = (
+        quad.quad.matrix2.x_axis,
+        quad.quad.matrix2.y_axis,
+        quad.quad.translation,
+      );
+      let mut instance = SpriteInstance::new().with_emission(look.emission);
+      instance.transform[0][..2].copy_from_slice(&[x.x, x.y]);
+      instance.transform[1][..2].copy_from_slice(&[y.x, y.y]);
+      instance.transform[2][..2].copy_from_slice(&[at.x, at.y]);
+      instance.uv_rect = uv;
+      instance.tint = quad.tint;
+      if let Some(effect) = &effect {
+        instance.effect_params = effect.effect_params;
+        instance.effect_extra = effect.effect_extra;
+      }
+      let half = (x.abs() + y.abs()) / 2.0;
+      run.min = run.min.min(at - half);
+      run.max = run.max.max(at + half);
+      self.list.run_instances().push(instance);
+    }
+    if let Some(run) = open {
+      self.push_run(z, run, shading);
+    }
+  }
+
+  /// Push `run`, whose instances are the list's run instances from its
+  /// start on, if a camera on the entity's layers can see it
+  fn push_run(&mut self, z: i32, run: OpenRun<'_>, shading: SpriteShading) {
+    let end = self.list.run_instances().len();
+    let seen = self.cameras.iter().any(|camera| {
+      camera.layers.intersects(&self.layers) && camera.view.is_visible(run.min, run.max)
+    });
+    let (Ok(first), Ok(last), true) = (u32::try_from(run.start), u32::try_from(end), seen) else {
+      self.list.drop_run_instances(run.start);
+      return;
+    };
+    if first == last {
+      return;
+    }
+    let texture = self.gpu.shown_texture(run.shown);
+    let item = DrawRun {
+      texture,
+      shading,
+      blend: run.blend,
+      filter: self.filter,
+      layers: self.layers,
+      min: run.min,
+      max: run.max,
+      instances: first..last,
+    };
+    self.list.push_run_as(DrawKind::Entity, self.lit, z, item);
+  }
+}
+
 /// Where the first tile of a run starts, relative to the entity, for the
 /// direction (Up and Left grow backwards).
 fn tile_start(direction: TileDirection, tile_count: u32, tile_size: f32) -> (f32, f32) {
@@ -683,6 +857,10 @@ fn collect_entity(frame: &EntityFrame, drawable: &Drawable<'_>, out: &mut Emitte
     ..
   } = *drawable;
   let z = renderable.z_order;
+  if renderable.is_skeleton() {
+    collect_skeleton(frame, drawable, out);
+    return;
+  }
 
   // Between the last two fixed steps for interpolated entities, lifted by
   // its floor's height; its depth scale goes by where it stands
@@ -734,44 +912,7 @@ fn collect_entity(frame: &EntityFrame, drawable: &Drawable<'_>, out: &mut Emitte
         );
       }
 
-      if let Some(blob) = &renderable.blob_shadow {
-        let (eff_radius_x, eff_radius_y) = blob.effective_radius();
-        let blob_alpha = blob.effective_alpha() * alpha;
-        if eff_radius_x >= 1.0 && eff_radius_y >= 1.0 && blob_alpha > 0.01 {
-          // Centred under the sprite's base position, not the rotated corner
-          let blob_w = (eff_radius_x * 2.0) as u32;
-          let blob_h = (eff_radius_y * 2.0) as u32;
-          let corner = position + Vec2::new(-eff_radius_x, blob.offset_y - eff_radius_y);
-          out.draw(
-            z,
-            &mut Source::ellipse(blob_w, blob_h),
-            Placement::from_top_left(corner, Vec2::new(blob_w as f32, blob_h as f32), Vec2::ONE),
-            Shading::tinted(opaque(blob.color), blob_alpha),
-          );
-        }
-      }
-
-      if let Some(contact) = &renderable.contact_shadow {
-        let contact_alpha = contact.intensity * alpha;
-        if contact.radius >= 1.0 && contact_alpha > 0.01 {
-          // A squashed ellipse at the base of the sprite
-          let contact_radius_x = contact.radius;
-          let contact_radius_y = contact.radius * 0.4;
-          let contact_w = ((contact_radius_x * 2.0) as u32).max(2);
-          let contact_h = ((contact_radius_y * 2.0) as u32).max(2);
-          let corner = position + Vec2::new(-contact_radius_x, contact.offset_y - contact_radius_y);
-          out.draw(
-            z,
-            &mut Source::ellipse(contact_w, contact_h),
-            Placement::from_top_left(
-              corner,
-              Vec2::new(contact_w as f32, contact_h as f32),
-              Vec2::ONE,
-            ),
-            Shading::tinted(opaque(contact.color), contact_alpha),
-          );
-        }
-      }
+      ground_shadows(renderable, position, out);
 
       // A Material component wins over the inline shader
       let shader = effective_shader(material, renderable.shader.as_ref());
@@ -843,7 +984,179 @@ fn collect_entity(frame: &EntityFrame, drawable: &Drawable<'_>, out: &mut Emitte
         );
       }
     }
+
+    // Drawn above, before an image is looked for
+    RenderStyle::Skeleton => {}
   }
+}
+
+/// An entity's blob and contact shadows: ellipses under `position`, where
+/// the entity draws (not its sprite's turned corner).
+fn ground_shadows(renderable: &Renderable, position: Vec2, out: &mut Emitter<'_>) {
+  let (z, alpha) = (renderable.z_order, renderable.alpha);
+  if let Some(blob) = &renderable.blob_shadow {
+    let (eff_radius_x, eff_radius_y) = blob.effective_radius();
+    let blob_alpha = blob.effective_alpha() * alpha;
+    if eff_radius_x >= 1.0 && eff_radius_y >= 1.0 && blob_alpha > 0.01 {
+      // Centred under the sprite's base position, not the rotated corner
+      let blob_w = (eff_radius_x * 2.0) as u32;
+      let blob_h = (eff_radius_y * 2.0) as u32;
+      let corner = position + Vec2::new(-eff_radius_x, blob.offset_y - eff_radius_y);
+      out.draw(
+        z,
+        &mut Source::ellipse(blob_w, blob_h),
+        Placement::from_top_left(corner, Vec2::new(blob_w as f32, blob_h as f32), Vec2::ONE),
+        Shading::tinted(opaque(blob.color), blob_alpha),
+      );
+    }
+  }
+
+  if let Some(contact) = &renderable.contact_shadow {
+    let contact_alpha = contact.intensity * alpha;
+    if contact.radius >= 1.0 && contact_alpha > 0.01 {
+      // A squashed ellipse at the base of the sprite
+      let contact_radius_x = contact.radius;
+      let contact_radius_y = contact.radius * 0.4;
+      let contact_w = ((contact_radius_x * 2.0) as u32).max(2);
+      let contact_h = ((contact_radius_y * 2.0) as u32).max(2);
+      let corner = position + Vec2::new(-contact_radius_x, contact.offset_y - contact_radius_y);
+      out.draw(
+        z,
+        &mut Source::ellipse(contact_w, contact_h),
+        Placement::from_top_left(
+          corner,
+          Vec2::new(contact_w as f32, contact_h as f32),
+          Vec2::ONE,
+        ),
+        Shading::tinted(opaque(contact.color), contact_alpha),
+      );
+    }
+  }
+}
+
+/// A skeleton entity: its regions' drop shadows, its blob and contact
+/// shadows, then its regions back to front in the skeleton's draw order,
+/// all at the entity's place among the entities' draws.
+///
+/// The skeleton is where its entity draws, as a sprite is
+/// ([`Skeleton::drawn`]): interpolated, lifted on a floor, scaled with its
+/// depth, and mirrored about the entity's origin by the renderable's
+/// flips. Each region's colour is its slot's times its attachment's times
+/// the renderable's tint, and its alpha those three's times the
+/// renderable's; its blend is its slot's, a slot that blends normally
+/// taking the renderable's. The renderable's emission and built-in effect
+/// apply to every region; a game shader does not (they draw plain).
+///
+/// The drop shadow is each region's own silhouette, moved by the shadow's
+/// offset and scaled about where the skeleton stands in its entity's
+/// turned axes (a sprite's is scaled from its box's corner; a skeleton has
+/// no box, and its pose's bounds move with every step). Every shadow is
+/// under every region. The blob and contact shadows are a sprite's: under
+/// where the entity draws.
+fn collect_skeleton(frame: &EntityFrame, drawable: &Drawable<'_>, out: &mut Emitter<'_>) {
+  let Drawable {
+    renderable,
+    global,
+    previous,
+    material,
+    y_sort,
+    lift,
+    skeleton,
+    ..
+  } = *drawable;
+  // Nothing without a skeleton, or until its data lands
+  let (Some(skeleton), Some(rigs)) = (skeleton, out.rigs) else {
+    return;
+  };
+  let id = skeleton.data().id();
+  let (Some(data), Some(version)) = (rigs.get(id), rigs.version(id)) else {
+    return;
+  };
+  let (z, alpha) = (renderable.z_order, renderable.alpha);
+  let carrier = Carrier {
+    global,
+    previous,
+    lift,
+    y_sort,
+  };
+  let drawn = skeleton.drawn(&carrier, frame.alpha, out.skeleton_step);
+  let mut quads = std::mem::take(out.quads);
+  quads.clear();
+  skeleton.regions(data, (id, version), drawn.root, drawn.between, &mut quads);
+
+  if let Some(shadow) = &renderable.drop_shadow {
+    let color = shadow.color;
+    let strength = (color.a as f32 / 255.0) * alpha;
+    let [r, g, b] = [color.r, color.g, color.b].map(|c| c as f32 / 255.0);
+    // Scaled in the entity's turned axes about where it draws, then moved
+    let cast = if shadow.scale == Vec2::ONE {
+      Affine2::from_translation(shadow.offset)
+    } else {
+      Affine2::from_translation(drawn.position + shadow.offset)
+        * Affine2::from_angle(drawn.rotation)
+        * Affine2::from_scale(shadow.scale)
+        * Affine2::from_angle(-drawn.rotation)
+        * Affine2::from_translation(-drawn.position)
+    };
+    let shadows = quads.iter().map(|quad| RunQuad {
+      image: quad.image,
+      rect: quad.rect,
+      // Shadows blend over what is below whatever their region's blend
+      blend: BlendMode::Alpha,
+      quad: cast * quad.quad,
+      // A region faded out by its slot or attachment casts less
+      tint: [r, g, b, strength * quad.color[3]],
+    });
+    let plain = RunLook {
+      effect: None,
+      emission: 1.0,
+    };
+    out.draw_runs(z, shadows, plain);
+  }
+
+  ground_shadows(renderable, drawn.position, out);
+
+  // A Material component wins over the inline shader; only a built-in
+  // effect applies to a skeleton's regions
+  let effect = match effective_shader(material, renderable.shader.as_ref()) {
+    Some(SpriteShader::BuiltIn(effect)) => Some(effect),
+    Some(SpriteShader::Custom { .. }) => {
+      if !std::mem::replace(out.told_custom, true) {
+        log::warn!(
+          "{:?} draws a skeleton with a custom sprite shader, which skeletons do not take; \
+           its regions draw plain",
+          drawable.entity
+        );
+      }
+      None
+    }
+    None => None,
+  };
+  let tint = renderable.tint;
+  let tint = [tint.r, tint.g, tint.b, tint.a].map(|c| c as f32 / 255.0);
+  let regions = quads.iter().map(|quad| RunQuad {
+    image: quad.image,
+    rect: quad.rect,
+    blend: match quad.blend {
+      SlotBlend::Normal => renderable.blend,
+      SlotBlend::Additive => BlendMode::Additive,
+      SlotBlend::Multiply => BlendMode::Multiply,
+      SlotBlend::Screen => BlendMode::Screen,
+    },
+    quad: quad.quad,
+    tint: [
+      quad.color[0] * tint[0],
+      quad.color[1] * tint[1],
+      quad.color[2] * tint[2],
+      quad.color[3] * tint[3] * alpha,
+    ],
+  });
+  let look = RunLook {
+    effect,
+    emission: renderable.emission,
+  };
+  out.draw_runs(z, regions, look);
+  *out.quads = quads;
 }
 
 /// A multi-part tile: static parts once, tiled parts repeated, each part at
@@ -908,14 +1221,21 @@ fn collect_composite(
 }
 
 /// The y a y-sorted entity sorts by: the point `foot_offset` of the way down
-/// its sprite (0 top, 1 bottom), plus `sort_offset`. `showing` gives the
-/// size of an image whose texture shows an older version.
+/// its sprite (0 top, 1 bottom), plus `sort_offset`; for a skeleton, its
+/// entity's own y plus `sort_offset`, however it is posed or flipped.
+/// `showing` gives the size of an image whose texture shows an older
+/// version.
 fn y_sort_key(
   y_sort: &YSort,
   renderable: &Renderable,
   y: f32,
   (images, showing): (&Assets<Image>, &[Showing]),
 ) -> f32 {
+  // A skeleton has no image to measure down: it sorts where it stands, its
+  // origin, where a rig's feet are
+  if renderable.is_skeleton() {
+    return y_sort.calculate_sort_y(y, 0.0);
+  }
   // The height it draws at: an older version's while a new one is written
   let id = renderable.image.id();
   let height = match showing.iter().find(|showing| showing.image == id) {

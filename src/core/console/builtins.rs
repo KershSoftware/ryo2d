@@ -124,6 +124,21 @@ pub(crate) fn add_builtins(commands: &mut ConsoleCommands) {
     },
   );
   add(
+    CommandSpec::new(
+      "debug:skeletons",
+      "Toggle skeletons' bones, region outlines, bounding boxes and points",
+    ),
+    |_, hooks, cmd| {
+      flip(
+        cmd,
+        &mut hooks.debug.show_skeletons,
+        "Skeleton overlay",
+        ("visible", "hidden"),
+      );
+      Ok(())
+    },
+  );
+  add(
     CommandSpec::new("debug:capture", "Save the next frame as a PNG (F12)")
       .usage("debug:capture [path]"),
     |_, hooks, cmd| {
@@ -613,6 +628,10 @@ mod tests {
     rig.run("debug:velocities");
     rig.run("debug:origins");
     assert!(rig.debug.show_velocities && rig.debug.show_origins);
+    assert_eq!(rig.run("debug:skeletons"), ["Skeleton overlay visible"]);
+    assert!(rig.debug.show_skeletons);
+    assert_eq!(rig.run("debug:skeletons"), ["Skeleton overlay hidden"]);
+    assert!(!rig.debug.show_skeletons);
   }
 
   #[test]

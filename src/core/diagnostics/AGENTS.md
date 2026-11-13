@@ -12,6 +12,6 @@ The engine's own debug overlays and frame timings. Not configuration: the Ryo.to
 ## Who draws
 
 - `engine/frame.rs` draws the text overlays into the UI layer each frame (`render_*`, stacked from the bottom-left by `overlay_stack_top`); `ui/debug.rs` stacks the `debug:ui-rebuilds` panels above them with the same `row_pitch` and `overlay_label`.
-- `engine/extract.rs` draws the shapes into `DebugDraw` through `overlay_shapes`; the physics F2 overlay (`physics/debug.rs`) shares `colors`.
+- `engine/extract.rs` draws the shapes into `DebugDraw` through `overlay_shapes`; the physics F2 overlay (`physics/debug.rs`) and the skeleton overlay (`skeleton/debug.rs`, `debug:skeletons`, `DebugConfig::show_skeletons`) share `colors`. The skeleton overlay is drawn where the frame draws each skeleton, so `overlay_shapes` takes the frame's interpolation fraction.
 - Only `DebugConfig`, `DebugStats`, `SmoothedDebugStats`, `OverlayMode`, the timing types, `time_block` and `colors` are public; the drawing functions are `pub(crate)`. `FrameCost` is the only item in the prelude.
 - The text rows are monospace and share one style (`overlay_style`); a new row goes through `overlay_label` so the stack keeps its spacing.
