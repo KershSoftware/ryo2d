@@ -75,13 +75,18 @@ fn probe(
 }
 
 fn builder() -> EngineBuilder {
+  builder_in(Stage)
+}
+
+/// The tests' engine, starting in `scene`
+fn builder_in(scene: impl Scene + 'static) -> EngineBuilder {
   EngineBuilder::new()
     .resolution(64, 64)
     .add_systems(
       Phase::FixedUpdate,
       probe.after(FixedSet::Skeletons).before(FixedSet::Particles),
     )
-    .start_scene(Stage)
+    .start_scene(scene)
 }
 
 fn start(builder: EngineBuilder) -> Option<HeadlessEngine> {
@@ -1393,4 +1398,264 @@ fn a_despawned_skeleton_sends_nothing_more() {
   assert!(!sent.is_empty() && !told.is_empty());
   assert!(sent.iter().all(|event| event.entity == stays), "{sent:?}");
   assert!(told.iter().all(|event| event.entity == stays), "{told:?}");
+}
+
+/// What the scenes of the hold tests tell the test, and what it asks of
+/// them
+#[derive(Default)]
+struct Board {
+  /// The level's skeleton, and the socket on its hand
+  body: Option<Entity>,
+  socket: Option<Entity>,
+  /// The pause menu's own skeleton
+  menu_body: Option<Entity>,
+  /// The level pushes the pause menu in its next update
+  push: bool,
+  /// The level pushes a scene that keeps it updating in its next update
+  push_overlay: bool,
+  /// The scene on top pops in its next update
+  pop: bool,
+}
+
+type Shared = Arc<Mutex<Board>>;
+
+/// A skeleton of the rig playing "ticks", added by the scene whose code
+/// runs
+fn ticking(ctx: &mut SceneContext, at: Vec2) -> Entity {
+  let data = ctx.assets().add(rig());
+  let mut animation = SkeletonAnimation::new();
+  animation.set_animation(0, "ticks", true);
+  ctx
+    .world
+    .spawn((
+      Transform::from_translation(at),
+      Skeleton::new(data),
+      animation,
+    ))
+    .id()
+}
+
+/// A level with a skeleton and a socket on it
+struct Level {
+  board: Shared,
+}
+
+impl Scene for Level {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    let body = ticking(ctx, Vec2::new(20.0, 10.0));
+    let socket = ctx
+      .world
+      .spawn((BoneSocket::new("hand"), ChildOf(body)))
+      .id();
+    let mut board = self.board.lock().expect("the board");
+    board.body = Some(body);
+    board.socket = Some(socket);
+  }
+
+  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    let mut board = self.board.lock().expect("the board");
+    if std::mem::take(&mut board.push) {
+      return SceneAction::Push(Box::new(Menu {
+        board: self.board.clone(),
+      }));
+    }
+    if std::mem::take(&mut board.push_overlay) {
+      return SceneAction::Push(Box::new(Overlay {
+        board: self.board.clone(),
+      }));
+    }
+    SceneAction::Continue
+  }
+}
+
+/// A pause menu over the level, which stops the level updating, with a
+/// skeleton of its own
+struct Menu {
+  board: Shared,
+}
+
+impl Scene for Menu {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    let body = ticking(ctx, Vec2::new(40.0, 40.0));
+    self.board.lock().expect("the board").menu_body = Some(body);
+  }
+
+  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    if std::mem::take(&mut self.board.lock().expect("the board").pop) {
+      SceneAction::Pop
+    } else {
+      SceneAction::Continue
+    }
+  }
+}
+
+/// A scene over the level that keeps it updating
+struct Overlay {
+  board: Shared,
+}
+
+impl Scene for Overlay {
+  fn updates_below(&self) -> bool {
+    true
+  }
+
+  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    if std::mem::take(&mut self.board.lock().expect("the board").pop) {
+      SceneAction::Pop
+    } else {
+      SceneAction::Continue
+    }
+  }
+}
+
+fn level() -> Option<(HeadlessEngine, Shared)> {
+  let board = Shared::default();
+  let level = Level {
+    board: board.clone(),
+  };
+  Some((start(builder_in(level))?, board))
+}
+
+fn ask(board: &Shared, what: impl Fn(&mut Board)) {
+  what(&mut board.lock().expect("the board"));
+}
+
+/// The entry playing on `entity`'s track 0
+fn playing(engine: &HeadlessEngine, entity: Entity) -> TrackEntryId {
+  animation(engine, entity)
+    .current(0)
+    .expect("an entry on track 0")
+}
+
+/// Steps `steps` frames, taking both kinds of message each frame
+fn steps_taking(
+  engine: &mut HeadlessEngine,
+  events: &mut Inbox<SkeletonEvent>,
+  track_events: &mut Inbox<SkeletonTrackEvent>,
+  steps: usize,
+) -> (Vec<SkeletonEvent>, Vec<SkeletonTrackEvent>) {
+  let (mut sent, mut told) = (Vec::new(), Vec::new());
+  for _ in 0..steps {
+    sent.extend(events.steps(engine, 1));
+    told.extend(track_events.take(engine));
+  }
+  (sent, told)
+}
+
+#[test]
+fn a_skeleton_freezes_under_a_scene_that_stops_its_own_and_resumes_with_nothing_lost() {
+  let Some((mut engine, board)) = level() else {
+    return;
+  };
+  let mut events = Inbox::<SkeletonEvent>::new(&engine);
+  let mut track_events = Inbox::<SkeletonTrackEvent>::new(&engine);
+  let (body, socket) = {
+    let board = board.lock().expect("the board");
+    (
+      board.body.expect("the level's skeleton"),
+      board.socket.expect("its socket"),
+    )
+  };
+  // Its arm swings, so the socket on its hand moves while it plays
+  play(&mut engine, body, 2, "swing", true);
+  // A skeleton no scene added, beside the level's
+  let data = skeleton(&engine, body).data().clone();
+  let loose = spawn(&mut engine, &data, Transform::from_xy(-20.0, 0.0));
+  play(&mut engine, loose, 0, "ticks", true);
+  let (sent, _) = steps_taking(&mut engine, &mut events, &mut track_events, 8);
+  let mut ticks: Vec<Arc<str>> = sent
+    .iter()
+    .filter(|event| event.entity == body)
+    .map(|event| event.name.clone())
+    .collect();
+  assert!(!ticks.is_empty());
+  let entry = playing(&engine, body);
+  let loose_entry = playing(&engine, loose);
+  let at = track_time(&engine, body, entry);
+  let loose_at = track_time(&engine, loose, loose_entry);
+  let held_at = global(&engine, socket);
+
+  // The pause menu goes over the level, which stops updating: from that
+  // step the level's skeleton is frozen, though fixed steps run on
+  ask(&board, |board| board.push = true);
+  let before = fixed_steps(&engine);
+  // A call made while it is frozen waits with it
+  let burst = play(&mut engine, body, 1, "burst", false);
+  let (sent, told) = steps_taking(&mut engine, &mut events, &mut track_events, 30);
+  assert_eq!(fixed_steps(&engine), before + 30);
+  assert_eq!(track_time(&engine, body, entry), at);
+  assert_eq!(track_time(&engine, body, burst), 0.0);
+  assert_eq!(global(&engine, socket), held_at);
+  assert!(sent.iter().all(|event| event.entity != body), "{sent:?}");
+  assert!(told.iter().all(|event| event.entity != body), "{told:?}");
+  // A skeleton of no scene is frozen while any scene is
+  assert_eq!(track_time(&engine, loose, loose_entry), loose_at);
+  assert!(sent.iter().all(|event| event.entity != loose), "{sent:?}");
+  // The menu's own skeleton, added by the scene on top, plays
+  let menu_body = board
+    .lock()
+    .expect("the board")
+    .menu_body
+    .expect("the menu's skeleton");
+  let menu_entry = playing(&engine, menu_body);
+  assert!(track_time(&engine, menu_body, menu_entry) > 0.4);
+  assert!(sent.iter().any(|event| event.entity == menu_body));
+
+  // The menu pops: the level's skeleton carries on from where it was, in
+  // the step the level updates again, and what waited is told once
+  ask(&board, |board| board.pop = true);
+  let (sent, told) = steps_taking(&mut engine, &mut events, &mut track_events, 1);
+  let dt = timestep(&engine);
+  close(track_time(&engine, body, entry), at + dt);
+  close(track_time(&engine, loose, loose_entry), loose_at + dt);
+  let started: Vec<(TrackEntryId, TrackEventKind)> = told
+    .iter()
+    .filter(|event| event.entity == body)
+    .map(|event| (event.entry, event.kind))
+    .collect();
+  assert_eq!(started, vec![(burst, TrackEventKind::Start)]);
+  let burst_keys = |sent: &[SkeletonEvent]| -> Vec<i32> {
+    sent
+      .iter()
+      .filter(|event| event.entity == body && &*event.animation == "burst")
+      .map(|event| event.int)
+      .collect()
+  };
+  assert_eq!(burst_keys(&sent), vec![1, 2, 3]);
+  let (more, _) = steps_taking(&mut engine, &mut events, &mut track_events, 20);
+  assert!(burst_keys(&more).is_empty());
+  // Its looping keys go on in turn across the hold: none lost, none twice
+  let after = sent.iter().chain(&more);
+  ticks.extend(
+    after
+      .filter(|event| event.entity == body && &*event.animation == "ticks")
+      .map(|event| event.name.clone()),
+  );
+  assert!(ticks.len() >= 6, "{ticks:?}");
+  for (index, name) in ticks.iter().enumerate() {
+    let expected = if index % 2 == 0 { "step" } else { "hit" };
+    assert_eq!(&**name, expected, "{ticks:?}");
+  }
+  assert_ne!(global(&engine, socket), held_at);
+}
+
+#[test]
+fn a_skeleton_under_a_scene_that_keeps_its_own_updating_keeps_animating() {
+  let Some((mut engine, board)) = level() else {
+    return;
+  };
+  let mut events = Inbox::<SkeletonEvent>::new(&engine);
+  let body = board
+    .lock()
+    .expect("the board")
+    .body
+    .expect("the level's skeleton");
+  events.steps(&mut engine, 8);
+  let entry = playing(&engine, body);
+  let at = track_time(&engine, body, entry);
+  ask(&board, |board| board.push_overlay = true);
+  let sent = events.steps(&mut engine, 30);
+  let dt = timestep(&engine);
+  close(track_time(&engine, body, entry), at + 30.0 * dt);
+  assert!(sent.iter().any(|event| event.entity == body));
 }

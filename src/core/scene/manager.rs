@@ -10,6 +10,7 @@ use crate::core::graphics::GpuRenderContext;
 use crate::core::messages::SceneMessages;
 use crate::core::particles;
 use crate::core::schedule::SceneSchedules;
+use crate::core::skeleton;
 use crate::core::time::Time;
 use crate::core::ui::UiContext;
 use crate::profile_scope;
@@ -143,7 +144,8 @@ enum TransitionPhase {
 /// it registered, and the voices it played: its loops, its paused or held
 /// one-shots and its one-shots with more than 2 s left (but on `ui`) stop
 /// with their fades, and the rest of its playing one-shots play to their
-/// end. The particle emitters it added that outlive it belong to no scene.
+/// end. The particle emitters and skeletons it added that outlive it belong
+/// to no scene.
 fn release_scope(world: &mut World, scope_id: u64) {
   #[cfg(dev_tools)]
   if let Some(mut commands) = world.get_resource_mut::<crate::core::console::ConsoleCommands>() {
@@ -151,13 +153,16 @@ fn release_scope(world: &mut World, scope_id: u64) {
   }
   audio::release_scene(world, scope_id);
   particles::release_scene(world, scope_id);
+  skeleton::release_scene(world, scope_id);
 }
 
 /// Run `f` as scene `scope`'s code: the voices it plays and the particle
-/// emitters it adds are that scene's (`audio::in_scene`,
-/// `particles::in_scene`)
+/// emitters and skeletons it adds are that scene's (`audio::in_scene`,
+/// `particles::in_scene`, `skeleton::in_scene`)
 fn in_scene<R>(world: &mut World, scope: u64, f: impl FnOnce(&mut World) -> R) -> R {
-  audio::in_scene(world, scope, |world| particles::in_scene(world, scope, f))
+  audio::in_scene(world, scope, |world| {
+    particles::in_scene(world, scope, |world| skeleton::in_scene(world, scope, f))
+  })
 }
 
 impl SceneManager {
@@ -703,8 +708,8 @@ impl SceneManager {
   /// Write the stack's pauses into the world: `is_physics_paused` into the
   /// `PhysicsPaused` resource, the scenes whose voices the audio engine
   /// holds (see [`Scene::holds_audio_below`]) and the scenes whose particle
-  /// emitters are frozen. The stack's changes do the last two as they
-  /// happen; this follows a scene whose answers changed.
+  /// emitters and skeletons are frozen. The stack's changes do the last two
+  /// as they happen; this follows a scene whose answers changed.
   pub fn sync_pauses(&self, world: &mut World) {
     if let Some(mut paused) = world.get_resource_mut::<PhysicsPaused>() {
       paused.0 = self.is_physics_paused();
@@ -714,9 +719,9 @@ impl SceneManager {
 
   /// Tell the audio engine which scenes are not heard: those not updated
   /// (below `update_from`), when the top scene `holds_audio_below`. Tell the
-  /// particle store which scenes' emitters are frozen: those below
-  /// `update_from`, whatever `holds_audio_below` says. A scene transition
-  /// holds neither.
+  /// particle store and the skeleton store which scenes' emitters and
+  /// skeletons are frozen: those below `update_from`, whatever
+  /// `holds_audio_below` says. A scene transition holds none of them.
   fn sync_audio_holds(&self, world: &mut World) {
     let stopped = &self.scenes[..self.update_from()];
     let unheard = match self.scenes.last() {
@@ -725,6 +730,7 @@ impl SceneManager {
     };
     audio::hold_scenes(world, unheard.iter().map(|slot| slot.scope_id));
     particles::hold_scenes(world, stopped.iter().map(|slot| slot.scope_id));
+    skeleton::hold_scenes(world, stopped.iter().map(|slot| slot.scope_id));
   }
 }
 

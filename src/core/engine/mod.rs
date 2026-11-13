@@ -484,6 +484,7 @@ pub(crate) fn init_world_resources(
   insert_registry(world, registry);
   world.insert_resource(audio);
   world.insert_resource(ParticleStore::new(config.particle_budget, particle_seed));
+  world.insert_resource(crate::core::skeleton::SkeletonStore::default());
   world.insert_resource(EffectsManager::new());
   world.insert_resource(crate::core::render::Look::default());
   world.insert_resource(LightingSettings::default());

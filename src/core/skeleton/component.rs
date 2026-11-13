@@ -10,9 +10,11 @@ use super::apply::shortest;
 use super::attachment::Attachment;
 use super::data::{BoneId, DataVersion, SkeletonData, SkeletonIndex, SlotId};
 use super::pose::{BonePose, Pose};
+use super::scope::SkeletonStore;
 use super::state::{FiredEvent, FiredTrackEvent, SkeletonAnimation};
 use super::validate::{MAX_BONES, MAX_SLOTS};
 use crate::core::asset::Handle;
+use crate::core::ecs::kernel::{DeferredWorld, HookContext};
 use crate::core::ecs::{Component, Transform};
 
 /// The most names a skeleton remembers having warned about. Past it, a
@@ -167,8 +169,12 @@ impl Carried {
 /// last step left it
 #[derive(Component, Debug, Clone)]
 #[require(Transform)]
+#[component(on_insert = skeleton_inserted)]
 pub struct Skeleton {
   data: Handle<SkeletonData>,
+  /// The scene whose code added it, which it is held with; `None` for the
+  /// engine's own code, and once that scene has exited
+  scope: Option<u64>,
   /// The skins worn, the later over the earlier, all over the default skin
   skins: Vec<WornSkin>,
   attachments: Vec<SetAttachment>,
@@ -195,6 +201,7 @@ impl Skeleton {
   pub fn new(data: Handle<SkeletonData>) -> Self {
     Self {
       data,
+      scope: None,
       skins: Vec::new(),
       attachments: Vec::new(),
       overrides: Vec::new(),
@@ -427,6 +434,16 @@ impl Skeleton {
   /// placed by
   pub(crate) fn bone_space(&self, bone: BoneId) -> Option<Affine2> {
     self.pose.skeleton_space.get(bone.index()).copied()
+  }
+
+  /// The scene it belongs to
+  pub(crate) fn scope(&self) -> Option<u64> {
+    self.scope
+  }
+
+  /// Gives it to another scene, or to none
+  pub(crate) fn set_scope(&mut self, scope: Option<u64>) {
+    self.scope = scope;
   }
 
   /// The data's id and version its pose was made from, once a step has
@@ -663,6 +680,20 @@ impl Skeleton {
       }
       Named::Skin => log::warn!("skeleton skin {name:?} is not in the skeleton's data; ignored"),
     }
+  }
+}
+
+/// A skeleton was added, or put over another: it belongs to the scene
+/// whose code runs now, and is held with it. Nothing without a store
+fn skeleton_inserted(mut world: DeferredWorld, context: HookContext) {
+  let Some(scope) = world
+    .get_resource::<SkeletonStore>()
+    .map(SkeletonStore::scope)
+  else {
+    return;
+  };
+  if let Some(mut skeleton) = world.get_mut::<Skeleton>(context.entity) {
+    skeleton.scope = scope;
   }
 }
 

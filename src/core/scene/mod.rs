@@ -484,6 +484,7 @@ pub(crate) fn init_world_resources_for_tests(world: &mut crate::core::ecs::World
     crate::core::particles::DEFAULT_PARTICLE_BUDGET,
     crate::core::particles::PARTICLE_HEADLESS_SEED,
   ));
+  world.insert_resource(crate::core::skeleton::SkeletonStore::default());
   register_engine_messages(world);
 }
 

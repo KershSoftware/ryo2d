@@ -19,6 +19,7 @@ mod curve;
 mod data;
 mod event;
 mod pose;
+mod scope;
 mod skin;
 mod socket;
 mod state;
@@ -37,6 +38,7 @@ pub use data::{
 };
 pub use event::{SkeletonEvent, SkeletonTrackEvent};
 pub use pose::BonePose;
+pub(crate) use scope::{SkeletonStore, hold_scenes, in_scene, release_scene};
 pub use skin::Skin;
 pub use socket::BoneSocket;
 pub use state::{SkeletonAnimation, TrackEntry, TrackEntryId, TrackEventKind};

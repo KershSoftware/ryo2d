@@ -5,6 +5,7 @@
 use super::component::{Fired, Skeleton};
 use super::data::{DataVersion, SkeletonData};
 use super::event::{SkeletonEvent, SkeletonTrackEvent};
+use super::scope::SkeletonStore;
 use super::socket::{BoneSocket, SocketState};
 use super::state::SkeletonAnimation;
 use crate::core::asset::Assets;
@@ -66,9 +67,11 @@ pub(crate) struct StepState {
 /// world transforms are computed under its entity's, its sockets (and what
 /// is below them) are placed on their bones, and its events and track
 /// events are written. One whose data is still loading waits, silently
+#[allow(clippy::too_many_arguments)] // a resource, query or writer per input
 pub(crate) fn update_skeletons(
   time: Option<Res<Time>>,
   data: Option<Res<Assets<SkeletonData>>>,
+  store: Option<Res<SkeletonStore>>,
   mut skeletons: Skeletons,
   mut placed: Placed,
   mut events: MessageWriter<SkeletonEvent>,
@@ -96,6 +99,15 @@ pub(crate) fn update_skeletons(
     let Ok((entity, mut skeleton, animation, children)) = skeletons.get_mut(entity) else {
       continue;
     };
+    // A skeleton whose scene is stopped under another is frozen with it:
+    // nothing advances and nothing is sent, and what its calls caused
+    // waits for the step it updates again
+    if store
+      .as_ref()
+      .is_some_and(|store| store.holds(skeleton.scope()))
+    {
+      continue;
+    }
     // Data still on its way has no version: there is nothing to pose yet
     let id = skeleton.data().id();
     let (Some(version), Some(rig)) = (data.version(id), data.get(id)) else {
