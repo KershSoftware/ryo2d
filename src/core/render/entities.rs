@@ -63,7 +63,7 @@ use crate::core::graphics::{
   SpriteInstance, TextureId, images_of,
 };
 use crate::core::skeleton::{
-  Carrier, MeshPart, Part, Parts, Skeleton, SkeletonData, SkeletonStore, SlotBlend,
+  Carrier, MeshPart, Part, Parts, RegionQuad, Skeleton, SkeletonData, SkeletonStore, SlotBlend,
 };
 use crate::core::ui::Color;
 use glam::Affine2;
@@ -748,12 +748,6 @@ struct RunMesh<'p> {
   cast: Option<Affine2>,
 }
 
-/// One part of a skeleton as it is drawn, in the skeleton's draw order
-enum RunPart<'p> {
-  Quad(RunQuad),
-  Mesh(RunMesh<'p>),
-}
-
 /// How every part of a skeleton is drawn
 #[derive(Clone, Copy)]
 struct RunLook<'a> {
@@ -820,30 +814,41 @@ struct OpenRun<'i> {
 }
 
 impl<'a> Emitter<'a> {
-  /// Draw a skeleton's `parts`, in order, as entity items at `z`: each
-  /// stretch of quads that share an image and a blend is one run, so a
-  /// skeleton of regions drawn from one atlas is one item; and each mesh is
-  /// an item of its own where it comes ([`draw_skinned`](Self::draw_skinned)),
-  /// which ends the run before it, the quads after it starting another. A
-  /// run no camera on the entity's layers can see is not pushed (and its
-  /// image never uploaded); an image that draws nothing (not loaded, in a
+  /// Draw a skeleton's `parts`, in order, as entity items at `z`, a region
+  /// as `as_quad` gives it and a mesh as `as_mesh` does (the body's blend
+  /// and tint, or its drop shadow's and the shadow's cast): each stretch of
+  /// quads that share an image and a blend is one run, so a skeleton of
+  /// regions drawn from one atlas is one item; and each mesh is an item of
+  /// its own where it comes ([`draw_skinned`](Self::draw_skinned)), which
+  /// ends the run before it, the quads after it starting another. A run no
+  /// camera on the entity's layers can see is not pushed (and its image
+  /// never uploaded); an image that draws nothing (not loaded, in a
   /// release build) leaves its quads out, as does a quad that is not
   /// finite or has no alpha.
   ///
   /// With a game shader each quad is a sprite item of its own instead, as
   /// an entity's sprite is: a run is shaded plain or by a built-in effect.
   /// A mesh takes the shader in its own item, as it takes an effect.
+  ///
+  /// The parts are walked here, and each is turned into what is drawn
+  /// where it is used. Handed over ready-made, as an iterator of either
+  /// kind, every quad is built behind a call the compiler does not inline
+  /// and copied out of it again, which takes a third more of this loop's
+  /// time for a skeleton of regions alone (`docs/backlog/skeleton.md`,
+  /// Meshes).
   fn draw_parts<'p>(
     &mut self,
     z: i32,
-    parts: impl Iterator<Item = RunPart<'p>>,
+    parts: &'p [Part<'p>],
     look: RunLook<'_>,
+    as_quad: impl Fn(&RegionQuad) -> RunQuad,
+    as_mesh: impl Fn(&'p MeshPart<'p>) -> RunMesh<'p>,
   ) {
     if let Some(custom) = look.custom {
       for part in parts {
         match part {
-          RunPart::Quad(quad) => self.draw_shaded(z, &quad, custom, look.emission),
-          RunPart::Mesh(mesh) => self.draw_skinned(z, &mesh, look),
+          Part::Region(region) => self.draw_shaded(z, &as_quad(region), custom, look.emission),
+          Part::Mesh(mesh) => self.draw_skinned(z, &as_mesh(mesh), look),
         }
       }
       return;
@@ -858,13 +863,13 @@ impl<'a> Emitter<'a> {
     let mut open: Option<OpenRun<'a>> = None;
     for part in parts {
       let quad = match part {
-        RunPart::Quad(quad) => quad,
-        RunPart::Mesh(mesh) => {
+        Part::Region(region) => as_quad(region),
+        Part::Mesh(mesh) => {
           // A mesh draws between the quads before it and those after it
           if let Some(run) = open.take() {
             self.push_run(z, run, shading);
           }
-          self.draw_skinned(z, &mesh, look);
+          self.draw_skinned(z, &as_mesh(mesh), look);
           continue;
         }
       };
@@ -912,7 +917,11 @@ impl<'a> Emitter<'a> {
   /// vertices where its bones put them (moved by its `cast`, for a
   /// shadow), each with its UV across its region's rectangle, shaded as
   /// `look` says ([`draw_mesh`](Self::draw_mesh)). Its culling box is its
-  /// skinned vertices'
+  /// skinned vertices'.
+  ///
+  /// Never inlined: inside [`draw_parts`](Self::draw_parts) it slows the
+  /// loop over the quads beside it (`docs/backlog/skeleton.md`, Meshes)
+  #[inline(never)]
   fn draw_skinned(&mut self, z: i32, mesh: &RunMesh<'_>, look: RunLook<'_>) {
     let MeshPart {
       image,
@@ -1421,28 +1430,30 @@ fn collect_skeleton<'w>(frame: &EntityFrame, drawable: &Drawable<'w>, out: &mut 
     };
     // Shadows blend over what is below whatever their part's blend, and a
     // part faded out by its slot or attachment casts less
-    let shadows = parts.list.iter().map(|part| match part {
-      Part::Region(quad) => RunPart::Quad(RunQuad {
-        image: quad.image,
-        rect: quad.rect,
-        blend: BlendMode::Alpha,
-        quad: cast * quad.quad,
-        tint: [r, g, b, strength * quad.color[3]],
-      }),
-      Part::Mesh(mesh) => RunPart::Mesh(RunMesh {
-        blend: BlendMode::Alpha,
-        tint: [r, g, b, strength * mesh.color[3]],
-        part: mesh,
-        positions: parts.vertices(mesh),
-        cast: Some(cast),
-      }),
-    });
     let plain = RunLook {
       effect: None,
       custom: None,
       emission: 1.0,
     };
-    out.draw_parts(z, shadows, plain);
+    out.draw_parts(
+      z,
+      &parts.list,
+      plain,
+      |quad| RunQuad {
+        image: quad.image,
+        rect: quad.rect,
+        blend: BlendMode::Alpha,
+        quad: cast * quad.quad,
+        tint: [r, g, b, strength * quad.color[3]],
+      },
+      |mesh| RunMesh {
+        blend: BlendMode::Alpha,
+        tint: [r, g, b, strength * mesh.color[3]],
+        part: mesh,
+        positions: parts.vertices(mesh),
+        cast: Some(cast),
+      },
+    );
   }
 
   ground_shadows(renderable, drawn.position, out);
@@ -1471,28 +1482,30 @@ fn collect_skeleton<'w>(frame: &EntityFrame, drawable: &Drawable<'w>, out: &mut 
     SlotBlend::Multiply => BlendMode::Multiply,
     SlotBlend::Screen => BlendMode::Screen,
   };
-  let body = parts.list.iter().map(|part| match part {
-    Part::Region(quad) => RunPart::Quad(RunQuad {
-      image: quad.image,
-      rect: quad.rect,
-      blend: blended(quad.blend),
-      quad: quad.quad,
-      tint: tinted(quad.color),
-    }),
-    Part::Mesh(mesh) => RunPart::Mesh(RunMesh {
-      blend: blended(mesh.blend),
-      tint: tinted(mesh.color),
-      part: mesh,
-      positions: parts.vertices(mesh),
-      cast: None,
-    }),
-  });
   let look = RunLook {
     effect,
     custom,
     emission: renderable.emission,
   };
-  out.draw_parts(z, body, look);
+  out.draw_parts(
+    z,
+    &parts.list,
+    look,
+    |quad| RunQuad {
+      image: quad.image,
+      rect: quad.rect,
+      blend: blended(quad.blend),
+      quad: quad.quad,
+      tint: tinted(quad.color),
+    },
+    |mesh| RunMesh {
+      blend: blended(mesh.blend),
+      tint: tinted(mesh.color),
+      part: mesh,
+      positions: parts.vertices(mesh),
+      cast: None,
+    },
+  );
   out.parts = parts;
 }
 

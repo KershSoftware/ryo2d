@@ -49,7 +49,7 @@ pub use data::{
   BoneData, BoneId, EventAudio, EventData, Inherit, Region, SkeletonData, SlotBlend, SlotData,
   SlotId,
 };
-pub(crate) use draw::{Carrier, MeshPart, Part, Parts};
+pub(crate) use draw::{Carrier, MeshPart, Part, Parts, RegionQuad};
 pub use event::{SkeletonEvent, SkeletonTrackEvent};
 pub(crate) use scope::{SkeletonStore, hold_scenes, in_scene, release_scene};
 pub use skin::Skin;

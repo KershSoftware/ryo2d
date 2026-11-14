@@ -272,7 +272,12 @@ impl<'s> Parts<'s> {
   /// `None`, with nothing added, when the pose lacks a bone the mesh
   /// names: a pose made for other data. A vertex can come out at no finite
   /// place (a root or a bone that is not finite); the drawer draws no such
-  /// mesh
+  /// mesh.
+  ///
+  /// Never inlined: inside the walk it slows the loop over a skeleton's
+  /// regions, which most skeletons are made of
+  /// (`docs/backlog/skeleton.md`, Meshes)
+  #[inline(never)]
   fn skin(
     &mut self,
     skeleton: &Skeleton,
