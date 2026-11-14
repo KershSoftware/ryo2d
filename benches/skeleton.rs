@@ -30,7 +30,8 @@
 //!   skeleton's 25 regions, its shape keyed by both of the base track's
 //!   animations, so a deform plays in every step and a skeleton draws a run
 //!   of quads, the mesh, and a run of quads; `skeletons_extract_mesh_shadow`,
-//!   the same with a drop shadow, a second mesh a skeleton;
+//!   the same with a drop shadow, a second mesh a skeleton, held to the
+//!   extract's target as the shadow case of regions is;
 //! - beside a case's extract, where the rest of its frame goes:
 //!   `skeletons_prepare*` (`Batch2D::prepare`: placing, planning the draws
 //!   and uploading), `skeletons_world_pass*` (the camera's world pass as it
@@ -879,6 +880,7 @@ fn main() {
   });
   if let (Some(mesh), Some(shadow)) = (shadowed, shadow) {
     println!("skeletons_extract_mesh_shadow: {:.1} µs", mesh.extract);
+    held("skeletons_extract_mesh_shadow", mesh.extract, EXTRACT_MAX);
     is_the_case("skeletons_extract_mesh_shadow", &mesh, 2);
     println!("skeletons_render_shadow: {:.1} µs", shadow.render);
     println!("skeletons_render_mesh_shadow: {:.1} µs", mesh.render);

@@ -10,7 +10,9 @@
 //! a lit frame of 50 animated skeletons (two tracks, events firing, a
 //! socket each, a mix started on some every frame) against the same entities
 //! as sprites, of regions alone and with a weighted mesh among them whose
-//! shape a deform keys.
+//! shape a deform keys. For the skeletons the GPU's are compared too, site
+//! by site: no call the engine makes into the GPU API may allocate more for
+//! the skeletons' frame than for the sprites', but for a small room.
 //!
 //! A frame's allocations are told apart by their stacks: those made inside
 //! the GPU API (wgpu, naga and the Metal bindings, which allocate as they
@@ -462,6 +464,9 @@ struct Frame {
   /// earlier ones held, only once the GPU is done with them, so their
   /// count moves with the GPU's timing
   timed: usize,
+  /// Those made inside the GPU API, by where the engine called into it:
+  /// the GPU API's function and the engine's that called it
+  gpu: BTreeMap<String, usize>,
 }
 
 /// A stack's function names, leaf first
@@ -492,6 +497,7 @@ fn traced_after(engine: &mut HeadlessEngine, calls: impl FnOnce(&mut HeadlessEng
   let traces = TRACES.with(|t| std::mem::take(&mut *t.borrow_mut()));
   let (mut own, mut map_gpu, mut lighting_gpu) = (BTreeMap::new(), Vec::new(), BTreeMap::new());
   let (mut skeleton_gpu, mut in_skeleton) = (Vec::new(), Vec::new());
+  let mut gpu = BTreeMap::new();
   // A function of the skeletons' own path: one of the skeleton module (a
   // type that names it in its parameters is not one), or one of the
   // entity drawer's that only a skeleton's drawing reaches. A method's
@@ -514,6 +520,11 @@ fn traced_after(engine: &mut HeadlessEngine, calls: impl FnOnce(&mut HeadlessEng
       if text.contains("Queue>::write_buffer") || text.contains("Queue>::submit") {
         timed += 1;
       }
+      let site = match ours {
+        Some(at) => format!("{} <- {}", frames[at.saturating_sub(1)], frames[at]),
+        None => frames.first().copied().unwrap_or("?").to_string(),
+      };
+      *gpu.entry(site).or_insert(0) += 1;
       if let Some(at) = ours
         && (frames[at].contains("tilemap::") || frames[at].contains("render::tiles"))
       {
@@ -547,6 +558,7 @@ fn traced_after(engine: &mut HeadlessEngine, calls: impl FnOnce(&mut HeadlessEng
     in_skeleton,
     lighting_gpu,
     timed,
+    gpu,
   }
 }
 
@@ -557,6 +569,37 @@ fn more(drawn: &Frame, nothing: &Frame) -> Vec<String> {
     .iter()
     .filter(|(site, n)| nothing.own.get(*site).copied().unwrap_or(0) < **n)
     .map(|(site, n)| format!("{n} at {site}"))
+    .collect()
+}
+
+/// The GPU API's call that checks and encodes what a frame's passes
+/// recorded. What it allocates is the GPU API's own handling of those
+/// commands (wgpu's Metal backend copies a pipeline's vertex buffer layouts
+/// each time a pass sets it, for one): no code of the engine's runs there,
+/// so nothing the engine makes for a drawable can hide in it
+const ENCODES: &str = "<wgpu::api::command_encoder::CommandEncoder>::finish <- ";
+
+/// How many more allocations a call of the engine's into the GPU API may
+/// make for one frame than for another before it counts. A buffer's write
+/// that the other frame lacks, a longer list of a pass's commands and what
+/// moves with the GPU's timing are a few: the most seen at one site is
+/// nine, the mesh stream's two writes in a debug build. A buffer, a write
+/// or a bind group for each of fifty drawables is fifty at the least
+const GPU_ROOM: usize = 24;
+
+/// The sites where `drawn` makes more allocations inside the GPU API than
+/// `nothing` makes there and [`GPU_ROOM`] more, a site being the GPU API's
+/// function and the engine's that called it; not the encoder's finish
+/// ([`ENCODES`]). So a GPU resource made or written for each drawable is
+/// told wherever the engine does it: laying out the frame, planning its
+/// draws, or recording a pass
+fn more_gpu(drawn: &Frame, nothing: &Frame) -> Vec<String> {
+  let other = |site: &String| nothing.gpu.get(site).copied().unwrap_or(0);
+  drawn
+    .gpu
+    .iter()
+    .filter(|(site, n)| !site.starts_with(ENCODES) && other(site) + GPU_ROOM < **n)
+    .map(|(site, n)| format!("{n} (the other frame {}) at {site}", other(site)))
     .collect()
 }
 
@@ -1383,6 +1426,8 @@ const ATLAS_CALLS: [&str; 7] = [
   "core::ptr::drop_glue::<wgpu::api::render_pass::RenderPass>",
 ];
 
+/// How many skeletons the crowd holds
+const CROWD: usize = 50;
 /// The rows of the crowd's mesh: two vertices a row, 60 in all
 const RIBBON_ROWS: usize = 30;
 /// The region slot the mesh's slot follows: a skeleton draws five regions,
@@ -1659,7 +1704,7 @@ fn skeletons_allocate_nothing(mesh: bool) {
     let builder = EngineBuilder::new()
       .resolution(640, 360)
       .start_scene(Crowd {
-        count: 50,
+        count: CROWD,
         skeletons,
         mesh,
       });
@@ -1696,48 +1741,76 @@ fn skeletons_allocate_nothing(mesh: bool) {
     // of its own between two of quads, and its deform is moving it
     let draws = crowd.debug_stats().draw_calls;
     assert!(
-      draws > 100,
-      "{draws} draws: 50 meshes among 51 runs of quads"
+      draws > 2 * CROWD as u32,
+      "{draws} draws: {CROWD} meshes among {} runs of quads",
+      CROWD + 1
     );
-    let world = crowd.world_mut();
-    let mut skeletons = world.query::<(Entity, &Skeleton)>();
-    let moved: Vec<Option<f32>> = skeletons
-      .iter(world)
-      .map(|(entity, skeleton)| ribbon_moved(world, entity, skeleton))
-      .collect();
-    let deformed = moved
-      .iter()
-      .filter(|moved| moved.is_some_and(|by| by > 0.05))
-      .count();
-    assert!(
-      moved.len() == 50 && deformed >= 40,
-      "{deformed} of {} meshes are moved by their deform: {moved:?}",
-      moved.len()
-    );
+    deform_plays(&mut crowd, "before the traced frames");
   }
   for frame in warm..warm + 12 {
     let drawn = traced_after(&mut crowd, |engine| steady(engine, frame));
     let nothing = traced(&mut empty);
     let own = |frame: &Frame| frame.own.values().sum::<usize>();
+    // Inside the GPU API: all of them, and those the encoder's finish made
+    let inside = |frame: &Frame| frame.count - own(frame);
+    let encoded = |frame: &Frame| {
+      let finish = frame
+        .gpu
+        .iter()
+        .filter(|(site, _)| site.starts_with(ENCODES));
+      finish.map(|(_, n)| n).sum::<usize>()
+    };
     println!(
-      "frame {frame}: 50 skeletons {} allocations ({} the engine's own), as sprites {} ({} its own); the \
-       skeletons' own path made {} inside the GPU API",
+      "frame {frame}: {CROWD} skeletons {} allocations ({} the engine's own), as sprites {} ({} its \
+       own); inside the GPU API {} ({} as the encoder finished), the sprites' {} ({}); the skeletons' \
+       own path made {} of them",
       drawn.count,
       own(&drawn),
       nothing.count,
       own(&nothing),
+      inside(&drawn),
+      encoded(&drawn),
+      inside(&nothing),
+      encoded(&nothing),
       drawn.skeleton_gpu.len(),
     );
-    // All three are told together, so a failure names the site, the
+    // All four are told together, so a failure names the site, the
     // function of the skeletons' path nearest it, and the GPU's share
-    let more = more(&drawn, &nothing);
+    let (more, more_gpu) = (more(&drawn, &nothing), more_gpu(&drawn, &nothing));
+    let clean = more.is_empty() && drawn.in_skeleton.is_empty() && drawn.skeleton_gpu.is_empty();
     assert!(
-      more.is_empty() && drawn.in_skeleton.is_empty() && drawn.skeleton_gpu.is_empty(),
+      clean && more_gpu.is_empty(),
       "frame {frame}: the skeletons' frame allocated.\nOf the engine's own, more than the sprites' \
        frame makes: {more:#?}\nWith a function of the skeletons' path on the stack, by the nearest \
-       one: {:#?}\nInside the GPU API from the skeletons' path: {:#?}",
+       one: {:#?}\nInside the GPU API from the skeletons' path: {:#?}\nInside the GPU API, where \
+       the engine called into it, over {GPU_ROOM} more than the sprites' frame makes there: \
+       {more_gpu:#?}",
       counted(&drawn.in_skeleton),
       counted(&drawn.skeleton_gpu),
     );
   }
+  if mesh {
+    // And it was so to the end: the frames traced drew a deforming mesh
+    deform_plays(&mut crowd, "after the last traced frame");
+  }
+}
+
+/// Asserts that a deform is moving the mesh of four skeletons in five at
+/// the least, as the crowd's last step left them
+fn deform_plays(crowd: &mut HeadlessEngine, when: &str) {
+  let world = crowd.world_mut();
+  let mut skeletons = world.query::<(Entity, &Skeleton)>();
+  let moved: Vec<Option<f32>> = skeletons
+    .iter(world)
+    .map(|(entity, skeleton)| ribbon_moved(world, entity, skeleton))
+    .collect();
+  let deformed = moved
+    .iter()
+    .filter(|moved| moved.is_some_and(|by| by > 0.05))
+    .count();
+  assert!(
+    moved.len() == CROWD && deformed * 5 >= CROWD * 4,
+    "{when}, {deformed} of {} meshes are moved by their deform: {moved:?}",
+    moved.len()
+  );
 }

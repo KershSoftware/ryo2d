@@ -919,8 +919,12 @@ impl<'a> Emitter<'a> {
   /// `look` says ([`draw_mesh`](Self::draw_mesh)). Its culling box is its
   /// skinned vertices'.
   ///
-  /// Never inlined: inside [`draw_parts`](Self::draw_parts) it slows the
-  /// loop over the quads beside it (`docs/backlog/skeleton.md`, Meshes)
+  /// Never inlined: it is one call a mesh and none for a skeleton of
+  /// regions alone, it keeps code only a mesh runs out of
+  /// [`draw_parts`](Self::draw_parts)' loop over the quads, and it keeps
+  /// this function named on a stack, which is how the allocation test
+  /// finds it. Whether that loop is the faster for it was measured and is
+  /// within the noise (`docs/backlog/skeleton.md`, Meshes)
   #[inline(never)]
   fn draw_skinned(&mut self, z: i32, mesh: &RunMesh<'_>, look: RunLook<'_>) {
     let MeshPart {

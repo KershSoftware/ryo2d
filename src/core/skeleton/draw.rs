@@ -274,8 +274,11 @@ impl<'s> Parts<'s> {
   /// place (a root or a bone that is not finite); the drawer draws no such
   /// mesh.
   ///
-  /// Never inlined: inside the walk it slows the loop over a skeleton's
-  /// regions, which most skeletons are made of
+  /// Never inlined: it is one call a mesh and none for a skeleton of
+  /// regions alone, it keeps code only a mesh runs out of the walk's loop
+  /// over the regions, and it keeps this function named on a stack, which
+  /// is how the allocation test finds it. Whether that loop is the faster
+  /// for it was measured and is within the noise
   /// (`docs/backlog/skeleton.md`, Meshes)
   #[inline(never)]
   fn skin(
