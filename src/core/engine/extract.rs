@@ -577,6 +577,7 @@ impl Engine {
       } else {
         &[]
       };
+      let prepare_start = Instant::now();
       batch.prepare(
         rend.device(),
         rend.queue(),
@@ -585,6 +586,7 @@ impl Engine {
         &mut gpu,
         ui_textures,
       );
+      self.batch_prepare_time = prepare_start.elapsed();
       let ui_frame = match batch.camera_group(UI_CAMERA) {
         Some(camera) if ui_pass => Some(ui_renderer.finish(
           rend.device(),

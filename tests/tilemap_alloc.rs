@@ -9,7 +9,8 @@
 //! shadowed lights, hard and soft, against the same lights unshadowed; and
 //! a lit frame of 50 animated skeletons (two tracks, events firing, a
 //! socket each, a mix started on some every frame) against the same entities
-//! as sprites.
+//! as sprites, of regions alone and with a weighted mesh among them whose
+//! shape a deform keys.
 //!
 //! A frame's allocations are told apart by their stacks: those made inside
 //! the GPU API (wgpu, naga and the Metal bindings, which allocate as they
@@ -1382,9 +1383,51 @@ const ATLAS_CALLS: [&str; 7] = [
   "core::ptr::drop_glue::<wgpu::api::render_pass::RenderPass>",
 ];
 
+/// The rows of the crowd's mesh: two vertices a row, 60 in all
+const RIBBON_ROWS: usize = 30;
+/// The region slot the mesh's slot follows: a skeleton draws five regions,
+/// the mesh, and five regions more
+const RIBBON_AFTER: usize = 4;
+
+/// A weighted mesh of 60 vertices: a ribbon along the chain's first ten
+/// bones, each vertex held by the two bones it lies between, so it has 120
+/// positions for a deform to key
+fn ribbon() -> MeshAttachment {
+  let vertices = (0..RIBBON_ROWS * 2).map(|vertex| {
+    let (row, side) = (vertex / 2, vertex % 2);
+    let along = row as f32 * 9.0 / RIBBON_ROWS as f32;
+    let (bone, part) = (along as u8, along.fract());
+    let y = if side == 0 { -4.0 } else { 4.0 };
+    let weight = 0.9 - 0.8 * part;
+    vec![
+      SkeletonInfluence::new(BoneId(bone), part * 5.0, y, weight),
+      SkeletonInfluence::new(BoneId(bone + 1), (part - 1.0) * 5.0, y, 1.0 - weight),
+    ]
+  });
+  let uvs = (0..RIBBON_ROWS * 2)
+    .map(|vertex| {
+      Vec2::new(
+        (vertex % 2) as f32,
+        (vertex / 2) as f32 / (RIBBON_ROWS - 1) as f32,
+      )
+    })
+    .collect();
+  let triangles = (0..RIBBON_ROWS as u16 - 1)
+    .flat_map(|row| {
+      let first = row * 2;
+      [first, first + 1, first + 2, first + 1, first + 3, first + 2]
+    })
+    .collect();
+  let vertices = MeshVertices::Weighted(WeightedVertices::new(vertices));
+  MeshAttachment::new(0, vertices, uvs, triangles)
+}
+
 /// A rig of 12 bones in a chain and 10 region slots, a step event, and
-/// the animations the crowd mixes between
-fn crowd_rig(image: Handle<Image>) -> SkeletonData {
+/// the animations the crowd mixes between. With `mesh`, a slot among the
+/// regions shows the [`ribbon`], and both of the base track's animations
+/// key its shape (every position of it, by a different amount each), so a
+/// deform plays in every step and two are blended through every crossfade
+fn crowd_rig(image: Handle<Image>, mesh: bool) -> SkeletonData {
   let turn = |bone: u8, keys: &[(f32, f32)]| SkeletonTimeline::Rotate {
     bone: BoneId(bone),
     frames: keys
@@ -1392,10 +1435,27 @@ fn crowd_rig(image: Handle<Image>) -> SkeletonData {
       .map(|&(time, radians)| (time, radians, SkeletonCurve::Linear))
       .collect(),
   };
-  let clip = |name: &str, bones: u8, swing: f32, events: &[f32]| {
+  // The ribbon's shape: an offset for each of its positions, x then y
+  let shape = |amount: f32| -> Vec<f32> {
+    (0..RIBBON_ROWS * 4)
+      .flat_map(|position| [0.0, amount * ((position % 7) as f32 - 3.0) / 3.0])
+      .collect()
+  };
+  let sway = |amount: f32| SkeletonTimeline::Deform {
+    slot: SlotId(RIBBON_AFTER as u8 + 1),
+    attachment: Arc::from("ribbon"),
+    frames: [(0.0, -amount), (0.25, amount), (0.5, -amount)]
+      .into_iter()
+      .map(|(time, amount)| (time, shape(amount), SkeletonCurve::Linear))
+      .collect(),
+  };
+  let clip = |name: &str, bones: u8, swing: f32, events: &[f32], deform: Option<f32>| {
     let mut timelines: Vec<SkeletonTimeline> = (0..bones)
       .map(|bone| turn(bone, &[(0.0, -swing), (0.25, swing), (0.5, -swing)]))
       .collect();
+    if let Some(amount) = deform.filter(|_| mesh) {
+      timelines.push(sway(amount));
+    }
     if !events.is_empty() {
       timelines.push(SkeletonTimeline::Event {
         frames: events
@@ -1441,12 +1501,24 @@ fn crowd_rig(image: Handle<Image>) -> SkeletonData {
         name.as_str(),
         SkeletonAttachment::Region(RegionAttachment::new(part, 8.0, 8.0)),
       );
+    if mesh && part == RIBBON_AFTER {
+      let setup = SlotSetup {
+        attachment: Some(Arc::from("ribbon")),
+        ..SlotSetup::default()
+      };
+      builder = builder.slot("ribbon", "b0", setup).attachment(
+        SkeletonData::DEFAULT_SKIN,
+        "ribbon",
+        "ribbon",
+        SkeletonAttachment::Mesh(ribbon()),
+      );
+    }
   }
   builder
     .event(SkeletonEventData::new("step"))
-    .animation(clip("idle", 12, 0.2, &[0.0, 0.2, 0.4]))
-    .animation(clip("walk", 12, 0.4, &[0.1, 0.3]))
-    .animation(clip("wave", 4, 0.6, &[0.25]))
+    .animation(clip("idle", 12, 0.2, &[0.0, 0.2, 0.4], Some(1.0)))
+    .animation(clip("walk", 12, 0.4, &[0.1, 0.3], Some(2.0)))
+    .animation(clip("wave", 4, 0.6, &[0.25], None))
     .default_mix(0.4)
     .build()
     .expect("a valid rig")
@@ -1455,10 +1527,13 @@ fn crowd_rig(image: Handle<Image>) -> SkeletonData {
 /// `count` skeletons in a lit room, each with a socket that has a child; or
 /// (`skeletons` false) the same entities as plain sprites, each with a
 /// child that has a child: the baseline, which makes the allocations the
-/// entity drawer and the engine's queries make for any entities
+/// entity drawer and the engine's queries make for any entities. With
+/// `mesh`, each skeleton has a deforming mesh among its regions
+/// ([`crowd_rig`])
 struct Crowd {
   count: usize,
   skeletons: bool,
+  mesh: bool,
 }
 
 impl Scene for Crowd {
@@ -1475,7 +1550,7 @@ impl Scene for Crowd {
     let atlas = ctx
       .assets()
       .add(Image::solid_rect(80, 8, 255, 255, 255, 255));
-    let data = ctx.assets().add(crowd_rig(atlas.clone()));
+    let data = ctx.assets().add(crowd_rig(atlas.clone(), self.mesh));
     for i in 0..self.count {
       let at = Vec2::new(40.0 + (i % 10) as f32 * 60.0, 40.0 + (i / 10) as f32 * 60.0);
       let carrier = ctx
@@ -1533,12 +1608,60 @@ fn mix(animation: &mut SkeletonAnimation, index: usize, frame: usize) {
 
 #[test]
 fn fifty_animated_skeletons_allocate_nothing_per_frame() {
+  skeletons_allocate_nothing(false);
+}
+
+/// The same crowd with a weighted mesh of 60 vertices among each skeleton's
+/// regions, its shape keyed by the animations: skinned and deformed in
+/// every frame, an item of its own between two runs of quads
+#[test]
+fn fifty_skeletons_with_a_deforming_mesh_allocate_nothing_per_frame() {
+  skeletons_allocate_nothing(true);
+}
+
+/// How far the vertices of the skeleton's [`ribbon`] are from where its
+/// bones alone put them (the setup shape, skinned), at most: what its
+/// deform moves it by. None for a skeleton that shows no mesh
+fn ribbon_moved(world: &World, entity: Entity, skeleton: &Skeleton) -> Option<f32> {
+  let drawn = ryo2d::testing::skeleton_mesh(world, entity, "ribbon");
+  let MeshVertices::Weighted(setup) = ribbon().vertices else {
+    return None;
+  };
+  if drawn.len() != setup.vertex_count() {
+    return None;
+  }
+  let mut moved = 0.0_f32;
+  for (vertex, at) in drawn.iter().enumerate() {
+    let mut plain = Vec2::ZERO;
+    for influence in setup.influences(vertex) {
+      let bone = skeleton.bone_world(&format!("b{}", influence.bone.0))?;
+      plain += bone.transform_point2(Vec2::new(influence.x, influence.y)) * influence.weight;
+    }
+    moved = moved.max(at.distance(plain));
+  }
+  Some(moved)
+}
+
+/// The allocations of each kind, counted by name
+fn counted(names: &[String]) -> BTreeMap<&str, usize> {
+  let mut counts = BTreeMap::new();
+  for name in names {
+    *counts.entry(name.as_str()).or_insert(0) += 1;
+  }
+  counts
+}
+
+/// Fifty skeletons, of regions alone or (`mesh`) each with a deforming
+/// mesh among them, allocate nothing in a steady frame that the same
+/// entities drawn as sprites do not
+fn skeletons_allocate_nothing(mesh: bool) {
   let start = |skeletons| {
     let builder = EngineBuilder::new()
       .resolution(640, 360)
       .start_scene(Crowd {
         count: 50,
         skeletons,
+        mesh,
       });
     HeadlessEngine::new_or_skip(builder)
   };
@@ -1568,6 +1691,30 @@ fn fifty_animated_skeletons_allocate_nothing_per_frame() {
       .all(|skeleton| skeleton.bone_world("b11").is_some()),
     "every skeleton has its pose"
   );
+  if mesh {
+    // The case is the one it says: every skeleton's mesh is drawn, a draw
+    // of its own between two of quads, and its deform is moving it
+    let draws = crowd.debug_stats().draw_calls;
+    assert!(
+      draws > 100,
+      "{draws} draws: 50 meshes among 51 runs of quads"
+    );
+    let world = crowd.world_mut();
+    let mut skeletons = world.query::<(Entity, &Skeleton)>();
+    let moved: Vec<Option<f32>> = skeletons
+      .iter(world)
+      .map(|(entity, skeleton)| ribbon_moved(world, entity, skeleton))
+      .collect();
+    let deformed = moved
+      .iter()
+      .filter(|moved| moved.is_some_and(|by| by > 0.05))
+      .count();
+    assert!(
+      moved.len() == 50 && deformed >= 40,
+      "{deformed} of {} meshes are moved by their deform: {moved:?}",
+      moved.len()
+    );
+  }
   for frame in warm..warm + 12 {
     let drawn = traced_after(&mut crowd, |engine| steady(engine, frame));
     let nothing = traced(&mut empty);
@@ -1581,21 +1728,16 @@ fn fifty_animated_skeletons_allocate_nothing_per_frame() {
       own(&nothing),
       drawn.skeleton_gpu.len(),
     );
+    // All three are told together, so a failure names the site, the
+    // function of the skeletons' path nearest it, and the GPU's share
     let more = more(&drawn, &nothing);
     assert!(
-      more.is_empty(),
-      "frame {frame}: the skeletons' frame made allocations of the engine's own the sprites' \
-       frame does not: {more:#?}"
-    );
-    assert!(
-      drawn.in_skeleton.is_empty(),
-      "frame {frame}: the skeleton code allocated: {:#?}",
-      drawn.in_skeleton
-    );
-    assert!(
-      drawn.skeleton_gpu.is_empty(),
-      "frame {frame}: the skeleton path made GPU allocations: {:#?}",
-      drawn.skeleton_gpu
+      more.is_empty() && drawn.in_skeleton.is_empty() && drawn.skeleton_gpu.is_empty(),
+      "frame {frame}: the skeletons' frame allocated.\nOf the engine's own, more than the sprites' \
+       frame makes: {more:#?}\nWith a function of the skeletons' path on the stack, by the nearest \
+       one: {:#?}\nInside the GPU API from the skeletons' path: {:#?}",
+      counted(&drawn.in_skeleton),
+      counted(&drawn.skeleton_gpu),
     );
   }
 }

@@ -909,6 +909,14 @@ impl HeadlessEngine {
     self.engine.entity_draw_time()
   }
 
+  /// The last frame's `Batch2D::prepare` on the CPU: the draw list's items
+  /// placed and laid into each camera's draws, and the frame's instances,
+  /// triangles and meshes uploaded (`benches/skeleton.rs`)
+  #[doc(hidden)]
+  pub fn batch_prepare_time(&self) -> Duration {
+    self.engine.batch_prepare_time()
+  }
+
   /// `calls` runs of the skeletons' frame pass (`pose_new_skeletons`) outside
   /// a frame, on a system initialised once: their time, altogether. A call
   /// looks through the skeletons only if one was added since the last (as a

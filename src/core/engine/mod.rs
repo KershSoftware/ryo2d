@@ -329,6 +329,9 @@ pub struct Engine {
   /// The last frame's entity drawer (`EntityDrawer::collect`) on the CPU
   #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
   entity_draw_time: std::time::Duration,
+  /// The last frame's `Batch2D::prepare` on the CPU
+  #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+  batch_prepare_time: std::time::Duration,
   smoothed_timings: SmoothedFrameTimings,
   overlay_mode: OverlayMode,
   debug_stats: DebugStats,
@@ -888,6 +891,7 @@ impl Engine {
       frame_timings: FrameTimings::default(),
       ui_pass_time: std::time::Duration::ZERO,
       entity_draw_time: std::time::Duration::ZERO,
+      batch_prepare_time: std::time::Duration::ZERO,
       smoothed_timings: SmoothedFrameTimings::default(),
       overlay_mode: initial_overlay_mode,
       debug_stats: DebugStats::default(),
@@ -1470,6 +1474,15 @@ impl Engine {
   #[cfg(not(target_arch = "wasm32"))]
   pub(crate) fn entity_draw_time(&self) -> std::time::Duration {
     self.entity_draw_time
+  }
+
+  /// The last frame's `Batch2D::prepare` on the CPU: the frame's textures
+  /// made resident, its items placed and laid into draws for each camera,
+  /// and the instances, triangles and meshes uploaded
+  /// (`benches/skeleton.rs`)
+  #[cfg(not(target_arch = "wasm32"))]
+  pub(crate) fn batch_prepare_time(&self) -> std::time::Duration {
+    self.batch_prepare_time
   }
 
   /// What the particle systems took when they last ran, on the CPU: the

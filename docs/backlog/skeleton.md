@@ -2,7 +2,7 @@
 
 ## Measured
 
-What is measured: skeletons against the spec's targets (`docs/specs/2026-11-12-skeleton-design.md`, Targets), by `cargo bench --bench skeleton` (release) and by the allocation test `fifty_animated_skeletons_allocate_nothing_per_frame` in `tests/tilemap_alloc.rs`.
+What is measured: skeletons against the spec's targets (`docs/specs/2026-11-12-skeleton-design.md`, Targets), by `cargo bench --bench skeleton` (release) and by the allocation tests `fifty_animated_skeletons_allocate_nothing_per_frame` and `fifty_skeletons_with_a_deforming_mesh_allocate_nothing_per_frame` in `tests/tilemap_alloc.rs`. Meshes have a section of their own below (Meshes), with the comparison of the region-only figures against the build before them.
 
 Machine: Apple M5 Pro, 18 cores, shared with other work.
 
@@ -71,6 +71,118 @@ Three more runs, on the same machine with the branch complete (`cargo bench --be
 
 Every guard is met in every run. Against the first record, the crowd's update and extract read a little lower, and `one_skeleton_update` reads 3.7 µs where it read 3.0: the code changed between the two records (queue and warning bounds in the animation state, a start offset, readbacks), and which change accounts for the 0.7 µs was not measured. `skeletons_extract_plain` is the figure the first record lacked: without `Interpolated` the drawing work is about 99 µs against 150 µs with it, so the bone blend costs about 51 µs of a frame for 200 skeletons.
 
+### Meshes
+
+The scene is the crowd's, each skeleton with one mesh more: a ribbon of 60 vertices (30 rows of two, 58 triangles) along the spine, each vertex held by two bones (two influences a vertex, so 120 positions), in a slot of its own after the 13th region. So a skeleton draws a run of 13 quads, the mesh, and a run of 12 quads: three items where a skeleton of regions is one, and the meshes cannot merge with anything. Both of the base track's animations key every position of the mesh (three full keys each, a bezier on each, by different amounts), so a deform is applied in every step and two are blended through every crossfade of that track, which is always in progress. The bench checks the case is the one it says, and counts a miss if not: the frame's draw calls (two a mesh at least) and a deform moving the mesh of three skeletons in four at least (191 of 200 stood off their setup shape when it was read).
+
+What each figure covers:
+
+- `skeletons_update_mesh` and `skeletons_extract_mesh`: the crowd's two figures with the mesh, guarded at the same targets (1,000 and 600 µs). The update has the deform keys' blending in it; the extract has the skinning (each bone the mesh uses placed once a skeleton, 120 weighted positions summed, each moved by its offset first) and the mesh stream.
+- `skeletons_extract_mesh_shadow`: the same with a drop shadow on every skeleton, so two mesh items a skeleton, the shadow's and the body's.
+- `skeletons_prepare*`: `Batch2D::prepare` for the frame (`HeadlessEngine::batch_prepare_time`): every instance placed in its atlas slot, the draws planned for the camera, and the instances and the mesh stream uploaded.
+- `skeletons_world_pass*`: the camera's world pass as it is recorded (`begin_render_pass`, the `Batch2D::draw` loop and the pass's end), between two probe passes the bench puts round it. wgpu only records there: it checks and encodes the pass's commands at the encoder's `finish`, so that part of a mesh's cost is in `skeletons_render*` alone, and shows as "the rest" below (the render step less the extract, the prepare and the recording).
+- `skeletons_draws*`: the frame's draw calls, the light's one among them.
+- `skeleton_mesh_cost` and `skeleton_mesh_cost_shadow`: what one mesh draw adds to each of those, from the mesh case less its regions-only twin, over 200 and over 400 mesh draws.
+- `skeleton_first_shader_frame` and `skeleton_first_shader_frame_mesh`: the render step of the frame in which the whole crowd first draws through a game sprite shader, of regions alone and with the mesh. Each is the median over five shaders, set one after another, of the longest of the 12 frames after each is set: first with sources made afresh each run (new to the machine, so its GPU shader cache does not hold them), then with the same sources a second time (cached), against the median frame once the shader draws.
+
+#### The mesh record
+
+Three runs of the bench (`cargo bench --bench skeleton`, release), each run after a run of the bench of the build before meshes (the comparison below). One-minute load before each run: 5.29, 5.03 and 4.48, every one above 3 and so flagged: the machine was in use and would not go quiet all afternoon. Medians in microseconds (draw calls for the last four rows):
+
+| Bench | Run 1 | Run 2 | Run 3 | Median of runs | Target |
+|-------|-------|-------|-------|----------------|--------|
+| `skeletons_update_mesh` | 594.2 | 595.7 | 600.8 | 595.7 | 1,000 |
+| `skeletons_extract_mesh` | 282.4 | 285.1 | 286.9 | 285.1 | 600 |
+| `skeletons_extract_mesh_shadow` | 363.6 | 364.3 | 362.1 | 363.6 | |
+| `skeletons_render` (context) | 330.9 | 339.3 | 330.9 | 330.9 | |
+| `skeletons_render_mesh` | 643.8 | 647.3 | 646.3 | 646.3 | |
+| `skeletons_render_shadow` | 436.7 | 430.3 | 429.5 | 430.3 | |
+| `skeletons_render_mesh_shadow` | 966.7 | 968.5 | 949.5 | 966.7 | |
+| `skeletons_prepare` | 76.7 | 77.6 | 76.4 | 76.7 | |
+| `skeletons_prepare_mesh` | 139.2 | 140.0 | 136.8 | 139.2 | |
+| `skeletons_prepare_shadow` | 149.5 | 146.2 | 145.0 | 146.2 | |
+| `skeletons_prepare_mesh_shadow` | 251.7 | 255.9 | 251.6 | 251.7 | |
+| `skeletons_world_pass` | 0.8 | 0.8 | 0.8 | 0.8 | |
+| `skeletons_world_pass_mesh` | 24.8 | 25.6 | 25.6 | 25.6 | |
+| `skeletons_world_pass_shadow` | 0.8 | 0.7 | 0.8 | 0.8 | |
+| `skeletons_world_pass_mesh_shadow` | 49.9 | 49.0 | 47.2 | 49.0 | |
+| `skeletons_draws` | 2 | 2 | 2 | 2 | |
+| `skeletons_draws_mesh` | 402 | 402 | 402 | 402 | |
+| `skeletons_draws_shadow` | 2 | 2 | 2 | 2 | |
+| `skeletons_draws_mesh_shadow` | 802 | 802 | 802 | 802 | |
+
+Both guards are met in every run, by 40% and by 52%, and so were they in the 22 other runs of the bench with these cases made that day, before the change below and after it, at loads of 3 to 7 (update 584 to 640 µs, extract 278 to 302 µs); every other guard of the bench was met in each of those too. Guards were missed only in runs made while a build was running or had just ended: `one_skeleton_update` read 6.5 and 11.5 µs against its 5 at loads of 11 and 13, and with every core building it read 13.6 and `skeletons_update_mesh` 1,090 against its 1,000. That is the load's doing, not a miss on a quiet machine. No guard was loosened.
+
+#### What a mesh costs
+
+From the medians above, a mesh case less its regions-only twin, in microseconds a mesh draw:
+
+| | Extract | Prepare | World pass, recorded | The rest of the render step | Render step |
+|---|---|---|---|---|---|
+| A mesh between two runs of quads (200 a frame) | 0.61 | 0.31 | 0.12 | 0.53 | 1.58 |
+| A mesh draw under a drop shadow (400 a frame, two a skeleton) | 0.44 | 0.26 | 0.12 | 0.52 | 1.34 |
+
+- **A mesh of 60 weighted vertices between two runs costs about 1.6 µs of a frame's render step** (1.5 to 1.8 over the runs), and its deform about 0.55 µs of a step's update for a skeleton (596 against 489 µs for the 200, with two deforms blended through the crossfade). A character of three such meshes is about 5 µs a frame; a hundred of them half a millisecond.
+- **Extract, 0.6 µs**: the skinning (120 influence positions, each moved by its blended offset, placed by its bone and weighted), the 60 vertices and 174 indices read into the mesh stream, the culling box, and the two runs the mesh splits one run into. The shadow's mesh is cheaper (0.44): it is skinned once and cast.
+- **Prepare, 0.3 µs**: the mesh's instance placed, three draws planned where one was, and the stream's upload, 1.7 kB a mesh (200 meshes are 330 kB a frame through two `write_buffer` calls).
+- **The world pass, 0.12 µs recorded and about 0.5 µs more at the encoder's finish**: a mesh between two runs is 402 draws where the crowd of regions is 2 (the skeletons' one and the light's). Recorded, a mesh and the quads after it are two pipeline sets, the stream's vertex and index buffers and the quads' vertex buffer again, the two instance slices and two draws. "The rest" is that part of the render step the three figures before it do not cover; what a mesh adds to it is wgpu checking and encoding those commands, and the Metal backend's four allocations for the two pipeline sets (Allocations, below).
+- **Keeping bind groups across the two pipelines, and setting the index buffer once, was measured and is not worth a rule of the renderer**: with both, the recording read 23.5 µs against 25.9 for the 200 meshes (three runs each, alternately, loads 3.3 to 3.6), and 43.8 against 49.2 for the 400 under a shadow: 0.012 µs a mesh, under 1% of what it costs, and nothing that showed in the render step. The pass sets its bind groups again after every pipeline change (render module notes), but wgpu drops a bind-group set that repeats the last one at its index as it records it (`set_and_check_redundant` in `wgpu_core::command::render`), so the four repeats a mesh are a call and a compare each and are never checked or encoded.
+- **The lever that is left is one pipeline for quads and meshes** (Later): it would take the two pipeline sets and their allocations out of every mesh, at the cost of a vertex stage that serves both.
+
+**The frame a game shader first draws through.** In milliseconds, the medians of three runs (the same three):
+
+| | A shader new to the machine | A shader its GPU cache holds | A frame once it draws |
+|---|---|---|---|
+| The crowd of regions | 87.0 | 2.28 | 0.62 |
+| The crowd with the mesh | 90.6 | 3.97 | 0.94 |
+
+A mesh has a pipeline of its own for a game shader (the shader is checked once for quads and once for meshes), made in the frame it first draws. That costs about 1.7 ms more when the machine has compiled the shader before, and nothing that can be told from the noise when it has not, since the two pipelines share the fragment stage, which is what takes the time. The 87 ms is not the meshes': it is the first use of any game sprite shader on a machine, compiled on the frame's own thread (Found while measuring, below).
+
+#### Against the build before meshes
+
+The region-only cases must not cost more than 5% over what they cost before meshes. A stored figure cannot show that (the second record's own runs spread 8%), so it is measured in one sitting: the tree before meshes (main at `eeef871c`) exported and its bench built apart, the two benches run alternately, three each, and the medians compared.
+
+**Before any change**, two sets. The first at loads of 2.9 to 3.1, the second at 4.0 to 4.5 (flagged):
+
+| Bench | Before meshes | With meshes | Difference | Before meshes | With meshes | Difference |
+|-------|---------------|-------------|------------|---------------|-------------|------------|
+| `skeletons_update` | 473.8 | 468.9 | -1.0% | 486.0 | 462.3 | -4.9% |
+| `skeletons_extract` | 153.5 | 165.5 | +7.8% | 155.5 | 173.5 | +11.6% |
+| `skeletons_extract_shadow` | 177.4 | 191.8 | +8.1% | 176.0 | 201.1 | +14.3% |
+| `skeletons_extract_offscreen` | 148.7 | 160.4 | +7.9% | 148.3 | 168.1 | +13.4% |
+| `skeletons_extract_images` | 266.4 | 271.4 | +1.9% | 269.0 | 285.5 | +6.1% |
+| `skeletons_extract_plain` | 92.8 | 106.1 | +14.3% | 95.2 | 113.1 | +18.8% |
+| `skeletons_extract_sockets` | 152.7 | 165.9 | +8.6% | 152.8 | 172.2 | +12.7% |
+
+The update was unchanged (both readings are inside the noise); the extract was about 12 µs dearer for a crowd of regions drawn from one atlas, whatever else the case did, and 5 µs dearer in the first set with an image a part, where each quad is a run of its own. A timer put round the two halves of a skeleton's drawing, in both builds, found all of it in the second: the walk of the pose read 120.7 µs a frame before meshes and 121.4 with them, and turning its parts into runs 35.4 and 47.3. The drawer took the parts as an iterator of ready-made parts of either kind (a quad as drawn, or a mesh), and the compiler did not inline that iterator's step: every quad was built behind a call and copied out of it again through the two-kind type.
+
+**What was changed**, in two steps, each measured:
+
+1. `Emitter::draw_parts` takes the walk's own list and two functions, how a region and how a mesh of it is drawn, and builds each quad where it uses it. The type that held either kind is gone.
+2. The mesh's skinning (`Parts::skin`) and its drawing (`Emitter::draw_skinned`) are never inlined, so the two loops over a skeleton's regions are not compiled round code that only a mesh runs. Over sixteen-run medians of the crowd and the shadow case this took the shadow case from 6.4% over to 3.9%, and the crowd from 6.2% to 4.3%.
+
+**With both**, three sets of three runs each, alternately, from the binaries the tree builds. Loads 4.5 to 5.7 for the first (the set of the mesh record above), 3.6 to 7.0 for the second and 4.7 to 5.7 for the third: all flagged. The first set's medians, and each set's difference:
+
+| Bench | Before meshes | With meshes | Difference | Second set | Third set |
+|-------|---------------|-------------|------------|------------|-----------|
+| `skeletons_update` | 479.2 | 489.3 | +2.1% | +2.4% | +4.4% |
+| `skeletons_extract` | 159.2 | 163.2 | +2.5% | +1.3% | +2.3% |
+| `skeletons_extract_shadow` | 181.7 | 189.6 | +4.3% | +6.5% | +6.7% |
+| `skeletons_extract_offscreen` | 154.8 | 159.2 | +2.8% | +2.2% | +4.6% |
+| `skeletons_extract_images` | 275.8 | 284.0 | +3.0% | +2.4% | +2.5% |
+| `skeletons_extract_plain` | 97.3 | 101.9 | +4.7% | +3.9% | +3.0% |
+| `skeletons_extract_sockets` | 157.0 | 160.5 | +2.2% | +4.4% | +5.7% |
+
+So the extract of a crowd of regions is now 1 to 7% over what it was before meshes, 3.6% on average over the six cases and three sets, where it was 8% and 13% over on average in the two sets before the change. Fifteen of the eighteen readings are inside the 5%. The three that are not are the shadow case in the second and third sets (4.3% in the first) and the sockets case in the third (2.2% and 4.4% before it), and no set was read on a quiet machine, so by these figures the shadow case is not shown to be inside the bound. It runs the loop over the quads twice a skeleton, so what is left shows most in it; its sixteen-run medians, under a bench built for that reading, were 3.8% and 3.9% over. The update did not change in the code and reads 2 to 4% over in these sets after reading 1% and 5% under in the two before: that is the size of the noise.
+
+**What is left, and what did not help.** About 2 to 12 µs of 100 to 200 remain, most in the shadow case, and they could not be placed:
+
+- The regions' quads kept in a list of their own, each stretch of them with no mesh among it one part, makes both loops the same as before meshes. Built twice, with and without the second step above, it gained nothing on the crowd or the shadow case and made the plain case worse (9.5% and 11% over), so it was taken out.
+- `draw_parts` as a function of its own changed nothing.
+- The same engine code under a bench whose `main` differed read 2.4%, 2.9% and 6.2% over on the crowd, and timers in the two halves moved the walk by 5 µs between two builds whose walk is the same code. A difference of this size moves with how the binary is laid out, so no further change was made on a guess.
+- No session that day was quiet: the sets were read at loads from 2.9 to 7. The crowd's extract in the build before meshes itself read 153.5 µs at noon and 159 to 164 in the afternoon.
+- So the shadow case's 4 to 7% is the open figure: a comparison on a quiet machine would settle whether it is inside the 5%, and the two benches build from `main` and from this tree as they stand.
+
 ### Reading the figures
 
 - **Update:** 2.5 µs a skeleton (500 / 200), half of the 5 µs target; one skeleton alone is 3.0 µs, of which 0.2 is the probes. A socket with a child on each skeleton adds 8.6 µs to the 200 (1.7%).
@@ -82,15 +194,27 @@ Every guard is met in every run. Against the first record, the crowd's update an
 
 ### Allocations
 
-`fifty_animated_skeletons_allocate_nothing_per_frame` (`tests/tilemap_alloc.rs`, a debug-or-release test binary with a counting global allocator): 50 skeletons of 12 bones and 10 region slots, lit, on `Interpolated` entities, each playing two tracks, with events firing (two or three keys a loop), a `BoneSocket` with a child on each, and a mix started in every frame on some (`set_animation` and `add_animation` on the base track, `set_animation` and `set_empty` on the layer; each skeleton makes one such call every third frame and each kind every twelfth). 240 frames of warm-up, then 12 traced frames, each traced from the calls through the step, so a call's allocations count. It is compared with the same entities as plain sprites (a `Renderable::image` where the skeleton's is, and children with no socket) in a second engine, site by site, and asserts no allocation of the engine's own the sprites' frame does not make, none with a function of the skeletons' path on its stack, and none inside the GPU API from that path. The skeletons' path is the skeleton module and the entity drawer's skeleton functions (`collect_skeleton`, `Emitter::draw_runs` and `draw_shaded`), which are outside the module: a buffer made in `collect_skeleton` for each skeleton, planted to try the test, fails it (200 allocations inside the GPU API a frame).
+`fifty_animated_skeletons_allocate_nothing_per_frame` (`tests/tilemap_alloc.rs`, a debug-or-release test binary with a counting global allocator): 50 skeletons of 12 bones and 10 region slots, lit, on `Interpolated` entities, each playing two tracks, with events firing (two or three keys a loop), a `BoneSocket` with a child on each, and a mix started in every frame on some (`set_animation` and `add_animation` on the base track, `set_animation` and `set_empty` on the layer; each skeleton makes one such call every third frame and each kind every twelfth). 240 frames of warm-up, then 12 traced frames, each traced from the calls through the step, so a call's allocations count. It is compared with the same entities as plain sprites (a `Renderable::image` where the skeleton's is, and children with no socket) in a second engine, site by site, and asserts no allocation of the engine's own the sprites' frame does not make, none with a function of the skeletons' path on its stack, and none inside the GPU API from that path. The skeletons' path is the skeleton module, the entity drawer's skeleton functions (`collect_skeleton`, `Emitter::draw_parts`, `draw_shaded`, `draw_skinned` and `draw_mesh`) and the frame's mesh stream (`render/batch/mesh.rs`), which are outside the module: a buffer made in `collect_skeleton` for each skeleton, planted to try the test, fails it (200 allocations inside the GPU API a frame).
 
-It passed at once (not red first): the skeleton code allocated nothing in steady state, as the module notes say. That it can fail was checked by planting an allocation in `SkeletonAnimation::set_empty`, in `update_skeletons` and in `Skeleton::regions`, one at a time: each was named by the test (4, 1 and 50 allocations a frame at those sites), and each plant was removed.
+It passed at once (not red first): the skeleton code allocated nothing in steady state, as the module notes say. That it can fail was checked by planting an allocation in `SkeletonAnimation::set_empty`, in `update_skeletons` and in `Skeleton::parts`, one at a time: each was named by the test (4, 1 and 50 allocations a frame at those sites), and each plant was removed.
 
 Both frames make about 229 allocations of the engine's own (390 in all; the rest are inside the GPU API), and the same in both. These are not the skeletons': the entity drawer builds its `QueryState` for the entities every frame (`world.query::<DrawableItem>()` in `EntityDrawer::collect`), which allocates a few dozen times for each archetype it matches (the test's sprite frame has them too). That is true of every scene with a `Renderable`, a sprite scene or a skeleton one, and is older than skeletons; it is listed under Limits.
 
+**With a mesh.** `fifty_skeletons_with_a_deforming_mesh_allocate_nothing_per_frame` is the same crowd with a weighted mesh among each skeleton's regions: a ribbon of 60 vertices (30 rows of two, 58 triangles), each vertex held by two bones, so 120 positions, in a slot of its own after the fifth region, so a skeleton draws five regions, the mesh and five regions more. Both of the base track's animations key every position of it (three keys each, by different amounts), so a deform is applied in every step and two are blended through every crossfade. Before its traced frames the test asserts that the case is the one it says: more than 100 draws a frame (50 meshes among 51 runs of quads), and at least 40 of the 50 meshes standing off where their bones alone put them (with the deform keys taken out of the rig all 50 read 0.0, and the test fails there). Then the same comparison with the sprites' frame, and the same three findings, now told together in one message when any is not empty.
+
+It passed at once too. Planted allocations, a build each, each named by the test and then removed:
+
+- in `Parts::skin` (the skinning): 50 a frame, at `<alloc::vec::Vec<u8>>::with_capacity <- <ryo2d::core::skeleton::draw::Parts>::skin`;
+- in `Emitter::draw_mesh`: 50 a frame, the nearest function of the skeletons' path being `<ryo2d::core::render::entities::Emitter>::draw_mesh::<..>`;
+- in `Emitter::draw_skinned` and in `MeshStream::add_whole` together: 50 each, named `<..::Emitter>::draw_skinned` and `<ryo2d::core::render::batch::mesh::MeshStream>::add_whole::<..>`.
+
+So each name the test lists for the mesh path (`draw_skinned`, `draw_mesh`, `batch::mesh::`) matches a function a mesh's frame really runs.
+
+The meshes' frame makes 605 allocations where the sprites' makes 392. The engine's own are the same 229 (the sprites' 231); the 215 more it makes are inside the GPU API, and none of them from the skeletons' path. Found by their stacks: 204 against the sprites' 4 are copies of a pipeline's vertex buffer layouts (`naga::back::msl::VertexBufferMapping::clone`) made in wgpu's Metal backend at `CommandEncoder::finish`, where wgpu checks and encodes what the passes recorded. By their count they are two for each pipeline the frame's passes set, a pipeline having two vertex buffers: 102 sets a frame against the sprites' 2. A mesh between two runs of quads is two pipeline changes, so four allocations a mesh a frame; a few more are the mesh stream's two buffer writes. They belong to the pipeline changes, not to anything the skeleton code does, and the regions-only frame, one draw, makes none. One pipeline for quads and meshes would remove them (Later).
+
 ### Changes the bench made to the engine
 
-Two hooks, `#[doc(hidden)]` in `src/core/testing/headless.rs`: `HeadlessEngine::entity_draw_time` (the last frame's `EntityDrawer::collect` time, written around the call in `src/core/engine/extract.rs`, two clock reads a frame) and `HeadlessEngine::skeleton_pass_time(calls)` (runs `pose_new_skeletons` on a system initialised once, outside a frame).
+Three hooks, `#[doc(hidden)]` in `src/core/testing/headless.rs`: `HeadlessEngine::entity_draw_time` (the last frame's `EntityDrawer::collect` time, written around the call in `src/core/engine/extract.rs`, two clock reads a frame), `HeadlessEngine::batch_prepare_time` (the last frame's `Batch2D::prepare` time, written the same way, two more clock reads a frame) and `HeadlessEngine::skeleton_pass_time(calls)` (runs `pose_new_skeletons` on a system initialised once, outside a frame). The world pass needs none: the bench puts two probe passes of its own round it in the render pipeline, as a game may.
 
 ## Limits
 
@@ -147,13 +271,17 @@ Each was copied from the module notes (`src/core/skeleton/AGENTS.md`) and restat
 - **Where parts overlap, a drop shadow is darker than a sprite's uniform one**, each region's shadow laid over the last (a half black shadow leaves 187 of a white floor once and 136 where two parts overlap). A uniform silhouette needs the skeleton drawn offscreen first, which is not built; a character should use a blob or contact shadow. The blob and contact shadows stand where the entity does, not following the pose's bounds. `Renderable`'s `image`, `anchor` and `target` are not used by a skeleton, and a `YSort` sorts it by its entity's y plus `sort_offset` (`foot_offset` plays no part).
 - **A skeleton with no pose for its data draws nothing, shadows included**: reached only by the case the frame's pass does not cover (enabled again between steps after its data changed).
 - **A game shader's `in.uv` runs over the part's own rectangle of its image**, not the figure.
+- **A mesh is a draw of its own, with a pipeline change before it and after it**: it merges with nothing, so a skeleton with one mesh among its regions is three draws where it was one. Measured, a weighted mesh of 60 vertices costs about 1.6 µs of a frame's render step and 0.55 µs of a step's update while a deform plays on it, and four allocations a frame inside the GPU API (Meshes, above). A character is made of a few meshes.
 
 ### Found while measuring, not skeleton's
 
 - **The entity drawer builds a `QueryState` every frame** (`world.query::<DrawableItem>()` and the composites' in `EntityDrawer::collect`), which allocates a few dozen times a frame for any scene with a `Renderable`, more with each archetype that holds one (about 229 allocations of the engine's own in the allocation test's frames, skeletons or sprites alike). It is older than skeletons and the same for sprites; keeping the states in the drawer would remove it.
+- **The first frame a game sprite shader draws on a machine takes about 87 ms** (`skeleton_first_shader_frame`, Meshes above): its pipeline is made in the frame it is first drawn with, on the frame's own thread, and the GPU compiles its fragment stage there. Once the machine's shader cache holds it the frame takes 2.3 ms, 4.0 with a mesh's second pipeline. It is older than meshes and true of any sprite with a game shader: "checked without blocking" (render module notes) is the check for errors, not the compiling. A new version of a shader already drawn is made on the shader thread while the old one draws; making a first use there too, drawing plain meanwhile as a shader being checked already does, would take the hitch out.
+- **wgpu's Metal backend allocates twice each time a pass sets a pipeline** (it copies the pipeline's vertex buffer layouts), so a frame's allocations inside the GPU API grow with its pipeline changes: four a mesh between two runs of quads (Allocations, above). The engine's own code allocates nothing there, and a frame whose draws share a pipeline pays it once.
 
 ## Later
 
+- **One pipeline for quads and meshes.** A mesh between two runs of quads costs about 0.65 µs of its 1.6 in the pass (0.12 recorded, about 0.5 at the encoder's finish: Meshes, What a mesh costs), and its two pipeline changes, with the four allocations wgpu makes for them, are the part of that a shared pipeline would take out; how much of the 0.65 they are was not measured apart. A vertex stage that places either a quad's corner or a mesh's vertex, told which by the draw, would let a mesh draw with the pipeline of the quads round it, and only its buffers would change. It changes the sprite's vertex stage, which every sprite runs, so it wants its own measurement of what the quads pay for it. Keeping the bind groups across the two pipelines was measured and is not it (0.012 µs a mesh).
 - **Holding a skeleton while its scene's `update` waits on a transition.** The other answer to the limit above (In the world): a skeleton whose scene is in a transition would be held, as it is under a scene that stops its own, so that nothing is sent while `update` cannot hear it. It was not taken because it changes how every fade looks (characters stand frozen under it) and parts skeletons from particles and physics, which run on through a transition; holding all three, or letting `update` run during a transition, is an engine-wide decision. The owner's call.
 - **A map from (target, property) to timeline for each animation, and an index of its event timeline.** Two searches are linear in an animation's timelines. When a mix starts, each timeline of the outgoing entry looks for the incoming animation's timeline that keys the same properties (`apply_track`'s cover), which is quadratic in timelines, once an entry a mix. And `events_crossed` scans the animation's timelines for its event timeline, every entry every step. Both are negligible for the bench's rig (about 40 timelines an animation). Inferred, not measured: 200 skeletons whose animations have 150 timelines each, all switching animation in one step, would spend about 7 ms on the cover search in that step. A per-animation map built with the data (and the event timeline's index kept beside it) makes both a lookup.
 - **What the data cannot yet express, for an importer of another tool's files:** a slot's colour keyed as separate rgb and alpha timelines (one `Color` timeline keys all four here); a curve for each channel of a colour key (one curve a key here); and atlas regions packed rotated (a region here is an upright rectangle of its image). Check each against the tool's public format documentation when that stage is built, not against a runtime's source.
