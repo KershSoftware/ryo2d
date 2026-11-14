@@ -86,6 +86,19 @@ pub(crate) const LINE: &str = concat!(
   include_str!("core/line.wgsl"),
 );
 
+/// Meshes: triangles of an image, sampled and tinted as a sprite is
+pub(crate) const MESH: &str = concat!(
+  include_str!("include/camera.wgsl"),
+  "\n",
+  include_str!("include/color.wgsl"),
+  "\n",
+  include_str!("include/sample.wgsl"),
+  "\n",
+  include_str!("include/tint.wgsl"),
+  "\n",
+  include_str!("core/mesh.wgsl"),
+);
+
 /// The lit scene composed from the light buffer
 pub(crate) const LIGHTING_COMPOSE: &str = concat!(
   include_str!("include/fullscreen.wgsl"),
@@ -209,6 +222,7 @@ pub(crate) fn built_in() -> Vec<(&'static str, String)> {
     ("light", LIGHT),
     ("shadow_map", SHADOW_MAP),
     ("line", LINE),
+    ("mesh", MESH),
     ("lighting_compose", LIGHTING_COMPOSE),
     ("transition", TRANSITION),
     ("composite", COMPOSITE),
@@ -265,6 +279,23 @@ mod tests {
     for (name, body) in bodies {
       assert!(body.contains("quad_corner("), "{name} places quads itself");
       assert!(!body.contains("to_pixel("), "{name} repeats the snap");
+    }
+  }
+
+  #[test]
+  fn a_mesh_is_sampled_and_tinted_by_the_sprite_s_functions() {
+    let (sprite, mesh) = (
+      include_str!("core/sprite.wgsl"),
+      include_str!("core/mesh.wgsl"),
+    );
+    // The functions the sprite's base entries call, written once in the
+    // includes
+    for call in ["sample_masked(", "finish(", "finish_premultiplied("] {
+      assert!(sprite.contains(call), "the sprite no longer calls {call}");
+      assert!(mesh.contains(call), "the mesh does not call {call}");
+    }
+    for own in ["fn finish", "fn sample_masked", "srgb_to_linear("] {
+      assert!(!mesh.contains(own), "the mesh has its own {own}");
     }
   }
 

@@ -7,7 +7,7 @@ use super::polyline::{PolyPoint, PolyStyle, Triangles};
 use super::{BlendMode, Filter};
 use crate::core::ecs::Entity;
 use crate::core::graphics::{RenderLayers, TextureId};
-use crate::core::render::{DrawList, DrawTriangles};
+use crate::core::render::{DrawList, DrawTriangles, TriangleShading};
 use crate::core::trail::{Line2D, TextureMode, Trail2D, TrailEffect, TrailStyle};
 use crate::core::ui::Color;
 
@@ -129,6 +129,7 @@ pub(crate) fn push_polyline(
     look.z,
     look.only_camera,
     DrawTriangles {
+      shading: TriangleShading::Line,
       texture: look.texture,
       blend: look.blend,
       filter: look.filter,

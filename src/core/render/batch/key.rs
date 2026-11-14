@@ -92,6 +92,9 @@ pub(crate) enum BatchShader {
   Line,
   /// Line geometry with a texture along it
   LineTextured,
+  /// A mesh: triangles of an image, tinted as a sprite of it is
+  /// (`mesh.wgsl`)
+  Mesh,
   /// A light into a light buffer
   Light(LightStep),
   /// A raster glyph: its coverage times the tint

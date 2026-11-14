@@ -2,8 +2,8 @@
 //!
 //! Sprites and trail/line triangles are pushed in any order; the world
 //! passes draw them sorted by z, then by [`DrawKind`], then by submission, so
-//! a trail can sit between two sprites in one render pass. Lights are kept
-//! apart, for the lighting pass.
+//! a trail can sit between two sprites in one render pass, and an entity's
+//! mesh between two entities. Lights are kept apart, for the lighting pass.
 
 use super::CameraDraw;
 use super::batch::{BatchShader, BlendMode, ChunkKey, Filter, Sampling};
@@ -32,7 +32,7 @@ pub(crate) enum DrawPayload {
   /// Index into the list's sprite instances (atlas page and effects flag are
   /// resolved at draw time)
   Sprite(usize),
-  /// Index into the list's triangle items (trails and lines)
+  /// Index into the list's triangle items (trails, lines and meshes)
   Triangles(usize),
   /// Index into the list's glyph items
   Glyph(usize),
@@ -117,11 +117,31 @@ pub(crate) struct DrawSprite {
   pub(crate) max: Vec2,
 }
 
-/// A trail or line waiting to be drawn: its triangles in the batch's
+/// How a [`DrawTriangles`] item is shaded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TriangleShading {
+  /// A trail or line: styled across its width, its texture (if it has
+  /// one) repeated along it
+  Line,
+  /// A mesh: its image times its tint, as a sprite of the image is drawn
+  /// (`BatchShader::Mesh`). An image's texture, never a render target's
+  #[cfg_attr(
+    not(test),
+    expect(
+      dead_code,
+      reason = "skeletons' mesh attachments draw meshes; until they do, only tests make one"
+    )
+  )]
+  Mesh,
+}
+
+/// A trail, line or mesh waiting to be drawn: its triangles in the batch's
 /// triangle stream.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct DrawTriangles {
-  /// The texture along it (textured trails)
+  pub(crate) shading: TriangleShading,
+  /// The texture along it (textured trails), or the image a mesh shows (a
+  /// mesh without one draws nothing)
   pub(crate) texture: Option<TextureId>,
   pub(crate) blend: BlendMode,
   pub(crate) filter: Filter,
@@ -131,7 +151,7 @@ pub(crate) struct DrawTriangles {
   pub(crate) min: Vec2,
   pub(crate) max: Vec2,
   pub(crate) indices: Range<u32>,
-  /// Its vertices (a textured one is told its atlas slot when placed)
+  /// Its vertices (a textured one's are told its atlas slot when placed)
   pub(crate) vertices: Range<u32>,
 }
 
@@ -211,7 +231,7 @@ pub(crate) struct DrawLight {
   pub(crate) max: Vec2,
 }
 
-/// The frame's sprites, trails and lines, reused across frames.
+/// The frame's sprites, trails, lines and meshes, reused across frames.
 ///
 /// Lit items are drawn before lighting; unlit ones (anything drawn
 /// `with_lighting(false)`) after it.
@@ -299,9 +319,24 @@ impl DrawList {
     only_camera: Option<Entity>,
     triangles: DrawTriangles,
   ) {
+    self.push_triangles_as(DrawKind::Trail, lit, z, only_camera, triangles);
+  }
+
+  /// Add triangles at `z`, sorted as one item of `kind` in the order
+  /// pushed: an entity's (a mesh) take its entity's place among the
+  /// entities' draws, where a trail or line follows every entity and
+  /// sprite at its z.
+  pub(crate) fn push_triangles_as(
+    &mut self,
+    kind: DrawKind,
+    lit: bool,
+    z: i32,
+    only_camera: Option<Entity>,
+    triangles: DrawTriangles,
+  ) {
     let payload = DrawPayload::Triangles(self.triangles.len());
     self.triangles.push(triangles);
-    self.push_item(lit, z, DrawKind::Trail, payload, only_camera);
+    self.push_item(lit, z, kind, payload, only_camera);
   }
 
   /// Add a glyph at `z`, for `only_camera` or every camera.
@@ -439,7 +474,7 @@ impl DrawList {
     self.sprites.len()
   }
 
-  /// The trail or line a [`DrawPayload::Triangles`] index refers to.
+  /// The trail, line or mesh a [`DrawPayload::Triangles`] index refers to.
   pub(crate) fn triangles(&self, index: usize) -> Option<&DrawTriangles> {
     self.triangles.get(index)
   }
@@ -475,7 +510,7 @@ impl DrawList {
     self.chunks.iter().map(|chunk| chunk.texture)
   }
 
-  /// The textures the frame's trails and lines draw.
+  /// The textures the frame's trails, lines and meshes draw.
   pub(crate) fn triangle_textures(&self) -> impl Iterator<Item = TextureId> + '_ {
     self
       .triangles
@@ -572,6 +607,7 @@ mod tests {
   /// A line seen by every camera.
   fn line(list: &mut DrawList, lit: bool, z: i32) {
     let triangles = DrawTriangles {
+      shading: TriangleShading::Line,
       texture: None,
       blend: BlendMode::Alpha,
       filter: Filter::Default,
@@ -914,6 +950,51 @@ mod tests {
     list.run_instances().extend([SpriteInstance::new(); 4]);
     list.drop_run_instances(start);
     assert_eq!(list.run_instances().len(), start);
+  }
+
+  #[test]
+  fn an_entity_s_triangles_take_their_place_among_the_entities() {
+    let mut list = DrawList::default();
+    // A line first, then an entity, an entity's triangles and another
+    // entity, all at z 0
+    line(&mut list, true, 0);
+    push(&mut list, DrawKind::Entity, 0, 0);
+    let mesh = DrawTriangles {
+      shading: TriangleShading::Mesh,
+      texture: Some(TextureId::for_test(9)),
+      blend: BlendMode::Alpha,
+      filter: Filter::Default,
+      layers: RenderLayers::default(),
+      min: Vec2::ZERO,
+      max: Vec2::ONE,
+      indices: 3..9,
+      vertices: 3..7,
+    };
+    list.push_triangles_as(DrawKind::Entity, true, 0, None, mesh);
+    push(&mut list, DrawKind::Entity, 0, 1);
+
+    list.sorted();
+
+    // The entity's triangles draw between the two entities they were
+    // pushed between, where the line follows every entity at their z
+    let order: Vec<_> = list
+      .items()
+      .iter()
+      .map(|item| (item.kind, item.payload))
+      .collect();
+    assert_eq!(
+      order,
+      [
+        (DrawKind::Entity, DrawPayload::Sprite(0)),
+        (DrawKind::Entity, DrawPayload::Triangles(1)),
+        (DrawKind::Entity, DrawPayload::Sprite(1)),
+        (DrawKind::Trail, DrawPayload::Triangles(0)),
+      ]
+    );
+    assert_eq!(
+      list.triangle_textures().collect::<Vec<_>>(),
+      [TextureId::for_test(9)]
+    );
   }
 
   #[test]

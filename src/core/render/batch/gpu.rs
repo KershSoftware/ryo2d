@@ -19,7 +19,9 @@ use crate::core::graphics::camera_gpu::CameraUniforms;
 use crate::core::graphics::{
   AtlasSlot, Presentation, SlotPage, SpriteGpuRenderer, SpriteInstance, TextureId, place_in_slot,
 };
-use crate::core::render::{CameraDraw, DrawItem, DrawList, DrawPayload, SpriteShading};
+use crate::core::render::{
+  CameraDraw, DrawItem, DrawList, DrawPayload, SpriteShading, TriangleShading,
+};
 use crate::core::shaders::compile::{self, Compiler};
 use crate::core::shaders::custom::{CompiledShader, ShaderError, ShaderKind};
 
@@ -79,8 +81,8 @@ pub(crate) struct Batch2D {
   // in a range of their own), and each camera's draws over them; reused
   placed: Vec<SpriteInstance>,
   draws: Vec<CameraDraws>,
-  // This frame's trails and lines, in world space for every camera; built
-  // while the frame is gathered and uploaded once
+  // This frame's meshes, trails and lines, in world space for every camera;
+  // built while the frame is gathered and uploaded once
   triangles: Triangles,
   // Tile chunks: built while the frame is gathered, written when they
   // change, drawn through the frame's tile slots
@@ -320,7 +322,8 @@ impl Batch2D {
     (self.compiler.started(), self.compiler.busy())
   }
 
-  /// The frame's trail and line triangles, for gathering them (clear first).
+  /// The frame's triangles (meshes, trails and lines), for gathering them:
+  /// cleared with the frame's draw list, whose items are ranges of them.
   pub(crate) fn triangles(&mut self) -> &mut Triangles {
     &mut self.triangles
   }
@@ -396,8 +399,8 @@ impl Batch2D {
   /// remaps the sprites it sees into their atlas slots in draw order (a
   /// run's quads one after another, its slot found once), in a range of the
   /// instance buffer of its own, and merges consecutive drawables with equal
-  /// draw states into draws (trails and lines by their index ranges; each
-  /// chunk a draw of its own, from the chunk arena).
+  /// draw states into draws (meshes, trails and lines by their index ranges;
+  /// each chunk a draw of its own, from the chunk arena).
   /// Call once per frame, after [`sync_cameras`](Self::sync_cameras) and
   /// after the frame's triangles and chunks are built.
   pub(crate) fn prepare(
@@ -562,17 +565,24 @@ impl Batch2D {
           }
           DrawPayload::Triangles(index) => {
             let line = list.triangles(index)?;
-            // A textured one is told where its texture lives
-            let (page, sampling, shader) = match line.texture {
-              None => (None, Sampling::Nearest, BatchShader::Line),
-              Some(texture) => {
+            // A textured one is told where its texture lives: a line
+            // repeats that slot, a mesh maps its UVs into it
+            let (page, sampling, shader) = match (line.shading, line.texture) {
+              (TriangleShading::Line, None) => (None, Sampling::Nearest, BatchShader::Line),
+              // A mesh is its image
+              (TriangleShading::Mesh, None) => return None,
+              (shading, Some(texture)) => {
                 let (slot, _) = textures.slot(texture)?;
                 let range = line.vertices.start as usize..line.vertices.end as usize;
                 for vertex in triangles.vertices.get_mut(range)? {
                   vertex.bounds = slot.uv;
                 }
                 let sampling = line.filter.resolve(presentation);
-                (Some(slot.page), sampling, BatchShader::LineTextured)
+                let shader = match shading {
+                  TriangleShading::Line => BatchShader::LineTextured,
+                  TriangleShading::Mesh => BatchShader::Mesh,
+                };
+                (Some(slot.page), sampling, shader)
               }
             };
             let key = PipelineKey::new(
@@ -818,7 +828,7 @@ impl Batch2D {
       }
     };
     // Untextured lines bind nothing more; lights bind the shadow atlas;
-    // everything else samples a page
+    // everything else (meshes too) samples a page
     let texture_group = match (draw.state.shader, draw.state.page) {
       (BatchShader::Light(_), _) => match shadows {
         Some(group) => Some(group),

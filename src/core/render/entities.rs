@@ -27,6 +27,11 @@
 //! each stretch of one image and blend as one run item
 //! ([`DrawList::push_run_as`]), after its shadows.
 //!
+//! A mesh an entity draws (`Emitter::draw_mesh`) is an entity item too:
+//! its triangles join the frame's triangle stream and take their entity's
+//! place in the order ([`DrawList::push_triangles_as`]), drawn as a sprite
+//! of their image would be.
+//!
 //! Positions come from `GlobalTransform`, interpolated by the frame's alpha
 //! for entities with `PreviousGlobalTransform`, and lifted by `DrawLift` on
 //! a floor (sorted where they stand). A single sprite is placed by its
@@ -36,9 +41,12 @@
 
 use std::collections::HashSet;
 
-use super::batch::{BlendMode, Filter};
+use super::batch::{BlendMode, Filter, MeshLanes, Triangles};
 use super::scratch::recycle;
-use super::{CameraDraw, DrawChunk, DrawKind, DrawList, DrawRun, SpriteLook, SpriteShading};
+use super::{
+  CameraDraw, DrawChunk, DrawKind, DrawList, DrawRun, DrawTriangles, SpriteLook, SpriteShading,
+  TriangleShading,
+};
 use crate::core::asset::{AssetId, Assets};
 use crate::core::ecs::interpolate::render_global;
 use crate::core::ecs::kernel::QueryState;
@@ -236,7 +244,8 @@ impl EntityDrawer {
   /// `ordered` (sorted by [`OrderedDraw::sort`]) each in its place among
   /// them, returning how many visible renderables there were. `alpha` is
   /// the render interpolation factor; quads none of `cameras` can see are
-  /// skipped.
+  /// skipped. An entity's meshes go into `triangles`, the frame's triangle
+  /// stream, which `list`'s triangle items are ranges of.
   #[allow(clippy::too_many_arguments)]
   pub(crate) fn collect(
     &mut self,
@@ -247,6 +256,7 @@ impl EntityDrawer {
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     list: &mut DrawList,
+    triangles: &mut Triangles,
     ordered: &[OrderedDraw],
   ) -> usize {
     let mut drawables = world.query::<DrawableItem>();
@@ -273,6 +283,7 @@ impl EntityDrawer {
       device,
       queue,
       list,
+      triangles,
       cameras,
       targets: world.get_resource::<RenderTargets>(),
       images,
@@ -310,6 +321,12 @@ impl EntityDrawer {
       out.shows = shows;
       out.filter = drawable.renderable.filter;
       out.lit = drawable.renderable.lighting;
+      // A test's mesh draws in its entity's place
+      #[cfg(test)]
+      if let Some(probe) = world.get::<MeshProbe>(drawable.entity) {
+        probe.draw(&frame, drawable, &mut out);
+        continue;
+      }
       collect_entity(&frame, drawable, &mut out);
     }
     for draw in ordered {
@@ -546,6 +563,15 @@ struct Emitter<'a> {
   device: &'a wgpu::Device,
   queue: &'a wgpu::Queue,
   list: &'a mut DrawList,
+  /// The frame's triangle stream, which meshes join
+  #[cfg_attr(
+    not(test),
+    expect(
+      dead_code,
+      reason = "skeletons' mesh attachments draw meshes; until they do, only tests draw one"
+    )
+  )]
+  triangles: &'a mut Triangles,
   /// Quads none of these cameras on `layers` can see are skipped (and
   /// never uploaded)
   cameras: &'a [CameraDraw],
@@ -901,6 +927,162 @@ impl<'a> Emitter<'a> {
       instances: first..last,
     };
     self.list.push_run_as(DrawKind::Entity, self.lit, z, item);
+  }
+}
+
+/// How a mesh of an entity is drawn, besides its triangles: the image it
+/// shows a rectangle of, how it blends, its tint (the sRGB colour with
+/// straight alpha, as a run's quad's) and how much it multiplies the light
+#[cfg_attr(
+  not(test),
+  expect(
+    dead_code,
+    reason = "skeletons' mesh attachments draw meshes; until they do, only tests draw one"
+  )
+)]
+#[derive(Clone, Copy)]
+struct MeshLook {
+  image: AssetId<Image>,
+  /// The rectangle of the image its UVs run over, in texels: x, y, width
+  /// and height
+  rect: [u32; 4],
+  blend: BlendMode,
+  tint: [f32; 4],
+  emission: f32,
+}
+
+impl<'a> Emitter<'a> {
+  /// Draw a mesh as an entity item at `z`, in the order this is called
+  /// among the entity's other draws: triangles of `look`'s image, drawn as
+  /// a sprite of it is (its tint, blend and emission; the entity's filter,
+  /// layers and lit flag). Each of `vertices` is a world position and a UV
+  /// as a fraction of `look.rect`; `indices` are three a triangle, counted
+  /// from the mesh's own first vertex. They are read once each, straight
+  /// into the frame's triangle stream.
+  ///
+  /// A UV outside `look.rect` reads nothing. Vertices are placed where
+  /// they are given: the pixel-art snap is a quad's. A mesh no camera on
+  /// the entity's layers can see (by its vertices' box) is not pushed, and
+  /// its image never uploaded; nor is one with no alpha, with no triangle,
+  /// with indices that are not whole triangles or reach past its vertices,
+  /// with a position that is not finite, or whose image draws nothing (not
+  /// loaded, in a release build). An image that is not loaded shows the
+  /// checker over the whole mesh in a debug build, as a run's quad does.
+  #[cfg_attr(
+    not(test),
+    expect(
+      dead_code,
+      reason = "skeletons' mesh attachments draw meshes; until they do, only tests draw one"
+    )
+  )]
+  fn draw_mesh(
+    &mut self,
+    z: i32,
+    look: &MeshLook,
+    vertices: impl IntoIterator<Item = (Vec2, Vec2)>,
+    indices: impl IntoIterator<Item = u32>,
+  ) {
+    let alpha = look.tint[3];
+    if alpha.is_nan() || alpha <= 0.0 {
+      return;
+    }
+    let Some(shown) = self.gpu.shown_image(look.image, self.images) else {
+      return;
+    };
+    // Its rectangle of the image as the texture shows it; all of the
+    // checker standing in for an image that is not loaded
+    let [u0, v0, u1, v1] = if shown.id == look.image {
+      let (width, height) = shown.size();
+      let (width, height) = (width.max(1) as f32, height.max(1) as f32);
+      let [x, y, w, h] = look.rect.map(|texels| texels as f32);
+      [x / width, y / height, (x + w) / width, (y + h) / height]
+    } else {
+      [0.0, 0.0, 1.0, 1.0]
+    };
+    let (from, to) = (Vec2::new(u0, v0), Vec2::new(u1, v1));
+    let lanes = MeshLanes {
+      tint: look.tint,
+      region: [u0, v0, u1, v1],
+      emission: look.emission,
+    };
+    // A UV of 0 or 1 lands exactly on the rectangle's edge, as a quad's
+    // corner does
+    let vertices = vertices
+      .into_iter()
+      .map(|(position, uv)| (position, from * (Vec2::ONE - uv) + to * uv));
+    let Some(mesh) = self.triangles.mesh(&lanes, vertices, indices) else {
+      return;
+    };
+    let seen = self.cameras.iter().any(|camera| {
+      camera.layers.intersects(&self.layers) && camera.view.is_visible(mesh.min, mesh.max)
+    });
+    if !seen {
+      self.triangles.drop_mesh(&mesh);
+      return;
+    }
+    let item = DrawTriangles {
+      shading: TriangleShading::Mesh,
+      texture: Some(self.gpu.shown_texture(shown)),
+      blend: look.blend,
+      filter: self.filter,
+      layers: self.layers,
+      min: mesh.min,
+      max: mesh.max,
+      indices: mesh.indices,
+      vertices: mesh.vertices,
+    };
+    self
+      .list
+      .push_triangles_as(DrawKind::Entity, self.lit, z, None, item);
+  }
+}
+
+/// A mesh a test draws where its entity's sprite would be: its entity's
+/// `Renderable` gives the image, tint, alpha, blend, emission, z, filter
+/// and lit flag, as a sprite's does (tests: nothing public draws a mesh of
+/// a caller's own making)
+#[cfg(test)]
+#[derive(crate::core::ecs::Component, Clone, Debug)]
+pub(crate) struct MeshProbe {
+  /// The rectangle of the image the mesh's UVs run over, in texels: x, y,
+  /// width and height
+  pub(crate) rect: [u32; 4],
+  /// Each vertex: where it is from the entity's position, in world units,
+  /// and its UV as a fraction of `rect`
+  pub(crate) vertices: Vec<(Vec2, Vec2)>,
+  /// Three a triangle, into `vertices`
+  pub(crate) indices: Vec<u32>,
+}
+
+#[cfg(test)]
+impl MeshProbe {
+  /// Draws the mesh at `drawable`'s place among the entities' draws
+  fn draw(&self, frame: &EntityFrame, drawable: &Drawable<'_>, out: &mut Emitter<'_>) {
+    let Drawable {
+      renderable,
+      global,
+      previous,
+      lift,
+      ..
+    } = *drawable;
+    let at = render_global(global, previous, frame.alpha).translation() + lift;
+    let look = MeshLook {
+      image: renderable.image.id(),
+      rect: self.rect,
+      blend: renderable.blend,
+      // The lane a sprite's instance carries its tint in
+      tint: SpriteInstance::new()
+        .with_tint(renderable.tint, renderable.alpha)
+        .tint,
+      emission: renderable.emission,
+    };
+    let vertices = self.vertices.iter().map(|&(offset, uv)| (at + offset, uv));
+    out.draw_mesh(
+      renderable.z_order,
+      &look,
+      vertices,
+      self.indices.iter().copied(),
+    );
   }
 }
 

@@ -97,6 +97,7 @@ impl PipelineKey {
 enum Module {
   Sprite,
   Line,
+  Mesh,
   Light,
 }
 
@@ -115,8 +116,8 @@ enum Groups {
 
 /// The module, bind groups and fragment entry of a built-in shader's
 /// pipeline for `key`; `None` for a game shader's (made from its own
-/// module) and for keys with no pipeline (sprites are quads, lines
-/// triangles). Tiles sampled smoothly read inside their cells at the level
+/// module) and for keys with no pipeline (sprites are quads, lines and
+/// meshes triangles). Tiles sampled smoothly read inside their cells at the level
 /// they need (`fs_tile` and its variants); tiles sampled nearest keep the
 /// sprite's entries
 fn built_in(key: &PipelineKey) -> Option<(Module, Groups, &'static str)> {
@@ -156,6 +157,11 @@ fn built_in(key: &PipelineKey) -> Option<(Module, Groups, &'static str)> {
     (BatchShader::LineTextured, Stream::Triangles) => {
       (Module::Line, Groups::Textured, "fs_textured")
     }
+    // Meshes are images, never render targets
+    (BatchShader::Mesh, Stream::Triangles) if premultiplied => {
+      (Module::Mesh, Groups::Textured, "fs_mesh_premultiplied")
+    }
+    (BatchShader::Mesh, Stream::Triangles) => (Module::Mesh, Groups::Textured, "fs_mesh"),
     (BatchShader::TextMask, Stream::Quads) => textured("fs_text_mask"),
     (BatchShader::TextColor, Stream::Quads) => textured("fs_text_color"),
     (BatchShader::TextMsdf, Stream::Quads) => textured("fs_text_msdf"),
@@ -272,7 +278,7 @@ const INSTANCE_LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLay
 };
 
 /// A [`Vertex2D`]: position, UV, colour, parameters, perpendicular and the
-/// atlas slot it samples.
+/// atlas slot it samples (a line's lanes; a mesh's carry its own).
 const VERTEX2D_ATTRIBUTES: [wgpu::VertexAttribute; 6] = wgpu::vertex_attr_array![
   0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32x4, 4 => Float32x2, 5 => Float32x4,
 ];
@@ -303,6 +309,7 @@ pub(crate) struct Pipelines {
   light_layout: wgpu::PipelineLayout,
   sprite: wgpu::ShaderModule,
   line: wgpu::ShaderModule,
+  mesh: wgpu::ShaderModule,
   light: wgpu::ShaderModule,
   built: HashMap<PipelineKey, Built>,
 }
@@ -348,6 +355,7 @@ impl Pipelines {
       light_layout,
       sprite: module("Sprite Shader", crate::core::shaders::compose::SPRITE),
       line: module("Line Shader", crate::core::shaders::compose::LINE),
+      mesh: module("Mesh Shader", crate::core::shaders::compose::MESH),
       light: module("Light Shader", crate::core::shaders::compose::LIGHT),
       built: HashMap::new(),
     }
@@ -385,6 +393,7 @@ impl Pipelines {
     let module = match module {
       Module::Sprite => &self.sprite,
       Module::Line => &self.line,
+      Module::Mesh => &self.mesh,
       Module::Light => &self.light,
     };
     let layout = match groups {
@@ -692,6 +701,38 @@ mod tests {
       key(BatchShader::Tile, straight, image, Sampling::Nearest),
       key(BatchShader::Tile, straight, image, Sampling::Linear)
     );
+  }
+
+  #[test]
+  fn a_mesh_draws_through_the_sprite_s_base_stages_for_its_blend() {
+    use crate::core::render::SCENE_FORMAT;
+    let entry = |shader, blend, stream| {
+      let key = PipelineKey::new(
+        shader,
+        blend,
+        stream,
+        PageKind::Srgb8,
+        Sampling::Linear,
+        SCENE_FORMAT,
+      );
+      built_in(&key)
+    };
+    let (mesh, sprite) = (BatchShader::Mesh, BatchShader::Sprite);
+    // Each blend's mesh entry is the sprite's base entry for it, by name
+    for blend in [
+      BlendMode::Alpha,
+      BlendMode::Premultiplied,
+      BlendMode::Additive,
+      BlendMode::Multiply,
+      BlendMode::Screen,
+    ] {
+      let (module, groups, drawn) = entry(mesh, blend, Stream::Triangles).expect("a mesh entry");
+      assert_eq!((module, groups), (Module::Mesh, Groups::Textured));
+      let (_, _, base) = entry(sprite, blend, Stream::Quads).expect("a sprite entry");
+      assert_eq!(drawn.replace("fs_mesh", "fs_base"), base, "{blend:?}");
+    }
+    // Meshes are triangles
+    assert_eq!(entry(mesh, BlendMode::Alpha, Stream::Quads), None);
   }
 
   #[test]
