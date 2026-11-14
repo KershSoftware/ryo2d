@@ -118,8 +118,8 @@ impl MeshAttachment {
   /// influence each when weighted. A key of a deform timeline
   /// ([`Timeline::Deform`](super::Timeline::Deform)) holds an x and a y
   /// for each, in their order, and moves the mesh only if it does
-  pub fn positions(&self) -> usize {
-    self.vertices.positions()
+  pub fn position_count(&self) -> usize {
+    self.vertices.position_count()
   }
 }
 
@@ -142,10 +142,10 @@ impl MeshVertices {
   }
 
   /// How many positions there are: one a vertex, or one an influence
-  pub fn positions(&self) -> usize {
+  pub fn position_count(&self) -> usize {
     match self {
       Self::Unweighted(positions) => positions.len(),
-      Self::Weighted(weighted) => weighted.positions(),
+      Self::Weighted(weighted) => weighted.position_count(),
     }
   }
 }
@@ -194,7 +194,7 @@ impl WeightedVertices {
   }
 
   /// How many influence positions there are in all
-  pub fn positions(&self) -> usize {
+  pub fn position_count(&self) -> usize {
     self.influences.len()
   }
 

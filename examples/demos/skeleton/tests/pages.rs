@@ -845,7 +845,7 @@ fn the_meshes_page_shows_a_weighted_cape_and_a_deformed_banner() {
       SkeletonTimeline::Deform { slot: keyed, attachment, frames }
         if *keyed == slot
           && &**attachment == "flag"
-          && frames.iter().any(|(_, offsets, _)| offsets.len() == flag.positions() * 2)
+          && frames.iter().any(|(_, offsets, _)| offsets.len() == flag.position_count() * 2)
     )
   });
   assert!(keyed, "the ripple keys the flag's shape, a vertex each");

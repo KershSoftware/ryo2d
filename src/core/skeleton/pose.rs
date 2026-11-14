@@ -67,7 +67,7 @@ pub(super) fn setup_order(data: &SkeletonData) -> impl Iterator<Item = SlotId> {
 
 /// The offsets deform keys give the mesh a slot shows, from its setup
 /// shape: an x and a y for each position the mesh holds
-/// (`MeshAttachment::positions`), in their order. A list with nothing in it
+/// (`MeshAttachment::position_count`), in their order. A list with nothing in it
 /// is no offset at all, the setup shape, so a slot no deform key moves
 /// costs two empty lists
 #[derive(Debug, Clone, Default)]

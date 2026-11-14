@@ -465,11 +465,11 @@ fn cape_mesh(torso: BoneId, cape: BoneId) -> MeshAttachment {
 }
 ```
 
-Reading built data: `MeshAttachment::vertex_count()` and `positions()` (below), `MeshVertices::Unweighted(Vec<Vec2>)` and `Weighted(WeightedVertices)`; `WeightedVertices` has `vertex_count()`, `influences(vertex)` and `positions()`. `skin.attachment(slot, name)` returns a `SkeletonAttachment::Mesh` to match.
+Reading built data: `MeshAttachment::vertex_count()` and `position_count()` (below), `MeshVertices::Unweighted(Vec<Vec2>)` and `Weighted(WeightedVertices)`; `WeightedVertices` has `vertex_count()`, `influences(vertex)` and `position_count()`. `skin.attachment(slot, name)` returns a `SkeletonAttachment::Mesh` to match.
 
 ### Deform keys
 
-A **deform key** moves a mesh's vertices in an animation. A key is a list of numbers: an offset from the mesh's setup shape, an x then a y, for each of the mesh's **positions**. A position is a vertex when the mesh is unweighted, and an *influence* when it is weighted (the influences of vertex 0 first, then vertex 1's, and so on, in the order of the file). `MeshAttachment::positions()` counts them: the six-vertex flag above has six positions and its keys hold twelve numbers; the cape has eight influences, so its keys hold sixteen.
+A **deform key** moves a mesh's vertices in an animation. A key is a list of numbers: an offset from the mesh's setup shape, an x then a y, for each of the mesh's **positions**. A position is a vertex when the mesh is unweighted, and an *influence* when it is weighted (the influences of vertex 0 first, then vertex 1's, and so on, in the order of the file). `MeshAttachment::position_count()` counts them: the six-vertex flag above has six positions and its keys hold twelve numbers; the cape has eight influences, so its keys hold sixteen.
 
 Add this to the flag file above (before its final `)`) and the flag ripples: the pole's edge and the fly stay, the middle column goes up and down.
 

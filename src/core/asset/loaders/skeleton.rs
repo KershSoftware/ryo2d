@@ -1786,7 +1786,7 @@ mod tests {
     assert_eq!(cape.uvs[2], Vec2::new(0.5, 1.0));
     assert_eq!(cape.triangles, [0, 1, 2]);
     assert_eq!(cape.color, Color::new(255, 0, 0, 128));
-    assert_eq!((cape.vertex_count(), cape.positions()), (3, 4));
+    assert_eq!((cape.vertex_count(), cape.position_count()), (3, 4));
     let MeshVertices::Weighted(vertices) = &cape.vertices else {
       panic!("not weighted");
     };

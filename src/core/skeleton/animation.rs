@@ -93,7 +93,7 @@ pub enum Timeline {
   /// The shape of the mesh a slot shows under the name `attachment`: each
   /// key holds an offset from the setup shape, an x and a y, for each
   /// position the mesh holds
-  /// ([`MeshAttachment::positions`](super::MeshAttachment::positions)). An
+  /// ([`MeshAttachment::position_count`](super::MeshAttachment::position_count)). An
   /// unweighted mesh has a position a vertex, in the space of its slot's
   /// bone; a weighted mesh has one an influence, in that influence's bone's
   /// space, so a keyed shape turns with the bones it rides. An empty key is

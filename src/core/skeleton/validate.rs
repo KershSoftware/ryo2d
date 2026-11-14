@@ -1148,7 +1148,7 @@ mod tests {
     let Some(Attachment::Mesh(cape)) = skin.attachment(SlotId(1), "cape") else {
       panic!("no cape");
     };
-    assert_eq!((cape.vertex_count(), cape.positions()), (4, 8));
+    assert_eq!((cape.vertex_count(), cape.position_count()), (4, 8));
     let MeshVertices::Weighted(vertices) = &cape.vertices else {
       panic!("not weighted");
     };
@@ -1158,7 +1158,7 @@ mod tests {
     let Some(Attachment::Mesh(flag)) = skin.attachment(SlotId(0), "flag") else {
       panic!("no flag");
     };
-    assert_eq!((flag.vertex_count(), flag.positions()), (4, 4));
+    assert_eq!((flag.vertex_count(), flag.position_count()), (4, 4));
   }
 
   #[test]

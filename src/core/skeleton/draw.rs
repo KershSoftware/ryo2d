@@ -119,7 +119,7 @@ impl Skeleton {
     let Some(deform) = self.pose.deforms.get(slot.index()) else {
       return Offsets::NONE;
     };
-    let width = mesh.positions() * 2;
+    let width = mesh.position_count() * 2;
     let (now, before) = (&deform.offsets[..], &deform.previous[..]);
     if !now.is_empty() && now.len() != width {
       return Offsets::NONE;

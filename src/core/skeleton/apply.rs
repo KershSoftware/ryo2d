@@ -356,11 +356,11 @@ pub(crate) fn apply_deform<'a>(
   let Attachment::Mesh(mesh) = worn(*slot, attachment)? else {
     return Some(Misfit::NotAMesh);
   };
-  let (keys, width) = (deform_width(frames), mesh.positions() * 2);
+  let (keys, width) = (deform_width(frames), mesh.position_count() * 2);
   if keys != 0 && keys != width {
     return Some(Misfit::Positions {
       keys: keys / 2,
-      mesh: mesh.positions(),
+      mesh: mesh.position_count(),
     });
   }
   let (from, to, eased) = match sample {
