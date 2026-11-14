@@ -229,9 +229,12 @@ pub(crate) struct Parts<'s> {
 }
 
 impl<'s> Parts<'s> {
-  /// The buffers, emptied, for skeletons borrowed for another lifetime:
-  /// kept as `Parts<'static>` between frames, their allocations are the
-  /// next frame's
+  /// The buffers for skeletons borrowed for another lifetime: the list of
+  /// parts emptied, since its parts borrow the last skeletons, and the
+  /// positions and bones as the last skeleton left them, to be forgotten
+  /// when the next is walked ([`Skeleton::parts`] clears all three). Kept
+  /// as `Parts<'static>` between frames, their allocations are the next
+  /// frame's
   pub(crate) fn recycle<'t>(self) -> Parts<'t> {
     Parts {
       list: recycle(self.list),
@@ -859,13 +862,16 @@ mod tests {
     let waiting = Skeleton::new(skeleton.data().clone());
     assert!(quads(&waiting, &data, seen).is_empty());
     // And a pose made from an older version of the data than the store
-    // holds is not this data's: nothing, and nothing out of range
+    // holds is not this data's: nothing, and nothing out of range. Not
+    // for data with fewer slots than the pose, nor for data its slots and
+    // bones would happen to fit
     let newer = (seen.0, seen.1 + 1);
     let shorter = SkeletonData::builder()
       .bone("root", None, BoneSetup::default())
       .build()
       .expect("a valid skeleton");
     assert!(quads(&skeleton, &shorter, newer).is_empty());
+    assert!(quads(&skeleton, &data, newer).is_empty());
     assert_eq!(quads(&skeleton, &data, seen).len(), 2);
   }
 

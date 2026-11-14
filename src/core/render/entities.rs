@@ -237,7 +237,10 @@ pub(crate) struct EntityDrawer {
   /// is reused)
   items: Vec<(DrawOrder, Drawable<'static>)>,
   /// What the skeleton being drawn shows, and the buffers its meshes are
-  /// skinned into (empty between frames; the allocations are reused)
+  /// skinned into. Between frames its list of parts is empty (it borrows
+  /// the frame's skeletons), and its positions and bones still hold the
+  /// last skeleton's, forgotten when the next is walked; the allocations
+  /// are reused
   parts: Parts<'static>,
   /// Whether the log was told that a mesh draws plain under an effect that
   /// grows a quad

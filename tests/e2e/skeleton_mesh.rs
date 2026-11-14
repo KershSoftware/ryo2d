@@ -212,6 +212,17 @@ fn one_part(
   mesh: bool,
   blend: SlotBlend,
 ) -> Handle<SkeletonData> {
+  one_part_on(world, image, mesh, blend, BoneSetup::default())
+}
+
+/// [`one_part`] whose root bone is set up as `root`
+fn one_part_on(
+  world: &mut World,
+  image: &Handle<Image>,
+  mesh: bool,
+  blend: SlotBlend,
+  root: BoneSetup,
+) -> Handle<SkeletonData> {
   let color = Color::new(255, 200, 150, 230);
   let attachment = if mesh {
     SkeletonAttachment::Mesh(MeshAttachment {
@@ -230,7 +241,7 @@ fn one_part(
     blend,
   };
   let data = SkeletonData::builder()
-    .bone("root", None, BoneSetup::default())
+    .bone("root", None, root)
     .slot("body", "root", shown)
     .region(SkeletonRegion {
       name: Arc::from("body"),
@@ -268,6 +279,16 @@ fn a_mesh_draws_as_the_region_of_its_image() {
   let data = [false, true].map(|mesh| one_part(world, &image, mesh, SlotBlend::Normal));
   let [region, mesh] =
     data.map(|data| stand(world, data, (-500.0, -500.0), Renderable::skeleton()));
+  // The same two on a bone of their own that is turned a quarter turn and
+  // twice as long as it is tall, which none of the places below makes an
+  // entity: the square is 8 px wide and 16 px tall, still on whole pixels
+  let lying = BoneSetup {
+    rotation: FRAC_PI_2,
+    scale_x: 2.0,
+    ..BoneSetup::default()
+  };
+  let data = [false, true].map(|mesh| one_part_on(world, &image, mesh, SlotBlend::Normal, lying));
+  let on_a_bone = data.map(|data| stand(world, data, (-500.0, -500.0), Renderable::skeleton()));
   engine.step_frames(2).unwrap();
   let empty = frame(&engine);
 
@@ -294,21 +315,38 @@ fn a_mesh_draws_as_the_region_of_its_image() {
     }),
   ];
   let places = [
-    ("upright", Transform::from_xy(30.0, 30.0)),
+    ("upright", Transform::from_xy(30.0, 30.0), [region, mesh]),
     (
       "twice as large",
       Transform::from_xy(30.0, 30.0).with_scale(Vec2::splat(2.0)),
+      [region, mesh],
     ),
     (
       "a quarter turn round",
       Transform::from_xy(30.0, 30.0).with_rotation(FRAC_PI_2),
+      [region, mesh],
     ),
     (
       "mirrored by its scale",
       Transform::from_xy(30.0, 30.0).with_scale(Vec2::new(-1.0, 1.0)),
+      [region, mesh],
+    ),
+    (
+      "on a turned, stretched bone",
+      Transform::from_xy(30.0, 30.0),
+      on_a_bone,
+    ),
+    (
+      "on a turned, stretched bone, turned again",
+      Transform::from_xy(30.0, 30.0).with_rotation(FRAC_PI_2),
+      on_a_bone,
     ),
   ];
-  for (place, transform) in places {
+  for (place, transform, [region, mesh]) in places {
+    // The pair that stood in the last place is out of view
+    for entity in [region, mesh].into_iter().chain(on_a_bone) {
+      *engine.world_mut().get_mut::<Transform>(entity).unwrap() = hidden;
+    }
     // One of the two dressed and in place, the other out of view
     let shown = |engine: &mut HeadlessEngine, dress: Dress, which: Entity, other: Entity| {
       let world = engine.world_mut();
@@ -347,7 +385,7 @@ fn a_mesh_draws_as_the_region_of_its_image() {
   // A slot with a blend of its own: the mesh in it adds light as the
   // region in it does, whatever the renderable's blend
   let world = engine.world_mut();
-  for entity in [region, mesh] {
+  for entity in [region, mesh].into_iter().chain(on_a_bone) {
     *world.get_mut::<Transform>(entity).unwrap() = hidden;
   }
   let data = [false, true].map(|mesh| one_part(world, &image, mesh, SlotBlend::Additive));
