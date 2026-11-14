@@ -1,6 +1,7 @@
-//! Meshes as triangles: a drawer's own textured triangles in the batch's
-//! triangle stream, drawn with the sprite's look (`BatchShader::Mesh`,
-//! `shaders/core/mesh.wgsl`).
+//! Meshes: an entity's own triangles of an image, drawn as a sprite of the
+//! image is. Each vertex is a world position and a UV; one sprite instance
+//! a mesh carries everything else, and the sprite shader's own fragment
+//! stages draw it (`vs_mesh`, `shaders/core/mesh.wgsl`).
 
 #![cfg_attr(
   not(test),
@@ -14,23 +15,20 @@ use std::ops::Range;
 
 use glam::Vec2;
 
-use super::polyline::{Triangles, Vertex2D};
-use crate::core::graphics::SpriteInstance;
-
-/// What every vertex of a mesh carries besides its own position and UV.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct MeshLanes {
-  /// The tint, as a sprite instance's is given: the sRGB colour with
-  /// straight alpha
-  pub(crate) tint: [f32; 4],
-  /// The rectangle of the image the mesh may read (UV min and max, as
-  /// fractions of the image): a UV outside it reads nothing
-  pub(crate) region: [f32; 4],
-  /// Multiplies the light, as a sprite's emission does
-  pub(crate) emission: f32,
+/// One vertex of the mesh stream, laid out as a corner of the batch's unit
+/// quad is ([`QUAD_LAYOUT`](super::QUAD_LAYOUT)): where a quad's vertex is a
+/// corner its instance places, a mesh's is the place itself.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+pub(crate) struct MeshVertex {
+  /// World position
+  pub(crate) position: [f32; 2],
+  /// Across the rectangle of the image its mesh's instance names (its
+  /// `uv_rect`): 0 on one edge, 1 on the other
+  pub(crate) uv: [f32; 2],
 }
 
-/// Where a mesh went in the triangle stream.
+/// Where a mesh went in the mesh stream.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct MeshRange {
   pub(crate) vertices: Range<u32>,
@@ -40,26 +38,35 @@ pub(crate) struct MeshRange {
   pub(crate) max: Vec2,
 }
 
-impl Triangles {
-  /// Add a mesh: each of `vertices` is a world position and a UV as a
-  /// fraction of its image, and `indices` are three a triangle, counted
-  /// from the mesh's own first vertex. Where it went, or `None`, with the
-  /// stream as it was, for a mesh that draws nothing: one with no
+/// The frame's meshes: their vertices and the indices of their triangles,
+/// built on the CPU while the frame is gathered and uploaded once.
+#[derive(Default)]
+pub(crate) struct MeshStream {
+  pub(crate) vertices: Vec<MeshVertex>,
+  /// Three a triangle, each a vertex of the stream
+  pub(crate) indices: Vec<u32>,
+}
+
+impl MeshStream {
+  /// Forget every mesh, keeping the allocations.
+  pub(crate) fn clear(&mut self) {
+    self.vertices.clear();
+    self.indices.clear();
+  }
+
+  /// Add a mesh: each of `vertices` is a world position and a UV across
+  /// its rectangle of the image, and `indices` are three a triangle,
+  /// counted from the mesh's own first vertex. Where it went, or `None`,
+  /// with the stream as it was, for a mesh that draws nothing: one with no
   /// triangle, indices that are not whole triangles or reach past its
   /// vertices, or a position that is not finite.
-  ///
-  /// The lanes of a mesh's [`Vertex2D`]: `uv` a fraction of the image,
-  /// `color` the tint, `params` the region, `across[0]` the emission less
-  /// one (a sprite instance's lane) and `bounds` the image's atlas slot,
-  /// set when the mesh is placed.
-  pub(crate) fn mesh(
+  pub(crate) fn add(
     &mut self,
-    lanes: &MeshLanes,
     vertices: impl IntoIterator<Item = (Vec2, Vec2)>,
     indices: impl IntoIterator<Item = u32>,
   ) -> Option<MeshRange> {
     let (first_vertex, first_index) = (self.vertices.len(), self.indices.len());
-    let added = self.add_mesh(lanes, vertices, indices);
+    let added = self.add_whole(vertices, indices);
     if added.is_none() {
       self.vertices.truncate(first_vertex);
       self.indices.truncate(first_index);
@@ -67,27 +74,27 @@ impl Triangles {
     added
   }
 
-  /// Forget `mesh`, the last thing added: a mesh a drawer added and then
-  /// did not push (no camera sees it).
-  pub(crate) fn drop_mesh(&mut self, mesh: &MeshRange) {
+  /// Forget `mesh`, which must be the last one added: a mesh a drawer
+  /// added and then did not push (no camera sees it).
+  pub(crate) fn drop_last(&mut self, mesh: &MeshRange) {
+    debug_assert_eq!(
+      (mesh.vertices.end as usize, mesh.indices.end as usize),
+      (self.vertices.len(), self.indices.len()),
+      "only the last mesh added can be taken back"
+    );
     self.vertices.truncate(mesh.vertices.start as usize);
     self.indices.truncate(mesh.indices.start as usize);
   }
 
-  /// [`mesh`](Self::mesh), leaving what it added of a mesh that draws
+  /// [`add`](Self::add), leaving what it added of a mesh that draws
   /// nothing
-  fn add_mesh(
+  fn add_whole(
     &mut self,
-    lanes: &MeshLanes,
     vertices: impl IntoIterator<Item = (Vec2, Vec2)>,
     indices: impl IntoIterator<Item = u32>,
   ) -> Option<MeshRange> {
     let first_vertex = u32::try_from(self.vertices.len()).ok()?;
     let first_index = u32::try_from(self.indices.len()).ok()?;
-    // The lane a sprite's instance carries its emission in
-    let emission = SpriteInstance::new()
-      .with_emission(lanes.emission)
-      .transform[0][3];
     let (mut min, mut max) = (Vec2::INFINITY, Vec2::NEG_INFINITY);
     // Asked of every position: `min` and `max` skip a NaN
     let mut finite = true;
@@ -95,13 +102,9 @@ impl Triangles {
       finite &= position.is_finite();
       min = min.min(position);
       max = max.max(position);
-      self.vertices.push(Vertex2D {
+      self.vertices.push(MeshVertex {
         position: position.into(),
         uv: uv.into(),
-        color: lanes.tint,
-        params: lanes.region,
-        across: [emission, 0.0],
-        bounds: [0.0; 4],
       });
     }
     let last_vertex = u32::try_from(self.vertices.len()).ok()?;
@@ -133,12 +136,6 @@ impl Triangles {
 mod tests {
   use super::*;
 
-  const LANES: MeshLanes = MeshLanes {
-    tint: [0.5, 0.25, 1.0, 0.75],
-    region: [0.25, 0.0, 0.5, 1.0],
-    emission: 3.0,
-  };
-
   /// A unit square's corners, each with its position as its UV
   fn square(at: Vec2) -> [(Vec2, Vec2); 4] {
     [Vec2::ZERO, Vec2::X, Vec2::Y, Vec2::ONE].map(|corner| (at + corner, corner))
@@ -146,9 +143,9 @@ mod tests {
 
   #[test]
   fn a_mesh_joins_the_stream_after_what_it_holds() {
-    let mut triangles = Triangles::default();
-    let first = triangles.mesh(&LANES, square(Vec2::ZERO), [0, 1, 2, 1, 3, 2]);
-    let second = triangles.mesh(&LANES, square(Vec2::new(10.0, 20.0)), [0, 1, 3]);
+    let mut meshes = MeshStream::default();
+    let first = meshes.add(square(Vec2::ZERO), [0, 1, 2, 1, 3, 2]);
+    let second = meshes.add(square(Vec2::new(10.0, 20.0)), [0, 1, 3]);
     assert_eq!(
       first,
       Some(MeshRange {
@@ -169,35 +166,43 @@ mod tests {
         max: Vec2::new(11.0, 21.0),
       })
     );
-    assert_eq!(triangles.indices, [0, 1, 2, 1, 3, 2, 4, 5, 7]);
-    // Each vertex carries its place and UV, and the mesh's lanes: the
-    // emission as a sprite's instance does, less one
+    assert_eq!(meshes.indices, [0, 1, 2, 1, 3, 2, 4, 5, 7]);
+    // Each vertex is its place and its UV, 16 bytes as a unit quad's is
     assert_eq!(
-      triangles.vertices[7],
-      Vertex2D {
+      meshes.vertices[7],
+      MeshVertex {
         position: [11.0, 21.0],
         uv: [1.0, 1.0],
-        color: LANES.tint,
-        params: LANES.region,
-        across: [2.0, 0.0],
-        bounds: [0.0; 4],
       }
     );
-    let sprite = SpriteInstance::new().with_emission(LANES.emission);
-    assert_eq!(triangles.vertices[7].across[0], sprite.transform[0][3]);
+    assert_eq!(std::mem::size_of::<MeshVertex>(), 16);
 
-    // A mesh added and then not pushed is taken back
+    // The last mesh, added and then not pushed, is taken back
     if let Some(second) = &second {
-      triangles.drop_mesh(second);
+      meshes.drop_last(second);
     }
-    assert_eq!((triangles.vertices.len(), triangles.indices.len()), (4, 6));
+    assert_eq!((meshes.vertices.len(), meshes.indices.len()), (4, 6));
+    meshes.clear();
+    assert!(meshes.vertices.is_empty() && meshes.indices.is_empty());
+  }
+
+  #[test]
+  #[cfg(debug_assertions)]
+  #[should_panic(expected = "only the last mesh added can be taken back")]
+  fn only_the_last_mesh_can_be_taken_back() {
+    let mut meshes = MeshStream::default();
+    let first = meshes.add(square(Vec2::ZERO), [0, 1, 2]);
+    meshes.add(square(Vec2::ONE), [0, 1, 2]);
+    if let Some(first) = &first {
+      meshes.drop_last(first);
+    }
   }
 
   #[test]
   fn a_mesh_that_draws_nothing_leaves_the_stream_as_it_was() {
-    let mut triangles = Triangles::default();
-    triangles.mesh(&LANES, square(Vec2::ZERO), [0, 1, 2]);
-    let held = (triangles.vertices.clone(), triangles.indices.clone());
+    let mut meshes = MeshStream::default();
+    meshes.add(square(Vec2::ZERO), [0, 1, 2]);
+    let held = (meshes.vertices.clone(), meshes.indices.clone());
     let nan = Vec2::new(f32::NAN, 0.0);
     let far = Vec2::new(0.0, f32::INFINITY);
     /// A mesh that draws nothing: what is wrong with it, its vertices and
@@ -222,13 +227,13 @@ mod tests {
       ),
     ];
     for (name, vertices, indices) in cases {
-      let added = triangles.mesh(&LANES, vertices, indices.iter().copied());
+      let added = meshes.add(vertices, indices.iter().copied());
       assert_eq!(added, None, "{name}");
-      assert_eq!(triangles.vertices, held.0, "{name}");
-      assert_eq!(triangles.indices, held.1, "{name}");
+      assert_eq!(meshes.vertices, held.0, "{name}");
+      assert_eq!(meshes.indices, held.1, "{name}");
     }
     // The next one starts where the last good one ended
-    let next = triangles.mesh(&LANES, square(Vec2::ZERO), [0, 1, 2]);
+    let next = meshes.add(square(Vec2::ZERO), [0, 1, 2]);
     assert_eq!(
       next.map(|range| (range.vertices, range.indices)),
       Some((4..8, 3..6))

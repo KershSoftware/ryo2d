@@ -56,6 +56,8 @@ mod gpu_world;
 mod headless;
 #[cfg(test)]
 mod image_gpu;
+#[cfg(test)]
+mod mesh_gpu;
 mod retain;
 #[cfg(test)]
 mod shader_gpu;

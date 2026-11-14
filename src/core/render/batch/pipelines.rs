@@ -97,7 +97,6 @@ impl PipelineKey {
 enum Module {
   Sprite,
   Line,
-  Mesh,
   Light,
 }
 
@@ -116,8 +115,9 @@ enum Groups {
 
 /// The module, bind groups and fragment entry of a built-in shader's
 /// pipeline for `key`; `None` for a game shader's (made from its own
-/// module) and for keys with no pipeline (sprites are quads, lines and
-/// meshes triangles). Tiles sampled smoothly read inside their cells at the level
+/// module) and for keys with no pipeline (sprites are quads, lines
+/// triangles). A mesh draws through the fragment entry a quad of its shader
+/// would: only its vertex stage is its own (`vs_mesh`). Tiles sampled smoothly read inside their cells at the level
 /// they need (`fs_tile` and its variants); tiles sampled nearest keep the
 /// sprite's entries
 fn built_in(key: &PipelineKey) -> Option<(Module, Groups, &'static str)> {
@@ -140,8 +140,8 @@ fn built_in(key: &PipelineKey) -> Option<(Module, Groups, &'static str)> {
   };
   let textured = |fragment| (Module::Sprite, Groups::Textured, fragment);
   Some(match (key.shader, key.stream) {
-    (BatchShader::Sprite, Stream::Quads) => textured(sprite),
-    (BatchShader::SpriteEffect, Stream::Quads) => textured(entry(
+    (BatchShader::Sprite, Stream::Quads | Stream::Meshes) => textured(sprite),
+    (BatchShader::SpriteEffect, Stream::Quads | Stream::Meshes) => textured(entry(
       "fs_effect_linear",
       "fs_effect_premultiplied",
       "fs_effect",
@@ -157,11 +157,6 @@ fn built_in(key: &PipelineKey) -> Option<(Module, Groups, &'static str)> {
     (BatchShader::LineTextured, Stream::Triangles) => {
       (Module::Line, Groups::Textured, "fs_textured")
     }
-    // Meshes are images, never render targets
-    (BatchShader::Mesh, Stream::Triangles) if premultiplied => {
-      (Module::Mesh, Groups::Textured, "fs_mesh_premultiplied")
-    }
-    (BatchShader::Mesh, Stream::Triangles) => (Module::Mesh, Groups::Textured, "fs_mesh"),
     (BatchShader::TextMask, Stream::Quads) => textured("fs_text_mask"),
     (BatchShader::TextColor, Stream::Quads) => textured("fs_text_color"),
     (BatchShader::TextMsdf, Stream::Quads) => textured("fs_text_msdf"),
@@ -257,7 +252,9 @@ const QUAD_ATTRIBUTES: [wgpu::VertexAttribute; 2] =
   wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2];
 
 /// The unit quad ([`unit_quad`](super::unit_quad)), vertex buffer 0 of every
-/// quad pipeline (the batch's and the UI's)
+/// quad pipeline (the batch's and the UI's), and a mesh's vertices
+/// (`MeshVertex`, laid out the same: a position, then a UV), vertex buffer 0
+/// of every mesh pipeline
 pub(crate) const QUAD_LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLayout {
   array_stride: 16,
   step_mode: wgpu::VertexStepMode::Vertex,
@@ -278,7 +275,7 @@ const INSTANCE_LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLay
 };
 
 /// A [`Vertex2D`]: position, UV, colour, parameters, perpendicular and the
-/// atlas slot it samples (a line's lanes; a mesh's carry its own).
+/// atlas slot it samples.
 const VERTEX2D_ATTRIBUTES: [wgpu::VertexAttribute; 6] = wgpu::vertex_attr_array![
   0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32x4, 4 => Float32x2, 5 => Float32x4,
 ];
@@ -309,7 +306,6 @@ pub(crate) struct Pipelines {
   light_layout: wgpu::PipelineLayout,
   sprite: wgpu::ShaderModule,
   line: wgpu::ShaderModule,
-  mesh: wgpu::ShaderModule,
   light: wgpu::ShaderModule,
   built: HashMap<PipelineKey, Built>,
 }
@@ -355,7 +351,6 @@ impl Pipelines {
       light_layout,
       sprite: module("Sprite Shader", crate::core::shaders::compose::SPRITE),
       line: module("Line Shader", crate::core::shaders::compose::LINE),
-      mesh: module("Mesh Shader", crate::core::shaders::compose::MESH),
       light: module("Light Shader", crate::core::shaders::compose::LIGHT),
       built: HashMap::new(),
     }
@@ -373,7 +368,8 @@ impl Pipelines {
       return;
     };
     if let BatchShader::Custom(source) = key.shader {
-      let (Stream::Quads, Some((name, wgsl))) = (key.stream, custom) else {
+      // A game shader draws quads and meshes
+      let (Stream::Quads | Stream::Meshes, Some((name, wgsl))) = (key.stream, custom) else {
         return;
       };
       let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
@@ -393,7 +389,6 @@ impl Pipelines {
     let module = match module {
       Module::Sprite => &self.sprite,
       Module::Line => &self.line,
-      Module::Mesh => &self.mesh,
       Module::Light => &self.light,
     };
     let layout = match groups {
@@ -520,9 +515,10 @@ pub(crate) fn custom_pipeline(
   batch_pipeline(device, layout, name, module, fragment, key)
 }
 
-/// A pipeline drawing `key`'s stream (instanced quads or indexed triangles)
-/// with `module`'s `vs_main` (`vs_tile` for tile chunks) and `fragment`,
-/// blended and formatted for `key`.
+/// A pipeline drawing `key`'s stream (instanced quads, indexed triangles, or
+/// a mesh's indexed triangles with a quad's instance) with `module`'s
+/// `vs_main` (`vs_tile` for tile chunks, `vs_mesh` for meshes) and
+/// `fragment`, blended and formatted for `key`.
 fn batch_pipeline(
   device: &wgpu::Device,
   layout: &wgpu::PipelineLayout,
@@ -547,13 +543,16 @@ fn batch_pipeline(
     layout: Some(layout),
     vertex: wgpu::VertexState {
       module,
-      entry_point: Some(match key.shader {
-        BatchShader::Tile => "vs_tile",
-        BatchShader::Repeat => "vs_repeat",
+      entry_point: Some(match (key.stream, key.shader) {
+        (Stream::Meshes, _) => "vs_mesh",
+        (_, BatchShader::Tile) => "vs_tile",
+        (_, BatchShader::Repeat) => "vs_repeat",
         _ => "vs_main",
       }),
+      // A mesh's vertex is laid out as the unit quad's corner is, and it
+      // takes one instance as a quad does
       buffers: match key.stream {
-        Stream::Quads => &[Some(QUAD_LAYOUT), Some(INSTANCE_LAYOUT)],
+        Stream::Quads | Stream::Meshes => &[Some(QUAD_LAYOUT), Some(INSTANCE_LAYOUT)],
         Stream::Triangles => &[Some(VERTEX2D_LAYOUT)],
       },
       compilation_options: Default::default(),
@@ -704,35 +703,46 @@ mod tests {
   }
 
   #[test]
-  fn a_mesh_draws_through_the_sprite_s_base_stages_for_its_blend() {
+  fn a_mesh_draws_through_the_fragment_stages_a_quad_of_its_shader_would() {
     use crate::core::render::SCENE_FORMAT;
-    let entry = |shader, blend, stream| {
-      let key = PipelineKey::new(
-        shader,
-        blend,
-        stream,
-        PageKind::Srgb8,
-        Sampling::Linear,
-        SCENE_FORMAT,
-      );
+    let stages = |shader, blend, page, stream| {
+      let key = PipelineKey::new(shader, blend, stream, page, Sampling::Linear, SCENE_FORMAT);
       built_in(&key)
     };
-    let (mesh, sprite) = (BatchShader::Mesh, BatchShader::Sprite);
-    // Each blend's mesh entry is the sprite's base entry for it, by name
-    for blend in [
-      BlendMode::Alpha,
-      BlendMode::Premultiplied,
-      BlendMode::Additive,
-      BlendMode::Multiply,
-      BlendMode::Screen,
-    ] {
-      let (module, groups, drawn) = entry(mesh, blend, Stream::Triangles).expect("a mesh entry");
-      assert_eq!((module, groups), (Module::Mesh, Groups::Textured));
-      let (_, _, base) = entry(sprite, blend, Stream::Quads).expect("a sprite entry");
-      assert_eq!(drawn.replace("fs_mesh", "fs_base"), base, "{blend:?}");
+    // Plain or under an effect, with every blend, from an image's page or
+    // a render target's: the module, the groups and the fragment entry of
+    // the quad's pipeline
+    for shader in [BatchShader::Sprite, BatchShader::SpriteEffect] {
+      for blend in [
+        BlendMode::Alpha,
+        BlendMode::Premultiplied,
+        BlendMode::Additive,
+        BlendMode::Multiply,
+        BlendMode::Screen,
+      ] {
+        for page in [PageKind::Srgb8, PageKind::Linear] {
+          let mesh = stages(shader, blend, page, Stream::Meshes);
+          assert!(mesh.is_some(), "{shader:?} {blend:?} {page:?}");
+          assert_eq!(
+            mesh,
+            stages(shader, blend, page, Stream::Quads),
+            "{shader:?} {blend:?} {page:?}"
+          );
+        }
+      }
     }
-    // Meshes are triangles
-    assert_eq!(entry(mesh, BlendMode::Alpha, Stream::Quads), None);
+    // Nothing else is a mesh: a tile chunk is placed through its slot, a
+    // repeated layer counts copies, a line has vertices of its own
+    for shader in [
+      BatchShader::Tile,
+      BatchShader::TileObject,
+      BatchShader::Repeat,
+      BatchShader::Line,
+      BatchShader::TextMask,
+    ] {
+      let none = stages(shader, BlendMode::Alpha, PageKind::Srgb8, Stream::Meshes);
+      assert_eq!(none, None, "{shader:?}");
+    }
   }
 
   #[test]

@@ -220,11 +220,12 @@ impl Engine {
           (camera.entity, globals)
         }));
 
-      // The list and the triangle stream its triangle items are ranges of:
-      // the entity drawer adds meshes to the stream, then trails, lines and
-      // debug shapes follow them
+      // The list, and the streams its triangle and mesh items are ranges
+      // of: the entity drawer adds the meshes, and trails, lines and debug
+      // shapes the triangles
       self.draw_list.clear();
       batch.triangles().clear();
+      batch.meshes().clear();
       self.batch_collector.push_to(
         &mut self.draw_list,
         DrawKind::Sprite,
@@ -305,7 +306,7 @@ impl Engine {
         rend.device(),
         rend.queue(),
         &mut self.draw_list,
-        batch.triangles(),
+        batch.meshes(),
         self.tile_drawer.ordered(),
       );
       self.entity_draw_time = entity_start.elapsed();
@@ -344,8 +345,7 @@ impl Engine {
         emit_world_text(&mut self.world, &self.text, &text_frame, &mut text_targets);
       }
       // Trails (world-space points), lines (at their entity) and the debug
-      // overlays become triangles, one draw-list item each, after the
-      // entities' meshes in the stream
+      // overlays become triangles, one draw-list item each
       let triangles = batch.triangles();
       // The shadowed lights the lit cameras see, each with its casting edges
       // from the occluder index, read where they are drawn and on their

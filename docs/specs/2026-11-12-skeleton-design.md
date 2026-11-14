@@ -309,13 +309,15 @@ Stage 2 builds on the merged core. These are the planner's calls. The owner may 
 
 - **Order:** a mesh draws in the skeleton's draw order, between its regions, as part of the entity's place in the entity ordering. The draw list gains a triangles item of the entity kind.
 - **Look:** a mesh must look exactly like a region quad of the same image.
-  - It uses a mesh shader made of the sprite shader's sampling and tint.
+  - It draws through the sprite shader's own fragment stages. A mesh carries one sprite instance (the rectangle of the image, the tint, the effect parameters, the emission) beside its vertices, each of which is only a position and a UV.
   - Its colour is slot × attachment × the entity's tint and alpha.
+  - The entity's built-in sprite effects that work in place (flash, colour shift, silhouette, grayscale, invert, pixelate, wave, dissolve) apply to a mesh as to a region, and so does a game's own sprite shader (`Renderable::shader`, a `Material`).
   - It is lit by the entity's `lit` flag, and lifted by its floor.
   - It mirrors with a flip, and no face is culled.
 - **Shadows:** a drop shadow draws the mesh's silhouette as it does a region's. Blob and contact shadows are the entity's, unchanged.
 - **Limits, recorded:**
-  - A game's own sprite shader does not apply to mesh parts. The engine's custom sprite shaders are quad-only, so under one a skeleton's regions take the shader and its meshes draw plain.
+  - Effects that grow their sprite's quad (outline, glow, directional outline) do not apply to mesh parts: a quad is enlarged to hold what they draw round the sprite, and a mesh has its own shape. Under one a skeleton's regions take the effect and its meshes draw plain, with one warning in the log.
+  - Each mesh is a draw of its own: its instance is its alone, so meshes do not merge with one another or with the quads round them.
   - Pixel-art snapping does not apply to mesh vertices.
 - **Debug:** `debug:skeletons` draws a mesh's hull and triangles.
 

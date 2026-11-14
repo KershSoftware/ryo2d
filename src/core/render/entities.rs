@@ -28,9 +28,10 @@
 //! ([`DrawList::push_run_as`]), after its shadows.
 //!
 //! A mesh an entity draws (`Emitter::draw_mesh`) is an entity item too:
-//! its triangles join the frame's triangle stream and take their entity's
-//! place in the order ([`DrawList::push_triangles_as`]), drawn as a sprite
-//! of their image would be.
+//! its triangles join the frame's mesh stream and take their entity's
+//! place in the order ([`DrawList::push_mesh`]), drawn as a sprite of
+//! their image would be, under the effect or game shader a sprite would
+//! take.
 //!
 //! Positions come from `GlobalTransform`, interpolated by the frame's alpha
 //! for entities with `PreviousGlobalTransform`, and lifted by `DrawLift` on
@@ -41,11 +42,10 @@
 
 use std::collections::HashSet;
 
-use super::batch::{BlendMode, Filter, MeshLanes, Triangles};
+use super::batch::{BlendMode, Filter, MeshStream};
 use super::scratch::recycle;
 use super::{
-  CameraDraw, DrawChunk, DrawKind, DrawList, DrawRun, DrawTriangles, SpriteLook, SpriteShading,
-  TriangleShading,
+  CameraDraw, DrawChunk, DrawKind, DrawList, DrawMesh, DrawRun, SpriteLook, SpriteShading,
 };
 use crate::core::asset::{AssetId, Assets};
 use crate::core::ecs::interpolate::render_global;
@@ -56,7 +56,7 @@ use crate::core::ecs::{
 };
 use crate::core::graphics::TileDirection;
 use crate::core::graphics::atlas::Showing;
-use crate::core::graphics::sprite_gpu::{ShownImage, effective_shader};
+use crate::core::graphics::sprite_gpu::{ShownImage, effect_padding, effective_shader};
 use crate::core::graphics::{
   CompositeTile, Image, RenderLayers, RenderTarget, RenderTargets, SpriteGpuRenderer,
   SpriteInstance, TextureId, images_of,
@@ -237,6 +237,9 @@ pub(crate) struct EntityDrawer {
   items: Vec<(DrawOrder, Drawable<'static>)>,
   /// The regions of the skeleton being drawn (its allocation is reused)
   quads: Vec<RegionQuad>,
+  /// Whether the log was told that a mesh draws plain under an effect that
+  /// grows a quad
+  warned_grown: bool,
 }
 
 impl EntityDrawer {
@@ -244,8 +247,8 @@ impl EntityDrawer {
   /// `ordered` (sorted by [`OrderedDraw::sort`]) each in its place among
   /// them, returning how many visible renderables there were. `alpha` is
   /// the render interpolation factor; quads none of `cameras` can see are
-  /// skipped. An entity's meshes go into `triangles`, the frame's triangle
-  /// stream, which `list`'s triangle items are ranges of.
+  /// skipped. An entity's meshes go into `meshes`, the frame's mesh stream,
+  /// which `list`'s mesh items are ranges of.
   #[allow(clippy::too_many_arguments)]
   pub(crate) fn collect(
     &mut self,
@@ -256,7 +259,7 @@ impl EntityDrawer {
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     list: &mut DrawList,
-    triangles: &mut Triangles,
+    meshes: &mut MeshStream,
     ordered: &[OrderedDraw],
   ) -> usize {
     let mut drawables = world.query::<DrawableItem>();
@@ -283,7 +286,8 @@ impl EntityDrawer {
       device,
       queue,
       list,
-      triangles,
+      meshes,
+      warned_grown: &mut self.warned_grown,
       cameras,
       targets: world.get_resource::<RenderTargets>(),
       images,
@@ -563,7 +567,7 @@ struct Emitter<'a> {
   device: &'a wgpu::Device,
   queue: &'a wgpu::Queue,
   list: &'a mut DrawList,
-  /// The frame's triangle stream, which meshes join
+  /// The frame's mesh stream, which an entity's meshes join
   #[cfg_attr(
     not(test),
     expect(
@@ -571,7 +575,17 @@ struct Emitter<'a> {
       reason = "skeletons' mesh attachments draw meshes; until they do, only tests draw one"
     )
   )]
-  triangles: &'a mut Triangles,
+  meshes: &'a mut MeshStream,
+  /// Whether the log was told that a mesh draws plain under an effect that
+  /// grows a quad (kept across frames: told once)
+  #[cfg_attr(
+    not(test),
+    expect(
+      dead_code,
+      reason = "skeletons' mesh attachments draw meshes; until they do, only tests draw one"
+    )
+  )]
+  warned_grown: &'a mut bool,
   /// Quads none of these cameras on `layers` can see are skipped (and
   /// never uploaded)
   cameras: &'a [CameraDraw],
@@ -736,20 +750,26 @@ struct RunLook<'a> {
   emission: f32,
 }
 
+/// `rect` (x, y, width and height, in texels) of `image` as fractions of
+/// what `shown` draws for it, UV min then max: its rectangle of the image
+/// at the size the texture shows it, or all of the checker standing in for
+/// an image that is not loaded. A skeleton's region quad and a mesh of the
+/// same rectangle read the same texels by it
+fn rect_uv(shown: &ShownImage<'_>, image: AssetId<Image>, rect: [u32; 4]) -> [f32; 4] {
+  if shown.id != image {
+    return [0.0, 0.0, 1.0, 1.0];
+  }
+  let (width, height) = shown.size();
+  let (width, height) = (width.max(1) as f32, height.max(1) as f32);
+  let [x, y, w, h] = rect.map(|texels| texels as f32);
+  [x / width, y / height, (x + w) / width, (y + h) / height]
+}
+
 impl RunQuad {
   /// The quad as an instance drawing its rectangle of `shown`, the image
   /// or what stands in for it, with the box it stays inside
   fn instance(&self, shown: &ShownImage<'_>, emission: f32) -> (SpriteInstance, Vec2, Vec2) {
-    // Its rectangle of the image as the texture shows it; all of the
-    // checker standing in for an image that is not loaded
-    let uv = if shown.id == self.image {
-      let (width, height) = shown.size();
-      let (width, height) = (width.max(1) as f32, height.max(1) as f32);
-      let [x, y, w, h] = self.rect.map(|texels| texels as f32);
-      [x / width, y / height, (x + w) / width, (y + h) / height]
-    } else {
-      [0.0, 0.0, 1.0, 1.0]
-    };
+    let uv = rect_uv(shown, self.image, self.rect);
     let (x, y, at) = (
       self.quad.matrix2.x_axis,
       self.quad.matrix2.y_axis,
@@ -932,7 +952,8 @@ impl<'a> Emitter<'a> {
 
 /// How a mesh of an entity is drawn, besides its triangles: the image it
 /// shows a rectangle of, how it blends, its tint (the sRGB colour with
-/// straight alpha, as a run's quad's) and how much it multiplies the light
+/// straight alpha, as a run's quad's), and the effect or game shader on it
+/// and its emission, as its entity's runs take them
 #[cfg_attr(
   not(test),
   expect(
@@ -941,33 +962,41 @@ impl<'a> Emitter<'a> {
   )
 )]
 #[derive(Clone, Copy)]
-struct MeshLook {
+struct MeshLook<'a> {
   image: AssetId<Image>,
-  /// The rectangle of the image its UVs run over, in texels: x, y, width
-  /// and height
+  /// The rectangle of the image its UVs run across, in texels: x, y,
+  /// width and height
   rect: [u32; 4],
   blend: BlendMode,
   tint: [f32; 4],
-  emission: f32,
+  shading: RunLook<'a>,
 }
 
 impl<'a> Emitter<'a> {
   /// Draw a mesh as an entity item at `z`, in the order this is called
   /// among the entity's other draws: triangles of `look`'s image, drawn as
-  /// a sprite of it is (its tint, blend and emission; the entity's filter,
-  /// layers and lit flag). Each of `vertices` is a world position and a UV
-  /// as a fraction of `look.rect`; `indices` are three a triangle, counted
-  /// from the mesh's own first vertex. They are read once each, straight
-  /// into the frame's triangle stream.
+  /// a sprite of it is, through the sprite shader's own stages (its tint,
+  /// blend and emission, and the built-in effect or game shader a sprite
+  /// would take; the entity's filter, layers and lit flag). Each of
+  /// `vertices` is a world position and a UV across `look.rect` (0 on one
+  /// edge, 1 on the other); `indices` are three a triangle, counted from
+  /// the mesh's own first vertex. They are read once each, straight into
+  /// the frame's mesh stream.
   ///
   /// A UV outside `look.rect` reads nothing. Vertices are placed where
-  /// they are given: the pixel-art snap is a quad's. A mesh no camera on
-  /// the entity's layers can see (by its vertices' box) is not pushed, and
-  /// its image never uploaded; nor is one with no alpha, with no triangle,
-  /// with indices that are not whole triangles or reach past its vertices,
-  /// with a position that is not finite, or whose image draws nothing (not
-  /// loaded, in a release build). An image that is not loaded shows the
-  /// checker over the whole mesh in a debug build, as a run's quad does.
+  /// they are given: the pixel-art snap is a quad's. An effect that grows
+  /// its sprite's quad (an outline, a glow, a directional outline) cannot
+  /// grow a mesh: under one the mesh draws plain, and the log is told
+  /// once. A game shader that is not ready draws it plain meanwhile, as it
+  /// does a sprite.
+  ///
+  /// A mesh no camera on the entity's layers can see (by its vertices'
+  /// box) is not pushed, and its image never uploaded; nor is one with no
+  /// alpha, with no triangle, with indices that are not whole triangles or
+  /// reach past its vertices, with a position that is not finite, or whose
+  /// image draws nothing (not loaded, in a release build). An image that
+  /// is not loaded shows the checker over the whole mesh in a debug build,
+  /// as a run's quad does.
   #[cfg_attr(
     not(test),
     expect(
@@ -978,7 +1007,7 @@ impl<'a> Emitter<'a> {
   fn draw_mesh(
     &mut self,
     z: i32,
-    look: &MeshLook,
+    look: &MeshLook<'_>,
     vertices: impl IntoIterator<Item = (Vec2, Vec2)>,
     indices: impl IntoIterator<Item = u32>,
   ) {
@@ -989,58 +1018,76 @@ impl<'a> Emitter<'a> {
     let Some(shown) = self.gpu.shown_image(look.image, self.images) else {
       return;
     };
-    // Its rectangle of the image as the texture shows it; all of the
-    // checker standing in for an image that is not loaded
-    let [u0, v0, u1, v1] = if shown.id == look.image {
-      let (width, height) = shown.size();
-      let (width, height) = (width.max(1) as f32, height.max(1) as f32);
-      let [x, y, w, h] = look.rect.map(|texels| texels as f32);
-      [x / width, y / height, (x + w) / width, (y + h) / height]
-    } else {
-      [0.0, 0.0, 1.0, 1.0]
-    };
-    let (from, to) = (Vec2::new(u0, v0), Vec2::new(u1, v1));
-    let lanes = MeshLanes {
-      tint: look.tint,
-      region: [u0, v0, u1, v1],
-      emission: look.emission,
-    };
-    // A UV of 0 or 1 lands exactly on the rectangle's edge, as a quad's
-    // corner does
-    let vertices = vertices
-      .into_iter()
-      .map(|(position, uv)| (position, from * (Vec2::ONE - uv) + to * uv));
-    let Some(mesh) = self.triangles.mesh(&lanes, vertices, indices) else {
+    let Some(mesh) = self.meshes.add(vertices, indices) else {
       return;
     };
     let seen = self.cameras.iter().any(|camera| {
       camera.layers.intersects(&self.layers) && camera.view.is_visible(mesh.min, mesh.max)
     });
     if !seen {
-      self.triangles.drop_mesh(&mesh);
+      self.meshes.drop_last(&mesh);
       return;
     }
-    let item = DrawTriangles {
-      shading: TriangleShading::Mesh,
-      texture: Some(self.gpu.shown_texture(shown)),
+    // What a sprite's instance carries, for every vertex of it
+    let RunLook {
+      effect,
+      custom,
+      emission,
+    } = look.shading;
+    let mut instance = SpriteInstance::new().with_emission(emission);
+    instance.uv_rect = rect_uv(&shown, look.image, look.rect);
+    instance.tint = look.tint;
+    let shading = match (effect, custom) {
+      (Some(effect), _) => {
+        let lanes = SpriteInstance::new().with_effect(effect);
+        if effect_padding(&lanes.effect_params) > 0.0 {
+          // Only a quad can grow to hold what the effect draws round it
+          if !std::mem::replace(self.warned_grown, true) {
+            log::warn!(
+              "a mesh draws plain under an effect that grows its sprite (an outline, a glow or \
+               a directional outline): only a quad grows"
+            );
+          }
+          SpriteShading::Plain
+        } else {
+          instance.effect_params = lanes.effect_params;
+          instance.effect_extra = lanes.effect_extra;
+          SpriteShading::Effect
+        }
+      }
+      // Its parameters are packed into the instance now; a shader that
+      // failed draws plain
+      (None, Some((shader, params))) => {
+        match self
+          .gpu
+          .shade_custom(shader, self.shaders, params, &mut instance)
+        {
+          Some(key) => SpriteShading::Custom(key),
+          None => SpriteShading::Plain,
+        }
+      }
+      (None, None) => SpriteShading::Plain,
+    };
+    let item = DrawMesh {
+      texture: self.gpu.shown_texture(shown),
+      shading,
       blend: look.blend,
       filter: self.filter,
+      instance,
       layers: self.layers,
       min: mesh.min,
       max: mesh.max,
       indices: mesh.indices,
-      vertices: mesh.vertices,
     };
-    self
-      .list
-      .push_triangles_as(DrawKind::Entity, self.lit, z, None, item);
+    self.list.push_mesh(self.lit, z, item);
   }
 }
 
 /// A mesh a test draws where its entity's sprite would be: its entity's
 /// `Renderable` gives the image, tint, alpha, blend, emission, z, filter
-/// and lit flag, as a sprite's does (tests: nothing public draws a mesh of
-/// a caller's own making)
+/// and lit flag, and its sprite shader (its `Material`'s first), as a
+/// sprite's does (tests: nothing public draws a mesh of a caller's own
+/// making)
 #[cfg(test)]
 #[derive(crate::core::ecs::Component, Clone, Debug)]
 pub(crate) struct MeshProbe {
@@ -1062,10 +1109,16 @@ impl MeshProbe {
       renderable,
       global,
       previous,
+      material,
       lift,
       ..
     } = *drawable;
     let at = render_global(global, previous, frame.alpha).translation() + lift;
+    let (effect, custom) = match effective_shader(material, renderable.shader.as_ref()) {
+      Some(SpriteShader::BuiltIn(effect)) => (Some(effect), None),
+      Some(SpriteShader::Custom { shader, params }) => (None, Some((shader.id(), params))),
+      None => (None, None),
+    };
     let look = MeshLook {
       image: renderable.image.id(),
       rect: self.rect,
@@ -1074,7 +1127,11 @@ impl MeshProbe {
       tint: SpriteInstance::new()
         .with_tint(renderable.tint, renderable.alpha)
         .tint,
-      emission: renderable.emission,
+      shading: RunLook {
+        effect,
+        custom,
+        emission: renderable.emission,
+      },
     };
     let vertices = self.vertices.iter().map(|&(offset, uv)| (at + offset, uv));
     out.draw_mesh(

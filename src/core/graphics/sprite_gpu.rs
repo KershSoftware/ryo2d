@@ -510,10 +510,10 @@ impl SpriteGpuRenderer {
     self.frame += 1;
   }
 
-  /// Make the textures of `list`'s sprites and runs (particles), then
-  /// `extra` (the UI's sprites), then those of `list`'s textured trails,
-  /// meshes and tile chunks resident for this frame, in that order (the
-  /// order they are placed in the atlas); the batch and the UI renderer then look up their
+  /// Make the textures of `list`'s sprites, runs (particles, a skeleton's
+  /// regions) and meshes, then `extra` (the UI's sprites), then those of
+  /// `list`'s textured trails and tile chunks resident for this frame, in
+  /// that order (the order they are placed in the atlas); the batch and the UI renderer then look up their
   /// [`slot`](Self::slot)s. Call once per frame.
   pub(crate) fn prepare_textures(
     &mut self,
@@ -530,6 +530,7 @@ impl SpriteGpuRenderer {
       .filter_map(|i| list.sprite(i))
       .map(|sprite| sprite.texture)
       .chain(list.run_textures())
+      .chain(list.mesh_textures())
       .chain(extra.iter().copied())
       .chain(list.triangle_textures())
       .chain(list.chunk_textures())

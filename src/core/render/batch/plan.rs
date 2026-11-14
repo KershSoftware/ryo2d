@@ -5,12 +5,13 @@ use std::ops::Range;
 use super::{DrawState, Stream};
 use crate::core::render::DrawItem;
 
-/// One draw call: a range of the quad instances or the triangle indices.
+/// One draw call: a range of the quad instances, the triangle indices or a
+/// mesh's indices.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Draw {
   pub(crate) stream: Stream,
   pub(crate) state: DrawState,
-  /// Instances for quads, indices for triangles
+  /// Instances for quads, indices for triangles and for a mesh
   pub(crate) range: Range<u32>,
   /// Which buffer the range is of
   pub(crate) source: DrawSource,
@@ -24,6 +25,9 @@ pub(crate) enum DrawSource {
   /// A tile chunk's range of the chunk arena, placed through tile slot
   /// `slot`
   Chunk { slot: u32 },
+  /// The frame's mesh stream, drawn with quad instance `instance` of the
+  /// frame's
+  Mesh { instance: u32 },
 }
 
 /// Where one drawable went, as `place` reports it to [`plan_draws`].
@@ -46,6 +50,12 @@ pub(crate) enum Placed {
     instances: Range<u32>,
     slot: u32,
   },
+  /// A mesh: these indices of the mesh stream, drawn with the next quad
+  /// instance, which carries what a sprite's does
+  Mesh {
+    state: DrawState,
+    indices: Range<u32>,
+  },
 }
 
 /// Split sorted `items` into draw calls, into `out` (cleared first).
@@ -57,7 +67,8 @@ pub(crate) enum Placed {
 /// the quads around it), as do consecutive triangle items with equal states
 /// and adjacent index ranges; anything else starts a new draw. A chunk is a
 /// draw of its own (its instances are in the chunk arena, under a slot of
-/// its own) and takes no quad number.
+/// its own) and takes no quad number. A mesh is a draw of its own too (its
+/// one instance is its alone) and takes the next quad number for it.
 /// Returns the number the next quad would get.
 pub(crate) fn plan_draws<'i>(
   items: impl IntoIterator<Item = &'i DrawItem>,
@@ -92,6 +103,18 @@ pub(crate) fn plan_draws<'i>(
           range: instances,
           source: DrawSource::Chunk { slot },
         });
+        continue;
+      }
+      Some(Placed::Mesh { state, indices }) => {
+        out.push(Draw {
+          stream: Stream::Meshes,
+          state,
+          range: indices,
+          source: DrawSource::Mesh {
+            instance: next_quad,
+          },
+        });
+        next_quad += 1;
         continue;
       }
     };
@@ -272,6 +295,44 @@ mod tests {
     });
     assert_eq!(quads(&out), [(sprite, 10..11), (additive, 11..13)]);
     assert_eq!(next, 13);
+  }
+
+  #[test]
+  fn a_mesh_is_a_draw_of_its_own_with_the_next_quad_s_instance() {
+    let sprite = state(0, BlendMode::Alpha);
+    let mesh = |indices: std::ops::Range<u32>| Placed::Mesh {
+      state: sprite,
+      indices,
+    };
+    // Equal states and adjacent index ranges never merge: each mesh has an
+    // instance of its own. The quads round them keep their numbers
+    let placed = [
+      Placed::Quad(sprite),
+      mesh(0..6),
+      mesh(6..12),
+      Placed::Quad(sprite),
+      Placed::Quad(sprite),
+    ];
+    let mut out = Vec::new();
+    let mut i = 0;
+    let next = plan_draws(list(5).items(), &mut out, 10, |_| {
+      i += 1;
+      Some(placed[i - 1].clone())
+    });
+    let draws: Vec<_> = out
+      .iter()
+      .map(|d| (d.stream, d.range.clone(), d.source))
+      .collect();
+    assert_eq!(
+      draws,
+      [
+        (Stream::Quads, 10..11, DrawSource::Frame),
+        (Stream::Meshes, 0..6, DrawSource::Mesh { instance: 11 }),
+        (Stream::Meshes, 6..12, DrawSource::Mesh { instance: 12 }),
+        (Stream::Quads, 13..15, DrawSource::Frame),
+      ]
+    );
+    assert_eq!(next, 15);
   }
 
   #[test]

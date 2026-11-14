@@ -92,9 +92,6 @@ pub(crate) enum BatchShader {
   Line,
   /// Line geometry with a texture along it
   LineTextured,
-  /// A mesh: triangles of an image, tinted as a sprite of it is
-  /// (`mesh.wgsl`)
-  Mesh,
   /// A light into a light buffer
   Light(LightStep),
   /// A raster glyph: its coverage times the tint
@@ -131,11 +128,15 @@ impl LightStep {
   }
 }
 
-/// Which GPU buffer a draw reads: instanced quads or indexed triangles.
+/// Which GPU buffers a draw reads: instanced quads, indexed triangles, or a
+/// mesh's indexed triangles with one of the quads' instances.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum Stream {
   Quads,
   Triangles,
+  /// A mesh: its own vertices and indices, drawn by the shader of a quad
+  /// (`BatchShader::Sprite`, `SpriteEffect` or `Custom`) with one instance
+  Meshes,
 }
 
 /// Everything a draw binds, resolved: consecutive drawables with equal

@@ -10,7 +10,7 @@ pub(crate) const CAMERA: &str = include_str!("include/camera.wgsl");
 /// The fullscreen vertex stage (game post-process effects compose it at runtime)
 pub(crate) const FULLSCREEN: &str = include_str!("include/fullscreen.wgsl");
 
-/// The sprite shader, with the tile chunks' vertex stage
+/// The sprite shader, with the tile chunks' and the meshes' vertex stages
 pub(crate) const SPRITE: &str = concat!(
   include_str!("include/camera.wgsl"),
   "\n",
@@ -31,6 +31,8 @@ pub(crate) const SPRITE: &str = concat!(
   include_str!("core/text.wgsl"),
   "\n",
   include_str!("core/tile.wgsl"),
+  "\n",
+  include_str!("core/mesh.wgsl"),
 );
 
 /// The UI pipeline: every UI instance kind through one vertex and one
@@ -84,19 +86,6 @@ pub(crate) const LINE: &str = concat!(
   include_str!("include/line_style.wgsl"),
   "\n",
   include_str!("core/line.wgsl"),
-);
-
-/// Meshes: triangles of an image, sampled and tinted as a sprite is
-pub(crate) const MESH: &str = concat!(
-  include_str!("include/camera.wgsl"),
-  "\n",
-  include_str!("include/color.wgsl"),
-  "\n",
-  include_str!("include/sample.wgsl"),
-  "\n",
-  include_str!("include/tint.wgsl"),
-  "\n",
-  include_str!("core/mesh.wgsl"),
 );
 
 /// The lit scene composed from the light buffer
@@ -222,7 +211,6 @@ pub(crate) fn built_in() -> Vec<(&'static str, String)> {
     ("light", LIGHT),
     ("shadow_map", SHADOW_MAP),
     ("line", LINE),
-    ("mesh", MESH),
     ("lighting_compose", LIGHTING_COMPOSE),
     ("transition", TRANSITION),
     ("composite", COMPOSITE),
@@ -283,20 +271,31 @@ mod tests {
   }
 
   #[test]
-  fn a_mesh_is_sampled_and_tinted_by_the_sprite_s_functions() {
-    let (sprite, mesh) = (
-      include_str!("core/sprite.wgsl"),
-      include_str!("core/mesh.wgsl"),
-    );
-    // The functions the sprite's base entries call, written once in the
-    // includes
-    for call in ["sample_masked(", "finish(", "finish_premultiplied("] {
-      assert!(sprite.contains(call), "the sprite no longer calls {call}");
-      assert!(mesh.contains(call), "the mesh does not call {call}");
-    }
-    for own in ["fn finish", "fn sample_masked", "srgb_to_linear("] {
+  fn a_mesh_has_a_vertex_stage_and_the_sprite_s_fragment_stages() {
+    let mesh = include_str!("core/mesh.wgsl");
+    assert!(mesh.contains("@vertex") && mesh.contains("fn vs_mesh("));
+    // No fragment stage, sampling or tinting of its own
+    for own in ["@fragment", "textureSample", "finish", "srgb_to_linear("] {
       assert!(!mesh.contains(own), "the mesh has its own {own}");
     }
+    // It fills the sprite's own vertex output from the sprite's own inputs
+    for shared in ["VertexInput", "InstanceInput", "VertexOutput"] {
+      assert!(mesh.contains(shared), "the mesh does not take {shared}");
+      assert!(
+        !mesh.contains(&format!("struct {shared}")),
+        "the mesh declares its own {shared}"
+      );
+    }
+    // In the sprite module, and so in every game shader composed over it
+    assert!(SPRITE.contains("fn vs_mesh("));
+    let game = "fn sprite(in: SpriteIn, params: Params) -> vec4<f32> { return sample(in.uv); }";
+    let composed = crate::core::shaders::custom::compile(
+      crate::core::shaders::custom::ShaderKind::Sprite,
+      "mesh-test.wgsl",
+      game,
+    )
+    .expect("a game shader that compiles");
+    assert!(composed.wgsl.contains("fn vs_mesh("));
   }
 
   #[test]

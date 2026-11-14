@@ -8,6 +8,7 @@ use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
 use super::chunks::{ChunkBuffers, ChunkStore, SLOT_STRIDE};
+use super::mesh::{MeshStream, MeshVertex};
 use super::pipelines::{self, PipelineKey, Pipelines};
 use super::polyline::{Triangles, Vertex2D};
 use super::{
@@ -19,9 +20,7 @@ use crate::core::graphics::camera_gpu::CameraUniforms;
 use crate::core::graphics::{
   AtlasSlot, Presentation, SlotPage, SpriteGpuRenderer, SpriteInstance, TextureId, place_in_slot,
 };
-use crate::core::render::{
-  CameraDraw, DrawItem, DrawList, DrawPayload, SpriteShading, TriangleShading,
-};
+use crate::core::render::{CameraDraw, DrawItem, DrawList, DrawPayload, SpriteShading};
 use crate::core::shaders::compile::{self, Compiler};
 use crate::core::shaders::custom::{CompiledShader, ShaderError, ShaderKind};
 
@@ -40,7 +39,8 @@ pub(crate) struct Bound<'a> {
   pipeline: Option<&'a wgpu::RenderPipeline>,
   /// Each bind group set, and its dynamic offset
   groups: [Option<(&'a wgpu::BindGroup, Option<u32>)>; 3],
-  /// The stream whose buffers vertex slot 0 (and the index buffer) hold
+  /// The stream whose buffers vertex slot 0 (and, but for quads, the index
+  /// buffer) hold
   stream: Option<Stream>,
 }
 
@@ -81,15 +81,20 @@ pub(crate) struct Batch2D {
   // in a range of their own), and each camera's draws over them; reused
   placed: Vec<SpriteInstance>,
   draws: Vec<CameraDraws>,
-  // This frame's meshes, trails and lines, in world space for every camera;
-  // built while the frame is gathered and uploaded once
+  // This frame's trails and lines, in world space for every camera; built
+  // while the frame is gathered and uploaded once
   triangles: Triangles,
+  // This frame's meshes, in world space for every camera, built and
+  // uploaded as the triangles are; each draws with one of the instances
+  meshes: MeshStream,
   // Tile chunks: built while the frame is gathered, written when they
   // change, drawn through the frame's tile slots
   chunks: ChunkStore,
   chunk_buffers: ChunkBuffers,
   vertices: GrowingBuffer,
   indices: GrowingBuffer,
+  mesh_vertices: GrowingBuffer,
+  mesh_indices: GrowingBuffer,
   // Makes the new versions of game sprite shaders already drawn, while the
   // old ones draw
   compiler: Compiler<SpriteCompiled>,
@@ -194,6 +199,7 @@ impl Batch2D {
       placed: Vec::new(),
       draws: Vec::new(),
       triangles: Triangles::default(),
+      meshes: MeshStream::default(),
       // The arena holds no more than the device's largest buffer
       chunks: ChunkStore::for_device(device.limits().max_buffer_size),
       chunk_buffers,
@@ -206,6 +212,18 @@ impl Batch2D {
       indices: GrowingBuffer::new(
         device,
         "Batch Indices",
+        std::mem::size_of::<u32>(),
+        wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+      ),
+      mesh_vertices: GrowingBuffer::new(
+        device,
+        "Batch Mesh Vertices",
+        std::mem::size_of::<MeshVertex>(),
+        wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+      ),
+      mesh_indices: GrowingBuffer::new(
+        device,
+        "Batch Mesh Indices",
         std::mem::size_of::<u32>(),
         wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
       ),
@@ -322,10 +340,16 @@ impl Batch2D {
     (self.compiler.started(), self.compiler.busy())
   }
 
-  /// The frame's triangles (meshes, trails and lines), for gathering them:
-  /// cleared with the frame's draw list, whose items are ranges of them.
+  /// The frame's trail and line triangles, for gathering them: cleared
+  /// with the frame's draw list, whose triangle items are ranges of them.
   pub(crate) fn triangles(&mut self) -> &mut Triangles {
     &mut self.triangles
+  }
+
+  /// The frame's meshes, for gathering them: cleared with the frame's draw
+  /// list, whose mesh items are ranges of them.
+  pub(crate) fn meshes(&mut self) -> &mut MeshStream {
+    &mut self.meshes
   }
 
   /// The tile chunks, for gathering the frame's
@@ -397,12 +421,13 @@ impl Batch2D {
   /// renderer's sprites) with them, and writes the tile chunks built while
   /// the frame was gathered and the frame's tile slots; then, per camera,
   /// remaps the sprites it sees into their atlas slots in draw order (a
-  /// run's quads one after another, its slot found once), in a range of the
-  /// instance buffer of its own, and merges consecutive drawables with equal
-  /// draw states into draws (meshes, trails and lines by their index ranges;
-  /// each chunk a draw of its own, from the chunk arena).
+  /// run's quads one after another, its slot found once; a mesh's one
+  /// instance among them), in a range of the instance buffer of its own, and
+  /// merges consecutive drawables with equal draw states into draws (trails
+  /// and lines by their index ranges; each chunk a draw of its own, from the
+  /// chunk arena; each mesh a draw of its own, with its instance).
   /// Call once per frame, after [`sync_cameras`](Self::sync_cameras) and
-  /// after the frame's triangles and chunks are built.
+  /// after the frame's triangles, meshes and chunks are built.
   pub(crate) fn prepare(
     &mut self,
     device: &wgpu::Device,
@@ -563,26 +588,61 @@ impl Batch2D {
               sampling: glyph.sampling,
             }));
           }
+          DrawPayload::Mesh(index) => {
+            // An entity's mesh: its one instance placed in its image's
+            // slot as a sprite's is (never grown: a mesh has its own
+            // shape), and drawn over the mesh's triangles by the shader a
+            // sprite shaded so would take
+            let mesh = list.mesh(index)?;
+            let (slot, page_size) = match last {
+              Some((texture, slot, size)) if texture == mesh.texture => (slot, size),
+              _ => {
+                let (slot, size) = textures.slot(mesh.texture)?;
+                last = Some((mesh.texture, slot, size));
+                (slot, size)
+              }
+            };
+            let wanted = match mesh.shading {
+              SpriteShading::Plain => BatchShader::Sprite,
+              SpriteShading::Effect => BatchShader::SpriteEffect,
+              SpriteShading::Custom(source) => BatchShader::Custom(source),
+              // A quad's own: nothing makes a mesh of them
+              SpriteShading::Repeat | SpriteShading::TileObject => return None,
+            };
+            let sampling = mesh.filter.resolve(presentation);
+            let key = PipelineKey::new(
+              wanted,
+              mesh.blend,
+              Stream::Meshes,
+              PageKind::of(Some(slot.page)),
+              sampling,
+              format,
+            );
+            let shader = sprite_shader(pipelines, device, textures, &mut ensured, key);
+            placed.push(place_in_slot(&mesh.instance, &slot, page_size, false));
+            return Some(Placed::Mesh {
+              state: DrawState {
+                page: Some(slot.page),
+                shader,
+                blend: mesh.blend,
+                sampling,
+              },
+              indices: mesh.indices.clone(),
+            });
+          }
           DrawPayload::Triangles(index) => {
             let line = list.triangles(index)?;
-            // A textured one is told where its texture lives: a line
-            // repeats that slot, a mesh maps its UVs into it
-            let (page, sampling, shader) = match (line.shading, line.texture) {
-              (TriangleShading::Line, None) => (None, Sampling::Nearest, BatchShader::Line),
-              // A mesh is its image
-              (TriangleShading::Mesh, None) => return None,
-              (shading, Some(texture)) => {
+            // A textured one is told where its texture lives
+            let (page, sampling, shader) = match line.texture {
+              None => (None, Sampling::Nearest, BatchShader::Line),
+              Some(texture) => {
                 let (slot, _) = textures.slot(texture)?;
                 let range = line.vertices.start as usize..line.vertices.end as usize;
                 for vertex in triangles.vertices.get_mut(range)? {
                   vertex.bounds = slot.uv;
                 }
                 let sampling = line.filter.resolve(presentation);
-                let shader = match shading {
-                  TriangleShading::Line => BatchShader::LineTextured,
-                  TriangleShading::Mesh => BatchShader::Mesh,
-                };
-                (Some(slot.page), sampling, shader)
+                (Some(slot.page), sampling, BatchShader::LineTextured)
               }
             };
             let key = PipelineKey::new(
@@ -632,29 +692,7 @@ impl Batch2D {
           sampling,
           format,
         );
-        let shader = match ensured {
-          Some((last, shader)) if last == key => shader,
-          _ => {
-            let custom = match wanted {
-              BatchShader::Custom(source) => textures.custom_shader(source),
-              _ => None,
-            };
-            pipelines.ensure(device, key, custom);
-            // A custom shader draws plain until the GPU accepted its pipeline
-            let shader = if pipelines.get(&key).is_some() {
-              wanted
-            } else {
-              let plain = PipelineKey {
-                shader: BatchShader::Sprite,
-                ..key
-              };
-              pipelines.ensure(device, plain, None);
-              BatchShader::Sprite
-            };
-            ensured = Some((key, shader));
-            shader
-          }
-        };
+        let shader = sprite_shader(pipelines, device, textures, &mut ensured, key);
         if shader == BatchShader::Repeat {
           // Its UVs count copies; the shader wraps them into the image's place
           let mut instance = sprite.instance;
@@ -710,6 +748,11 @@ impl Batch2D {
     self.vertices.write(device, queue, vertices);
     let indices = bytemuck::cast_slice(&triangles.indices);
     self.indices.write(device, queue, indices);
+    let meshes = &self.meshes;
+    let vertices = bytemuck::cast_slice(&meshes.vertices);
+    self.mesh_vertices.write(device, queue, vertices);
+    let indices = bytemuck::cast_slice(&meshes.indices);
+    self.mesh_indices.write(device, queue, indices);
     // A new version this frame's sprites found waits for its pipelines,
     // made for what was made this frame: sent now, it starts a frame sooner
     self.compile_next(device, textures);
@@ -798,7 +841,7 @@ impl Batch2D {
     bound: &mut Bound<'a>,
   ) {
     let page = match draw.stream {
-      Stream::Quads => PageKind::of(draw.state.page),
+      Stream::Quads | Stream::Meshes => PageKind::of(draw.state.page),
       Stream::Triangles => PageKind::Srgb8,
     };
     let key = PipelineKey::new(
@@ -816,7 +859,7 @@ impl Batch2D {
     };
     // A chunk's instances are in the chunk arena, placed by its slot
     let (instances, slot) = match draw.source {
-      DrawSource::Frame => (&self.instances, None),
+      DrawSource::Frame | DrawSource::Mesh { .. } => (&self.instances, None),
       DrawSource::Chunk { slot } => {
         let (Some(instances), Some(group)) = (
           self.chunk_buffers.instances(),
@@ -828,7 +871,7 @@ impl Batch2D {
       }
     };
     // Untextured lines bind nothing more; lights bind the shadow atlas;
-    // everything else (meshes too) samples a page
+    // everything else samples a page
     let texture_group = match (draw.state.shader, draw.state.page) {
       (BatchShader::Light(_), _) => match shadows {
         Some(group) => Some(group),
@@ -840,7 +883,7 @@ impl Batch2D {
           None => return,
         }
       }
-      (_, None) if draw.stream == Stream::Quads => return,
+      (_, None) if draw.stream != Stream::Triangles => return,
       (_, None) => None,
     };
     // Every draw covers the whole image
@@ -881,6 +924,22 @@ impl Batch2D {
           pass.set_index_buffer(self.indices.buffer.slice(..), wgpu::IndexFormat::Uint32);
           bound.stream = Some(Stream::Triangles);
         }
+        pass.draw_indexed(draw.range.clone(), 0, 0..1);
+      }
+      Stream::Meshes => {
+        // Its own triangles, with the one instance that is its alone
+        let DrawSource::Mesh { instance } = draw.source else {
+          return;
+        };
+        if bound.stream != Some(Stream::Meshes) {
+          pass.set_vertex_buffer(0, self.mesh_vertices.buffer.slice(..));
+          let indices = self.mesh_indices.buffer.slice(..);
+          pass.set_index_buffer(indices, wgpu::IndexFormat::Uint32);
+          bound.stream = Some(Stream::Meshes);
+        }
+        let size = std::mem::size_of::<SpriteInstance>() as u64;
+        let start = u64::from(instance) * size;
+        pass.set_vertex_buffer(1, instances.slice(start..start + size));
         pass.draw_indexed(draw.range.clone(), 0, 0..1);
       }
     }
@@ -930,6 +989,44 @@ impl Batch2D {
   pub(crate) fn capacity(&self) -> usize {
     self.capacity
   }
+}
+
+/// The shader a drawable shaded as a sprite is (a sprite, or a mesh) draws
+/// with: the one `key` asks for, its pipeline made on first use, or
+/// [`BatchShader::Sprite`] for a game shader the GPU has not accepted yet
+/// (or rejected), which draws plain until it has. `ensured` is the last key
+/// asked for and what it came to, reused while drawables share it (a map
+/// lookup each otherwise)
+fn sprite_shader(
+  pipelines: &mut Pipelines,
+  device: &wgpu::Device,
+  textures: &SpriteGpuRenderer,
+  ensured: &mut Option<(PipelineKey, BatchShader)>,
+  key: PipelineKey,
+) -> BatchShader {
+  if let Some((last, shader)) = *ensured
+    && last == key
+  {
+    return shader;
+  }
+  let custom = match key.shader {
+    BatchShader::Custom(source) => textures.custom_shader(source),
+    _ => None,
+  };
+  pipelines.ensure(device, key, custom);
+  // A custom shader draws plain until the GPU accepted its pipeline
+  let shader = if pipelines.get(&key).is_some() {
+    key.shader
+  } else {
+    let plain = PipelineKey {
+      shader: BatchShader::Sprite,
+      ..key
+    };
+    pipelines.ensure(device, plain, None);
+    BatchShader::Sprite
+  };
+  *ensured = Some((key, shader));
+  shader
 }
 
 /// `bounds` (0..1 over an image) where the image sits in `slot`

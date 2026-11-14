@@ -32,7 +32,7 @@ pub(crate) enum DrawPayload {
   /// Index into the list's sprite instances (atlas page and effects flag are
   /// resolved at draw time)
   Sprite(usize),
-  /// Index into the list's triangle items (trails, lines and meshes)
+  /// Index into the list's triangle items (trails and lines)
   Triangles(usize),
   /// Index into the list's glyph items
   Glyph(usize),
@@ -41,6 +41,15 @@ pub(crate) enum DrawPayload {
   /// Index into the list's runs (an emitter's particles, or a stretch of
   /// a skeleton's regions)
   Run(usize),
+  /// Index into the list's meshes (an entity's own triangles of an image)
+  #[cfg_attr(
+    not(test),
+    expect(
+      dead_code,
+      reason = "skeletons' mesh attachments draw meshes; until they do, only tests push one"
+    )
+  )]
+  Mesh(usize),
 }
 
 /// One drawable and where it sorts.
@@ -117,31 +126,11 @@ pub(crate) struct DrawSprite {
   pub(crate) max: Vec2,
 }
 
-/// How a [`DrawTriangles`] item is shaded.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TriangleShading {
-  /// A trail or line: styled across its width, its texture (if it has
-  /// one) repeated along it
-  Line,
-  /// A mesh: its image times its tint, as a sprite of the image is drawn
-  /// (`BatchShader::Mesh`). An image's texture, never a render target's
-  #[cfg_attr(
-    not(test),
-    expect(
-      dead_code,
-      reason = "skeletons' mesh attachments draw meshes; until they do, only tests make one"
-    )
-  )]
-  Mesh,
-}
-
-/// A trail, line or mesh waiting to be drawn: its triangles in the batch's
+/// A trail or line waiting to be drawn: its triangles in the batch's
 /// triangle stream.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct DrawTriangles {
-  pub(crate) shading: TriangleShading,
-  /// The texture along it (textured trails), or the image a mesh shows (a
-  /// mesh without one draws nothing)
+  /// The texture along it (textured trails)
   pub(crate) texture: Option<TextureId>,
   pub(crate) blend: BlendMode,
   pub(crate) filter: Filter,
@@ -151,7 +140,7 @@ pub(crate) struct DrawTriangles {
   pub(crate) min: Vec2,
   pub(crate) max: Vec2,
   pub(crate) indices: Range<u32>,
-  /// Its vertices (a textured one's are told its atlas slot when placed)
+  /// Its vertices (a textured one is told its atlas slot when placed)
   pub(crate) vertices: Range<u32>,
 }
 
@@ -219,6 +208,32 @@ pub(crate) struct DrawRun {
   pub(crate) instances: Range<u32>,
 }
 
+/// A mesh waiting to be drawn: an entity's own triangles of one image, in
+/// the batch's mesh stream, drawn as a sprite of the image is, through the
+/// sprite shader's own stages. Sorts as one entity item in the order pushed,
+/// and is a draw of its own. One sprite instance carries, for every vertex
+/// of it, what a sprite's carries: the rectangle of the image its UVs run
+/// across (placed in the image's atlas slot when the batch is prepared), the
+/// tint, the effect lanes and the emission; its transform is not read, a
+/// mesh's vertices being where they draw.
+#[derive(Debug, Clone)]
+pub(crate) struct DrawMesh {
+  pub(crate) texture: TextureId,
+  /// [`SpriteShading::Plain`], [`SpriteShading::Effect`] (one that leaves
+  /// its sprite's quad as it is) or [`SpriteShading::Custom`]
+  pub(crate) shading: SpriteShading,
+  pub(crate) blend: BlendMode,
+  pub(crate) filter: Filter,
+  pub(crate) instance: SpriteInstance,
+  /// The cameras on these layers draw it
+  pub(crate) layers: RenderLayers,
+  /// The world box its vertices stay inside
+  pub(crate) min: Vec2,
+  pub(crate) max: Vec2,
+  /// Its triangles in the batch's mesh stream
+  pub(crate) indices: Range<u32>,
+}
+
 /// A light waiting to be drawn into the light buffers of the lit cameras
 /// that see it.
 #[derive(Debug, Clone)]
@@ -246,6 +261,7 @@ pub(crate) struct DrawList {
   runs: Vec<DrawRun>,
   /// The runs' instances, each run's a range of them
   run_instances: Vec<SpriteInstance>,
+  meshes: Vec<DrawMesh>,
   lights: Vec<DrawLight>,
   next_sequence: u32,
   sorted: bool,
@@ -262,6 +278,7 @@ impl DrawList {
     self.chunks.clear();
     self.runs.clear();
     self.run_instances.clear();
+    self.meshes.clear();
     self.lights.clear();
     self.next_sequence = 0;
     self.sorted = true;
@@ -319,24 +336,26 @@ impl DrawList {
     only_camera: Option<Entity>,
     triangles: DrawTriangles,
   ) {
-    self.push_triangles_as(DrawKind::Trail, lit, z, only_camera, triangles);
-  }
-
-  /// Add triangles at `z`, sorted as one item of `kind` in the order
-  /// pushed: an entity's (a mesh) take its entity's place among the
-  /// entities' draws, where a trail or line follows every entity and
-  /// sprite at its z.
-  pub(crate) fn push_triangles_as(
-    &mut self,
-    kind: DrawKind,
-    lit: bool,
-    z: i32,
-    only_camera: Option<Entity>,
-    triangles: DrawTriangles,
-  ) {
     let payload = DrawPayload::Triangles(self.triangles.len());
     self.triangles.push(triangles);
-    self.push_item(lit, z, kind, payload, only_camera);
+    self.push_item(lit, z, DrawKind::Trail, payload, only_camera);
+  }
+
+  /// Add a mesh at `z`, sorted as one entity item in the order pushed: it
+  /// takes its entity's place among the entities' draws, where a trail or
+  /// line follows every entity and sprite at its z. For the cameras on its
+  /// layers that see its box; `lit` ones draw before lighting.
+  #[cfg_attr(
+    not(test),
+    expect(
+      dead_code,
+      reason = "skeletons' mesh attachments draw meshes; until they do, only tests push one"
+    )
+  )]
+  pub(crate) fn push_mesh(&mut self, lit: bool, z: i32, mesh: DrawMesh) {
+    let payload = DrawPayload::Mesh(self.meshes.len());
+    self.meshes.push(mesh);
+    self.push_item(lit, z, DrawKind::Entity, payload, None);
   }
 
   /// Add a glyph at `z`, for `only_camera` or every camera.
@@ -474,7 +493,7 @@ impl DrawList {
     self.sprites.len()
   }
 
-  /// The trail, line or mesh a [`DrawPayload::Triangles`] index refers to.
+  /// The trail or line a [`DrawPayload::Triangles`] index refers to.
   pub(crate) fn triangles(&self, index: usize) -> Option<&DrawTriangles> {
     self.triangles.get(index)
   }
@@ -494,6 +513,11 @@ impl DrawList {
     self.runs.get(index)
   }
 
+  /// The mesh a [`DrawPayload::Mesh`] index refers to.
+  pub(crate) fn mesh(&self, index: usize) -> Option<&DrawMesh> {
+    self.meshes.get(index)
+  }
+
   /// `run`'s instances (none for a range the list does not hold).
   pub(crate) fn run_quads(&self, run: &DrawRun) -> &[SpriteInstance] {
     let range = run.instances.start as usize..run.instances.end as usize;
@@ -510,7 +534,12 @@ impl DrawList {
     self.chunks.iter().map(|chunk| chunk.texture)
   }
 
-  /// The textures the frame's trails, lines and meshes draw.
+  /// The textures the frame's meshes draw.
+  pub(crate) fn mesh_textures(&self) -> impl Iterator<Item = TextureId> + '_ {
+    self.meshes.iter().map(|mesh| mesh.texture)
+  }
+
+  /// The textures the frame's trails and lines draw.
   pub(crate) fn triangle_textures(&self) -> impl Iterator<Item = TextureId> + '_ {
     self
       .triangles
@@ -571,6 +600,9 @@ impl DrawList {
       DrawPayload::Run(index) => self.runs.get(index).is_some_and(|run| {
         run.layers.intersects(&camera.layers) && camera.view.is_visible(run.min, run.max)
       }),
+      DrawPayload::Mesh(index) => self.meshes.get(index).is_some_and(|mesh| {
+        mesh.layers.intersects(&camera.layers) && camera.view.is_visible(mesh.min, mesh.max)
+      }),
     }
   }
 }
@@ -607,7 +639,6 @@ mod tests {
   /// A line seen by every camera.
   fn line(list: &mut DrawList, lit: bool, z: i32) {
     let triangles = DrawTriangles {
-      shading: TriangleShading::Line,
       texture: None,
       blend: BlendMode::Alpha,
       filter: Filter::Default,
@@ -952,31 +983,35 @@ mod tests {
     assert_eq!(list.run_instances().len(), start);
   }
 
-  #[test]
-  fn an_entity_s_triangles_take_their_place_among_the_entities() {
-    let mut list = DrawList::default();
-    // A line first, then an entity, an entity's triangles and another
-    // entity, all at z 0
-    line(&mut list, true, 0);
-    push(&mut list, DrawKind::Entity, 0, 0);
-    let mesh = DrawTriangles {
-      shading: TriangleShading::Mesh,
-      texture: Some(TextureId::for_test(9)),
+  /// A mesh of texture 9, on `layers`, inside `min`..`max`
+  fn mesh_item(layers: RenderLayers, min: Vec2, max: Vec2) -> DrawMesh {
+    DrawMesh {
+      texture: TextureId::for_test(9),
+      shading: SpriteShading::Plain,
       blend: BlendMode::Alpha,
       filter: Filter::Default,
-      layers: RenderLayers::default(),
-      min: Vec2::ZERO,
-      max: Vec2::ONE,
+      instance: SpriteInstance::new(),
+      layers,
+      min,
+      max,
       indices: 3..9,
-      vertices: 3..7,
-    };
-    list.push_triangles_as(DrawKind::Entity, true, 0, None, mesh);
+    }
+  }
+
+  #[test]
+  fn a_mesh_takes_its_place_among_the_entities() {
+    let mut list = DrawList::default();
+    // A line first, then an entity, a mesh and another entity, all at z 0
+    line(&mut list, true, 0);
+    push(&mut list, DrawKind::Entity, 0, 0);
+    let mesh = mesh_item(RenderLayers::default(), Vec2::ZERO, Vec2::ONE);
+    list.push_mesh(true, 0, mesh);
     push(&mut list, DrawKind::Entity, 0, 1);
 
     list.sorted();
 
-    // The entity's triangles draw between the two entities they were
-    // pushed between, where the line follows every entity at their z
+    // The mesh draws between the two entities it was pushed between, where
+    // the line follows every entity at their z
     let order: Vec<_> = list
       .items()
       .iter()
@@ -986,15 +1021,48 @@ mod tests {
       order,
       [
         (DrawKind::Entity, DrawPayload::Sprite(0)),
-        (DrawKind::Entity, DrawPayload::Triangles(1)),
+        (DrawKind::Entity, DrawPayload::Mesh(0)),
         (DrawKind::Entity, DrawPayload::Sprite(1)),
         (DrawKind::Trail, DrawPayload::Triangles(0)),
       ]
     );
     assert_eq!(
-      list.triangle_textures().collect::<Vec<_>>(),
+      list.mesh_textures().collect::<Vec<_>>(),
       [TextureId::for_test(9)]
     );
+    assert_eq!(list.mesh(0).map(|mesh| mesh.indices.clone()), Some(3..9));
+    list.clear();
+    assert!(list.mesh(0).is_none(), "emptied with the list");
+  }
+
+  #[test]
+  fn a_camera_sees_a_mesh_by_its_layers_and_box() {
+    use crate::core::ecs::World;
+    let mut world = World::new();
+    let camera = test_camera(world.spawn_empty().id());
+    let inside = (Vec2::new(40.0, 40.0), Vec2::new(60.0, 60.0));
+    let outside = (Vec2::splat(200.0), Vec2::splat(300.0));
+    let mut list = DrawList::default();
+    let on = RenderLayers::default();
+    list.push_mesh(true, 1, mesh_item(on, inside.0, inside.1));
+    // Off its layers, then outside its view
+    list.push_mesh(
+      true,
+      1,
+      mesh_item(RenderLayers::layer(1), inside.0, inside.1),
+    );
+    list.push_mesh(true, 1, mesh_item(on, outside.0, outside.1));
+    // Unlit, on its layer among others
+    let layers = RenderLayers::layer(1).with(0);
+    list.push_mesh(false, 1, mesh_item(layers, inside.0, inside.1));
+    list.sorted();
+    let lit: Vec<_> = list.items_for(&camera).map(|item| item.payload).collect();
+    assert_eq!(lit, [DrawPayload::Mesh(0)]);
+    let unlit: Vec<_> = list
+      .unlit_items_for(&camera)
+      .map(|item| item.payload)
+      .collect();
+    assert_eq!(unlit, [DrawPayload::Mesh(3)]);
   }
 
   #[test]

@@ -1427,7 +1427,10 @@ impl TextSink<UiInstance> for TextInstances<'_> {
           }
         }
         // Text lays glyphs and sprites only
-        DrawPayload::Triangles(_) | DrawPayload::Chunk(_) | DrawPayload::Run(_) => {}
+        DrawPayload::Triangles(_)
+        | DrawPayload::Chunk(_)
+        | DrawPayload::Run(_)
+        | DrawPayload::Mesh(_) => {}
       }
     }
     self.taken = items.len();

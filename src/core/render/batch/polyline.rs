@@ -7,8 +7,7 @@ use glam::Vec2;
 
 use crate::core::trail::{LineCap, LineJoin};
 
-/// One vertex of the triangle stream: a line's, as its fields say, or a
-/// mesh's, whose lanes carry what [`Triangles::mesh`] says.
+/// One vertex of the triangle stream.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub(crate) struct Vertex2D {
@@ -22,8 +21,8 @@ pub(crate) struct Vertex2D {
   pub(crate) params: [f32; 4],
   /// The unit perpendicular displacement effects move the vertex along
   pub(crate) across: [f32; 2],
-  /// The atlas slot a textured line repeats, or a mesh's image lies in (UV
-  /// min and max), set when it is placed; zero for untextured ones
+  /// The atlas slot a textured line repeats (UV min and max), set when it
+  /// is placed; zero for untextured ones
   pub(crate) bounds: [f32; 4],
 }
 
