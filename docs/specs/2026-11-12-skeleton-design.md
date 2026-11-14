@@ -301,7 +301,9 @@ Stage 2 builds on the merged core. These are the planner's calls. The owner may 
 - **A deform timeline** belongs to one slot and one attachment name. Each key holds an offset per influence position: for an unweighted mesh, one per vertex in the slot's bone space; for a weighted mesh, one per influence in that influence's bone space. So a keyed deformation turns with the bones it rides.
 - An empty key means no offset: the setup shape.
 - **Mixing:** Replace moves the offsets toward the key by alpha. Add adds the key's offsets times alpha. The cover rule of a crossfade treats (slot, attachment name) as the property.
-- **When a deform applies:** only while its slot shows that attachment and the attachment is a mesh with the key's count of positions. Otherwise it is skipped: a skin's mesh of another shape, a region under the same name, or data reloaded with a different count. Nothing is drawn wrong, and one warning is given per skeleton per animation.
+- **When a deform applies:** only while its slot shows that attachment and the attachment is a mesh with the key's count of positions.
+  - A deform whose slot shows another attachment, or none, does nothing, in silence. That is ordinary play: an attachment key, a crossfade between attachments, a game's own attachment in the slot.
+  - Under its own name, an attachment that is not a mesh, or a mesh with another count of positions, is skipped: a region under the same name, a skin's mesh of another shape, or data reloaded with a different count. Nothing is drawn wrong, and one warning is given per skeleton per animation.
 - **Reset:** the offsets return to zero when the slot's attachment changes.
 - **Interpolation:** deform offsets are blended between steps at draw time, as bones are.
 

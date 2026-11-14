@@ -102,7 +102,9 @@ pub enum Timeline {
   ///
   /// It moves the mesh only while the slot shows that name and the
   /// attachment found there is a mesh holding as many positions as the
-  /// keys; otherwise it is skipped, and the log is told once
+  /// keys. While the slot shows another attachment, or none, it does
+  /// nothing. Where the slot shows that name and the attachment is not
+  /// such a mesh, it is skipped, and the log is told once
   Deform {
     slot: SlotId,
     attachment: Arc<str>,

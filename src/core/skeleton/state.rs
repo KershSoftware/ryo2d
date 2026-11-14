@@ -449,10 +449,11 @@ impl Kept {
 /// its setup pose.
 ///
 /// An animation's deform keys move the mesh their slot shows under their
-/// attachment's name, mixed as its bone keys are. A deform that does not
-/// fit what the slot shows (another attachment, one that is not a mesh, or
-/// a mesh holding another count of positions than its keys, as another
-/// skin's may) is skipped, and the log is told once for that animation
+/// attachment's name, mixed as its bone keys are, and do nothing while the
+/// slot shows another attachment or none. Where the slot shows that name
+/// and the attachment is not a mesh, or is a mesh holding another count of
+/// positions than the keys (as another skin's may), the deform is skipped,
+/// and the log is told once for that animation
 #[derive(Component, Debug, Clone)]
 pub struct SkeletonAnimation {
   /// Multiplies the time every track advances by (1). A negative or
@@ -818,9 +819,11 @@ impl SkeletonAnimation {
   /// skins the skeleton wears.
   ///
   /// A deform timeline moves the mesh its slot shows under its attachment
-  /// name when that mesh holds as many positions as its keys. One that
-  /// does not fit what the slot shows is skipped, and the log is told once
-  /// for its animation (for the first [`MAX_WARNED`] animations)
+  /// name when that mesh holds as many positions as its keys. While the
+  /// slot shows another name, or nothing, it does nothing and nothing is
+  /// said. One whose slot shows its name, but not a mesh its keys fit, is
+  /// skipped, and the log is told once for its animation (for the first
+  /// [`MAX_WARNED`] animations)
   pub(crate) fn apply_deforms<'a>(
     &mut self,
     data: &SkeletonData,
@@ -835,19 +838,18 @@ impl SkeletonAnimation {
         continue;
       };
       if let Some(misfit) = apply_deform(animation, step, pose, &worn) {
-        self.warn_misfit(data, pose, animation, step.timeline, misfit);
+        self.warn_misfit(data, animation, step.timeline, misfit);
       }
     }
     self.deforms.clear();
   }
 
-  /// Tells the log that a deform timeline of `animation` does not fit what
-  /// its slot shows, once per skeleton per animation, for the first
-  /// [`MAX_WARNED`] animations
+  /// Tells the log that a deform timeline of `animation` does not fit the
+  /// attachment its slot shows under its name, once per skeleton per
+  /// animation, for the first [`MAX_WARNED`] animations
   fn warn_misfit(
     &mut self,
     data: &SkeletonData,
-    pose: &Pose,
     animation: &Animation,
     timeline: usize,
     misfit: Misfit,
@@ -865,13 +867,6 @@ impl SkeletonAnimation {
     };
     let slot_name = data.slots().get(slot.index()).map(|slot| &*slot.name);
     let why = match misfit {
-      Misfit::OtherName => {
-        let shown = pose.slot_attachments.get(slot.index());
-        format!(
-          "the slot shows {:?}",
-          shown.and_then(Option::as_deref).unwrap_or_default()
-        )
-      }
       Misfit::NotAMesh => "that attachment is not a mesh".to_owned(),
       Misfit::Positions { keys, mesh } => {
         format!("its keys hold {keys} positions and the mesh has {mesh}")
@@ -4275,6 +4270,21 @@ mod tests {
       .animation(clip("stale", 1.0, vec![deform("flag", 0.0, &[1.0; 4])]))
       // One of the pennant's four
       .animation(clip("furl", 1.0, vec![deform("pennant", 0.0, &[3.0; 8])]))
+      // One for each of the two, for whichever the slot shows
+      .animation(clip(
+        "either",
+        1.0,
+        vec![
+          deform("flag", 0.0, &WAVE),
+          deform("pennant", 0.0, &[3.0; 8]),
+        ],
+      ))
+      // The pennant shown, and held in its shape
+      .animation(clip(
+        "fly",
+        1.0,
+        vec![show(Some("pennant")), deform("pennant", 0.0, &[3.0; 8])],
+      ))
       // No deform
       .animation(clip("still", 1.0, vec![rotate(0.0)]))
       // What the slot shows
@@ -4456,17 +4466,11 @@ mod tests {
   #[test]
   fn a_deform_that_does_not_fit_is_skipped_with_one_warning() {
     let log = capture_log();
-    // The slot shows another name: an attachment key of a higher track
-    // changes it after the deform's own track has applied, and the deform
-    // is judged by what the slot shows in the end
-    let mut rig = Rig::of(banner());
+    // A flag of four positions under keys for three. The deform is
+    // skipped, step after step and loop after loop, with one warning for
+    // the animation and no more room taken to remember it
+    let mut rig = Rig::of(banner_with(mesh(4), |builder| builder));
     rig.set(0, "wave", true);
-    rig.step(0.1);
-    close_all(moved::<6>(&rig), WAVE);
-    assert_eq!(log.count(log::Level::Warn), 0, "{:?}", log.warnings());
-    rig.set(1, "to_pennant", true);
-    // Step after step and loop after loop, one warning for the animation,
-    // and no more room taken to remember it
     rig.step(0.1);
     let remembered = |rig: &Rig| {
       let names = &rig.state.warned_deform;
@@ -4481,48 +4485,43 @@ mod tests {
     assert_eq!(room.2, 1);
     assert_eq!(misfits(&log, "wave"), 1, "{:?}", log.warnings());
     let told = log.warnings().join("\n");
-    for part in ["\"flag\"", "slot \"banner\"", "shows \"pennant\""] {
+    for part in [
+      "\"flag\"",
+      "slot \"banner\"",
+      "3 positions",
+      "the mesh has 4",
+    ] {
       assert!(told.contains(part), "{part} in {told}");
     }
-    // Shown again and hidden again, it applies and is skipped, with
-    // nothing more said
+    // Another animation of the same skeleton is told of once too, however
+    // often the two take turns
     for _ in 0..3 {
-      rig.state.clear(1);
-      rig.step(0.1);
-      close_all(moved::<6>(&rig), WAVE);
-      rig.set(1, "to_pennant", true);
-      rig.step(0.1);
+      rig.set(0, "ripple", true);
+      rig.step(0.3);
+      rig.set(0, "wave", true);
+      rig.step(0.3);
       assert!(list(&rig).is_empty());
     }
     assert_eq!(misfits(&log, "wave"), 1, "{:?}", log.warnings());
-    // Another animation of the same skeleton is told of once too, and a
-    // deform of the name the slot does show moves its mesh
-    rig.set(0, "ripple", true);
-    rig.set(2, "furl", true);
-    for _ in 0..5 {
-      rig.step(0.1);
-    }
-    close_all(moved::<8>(&rig), [3.0; 8]);
     assert_eq!(misfits(&log, "ripple"), 1, "{:?}", log.warnings());
-    assert_eq!(misfits(&log, "furl"), 0, "{:?}", log.warnings());
     // Another skeleton is told of its own
-    let mut other = Rig::of(banner());
+    let mut other = Rig::of(banner_with(mesh(4), |builder| builder));
     other.set(0, "wave", true);
-    other.set(1, "to_pennant", true);
     other.step(0.1);
     assert_eq!(misfits(&log, "wave"), 2, "{:?}", log.warnings());
-
-    // The slot shows a region: by a key, another name; and under the
-    // deform's own name, in data where "flag" is a region
-    let log = capture_log();
+    // The other way round: keys for two positions under a flag of three
     let mut rig = Rig::of(banner());
-    rig.set(0, "wave", true);
-    rig.set(1, "to_badge", true);
-    for _ in 0..5 {
-      rig.step(0.1);
-      assert!(list(&rig).is_empty());
-    }
-    assert_eq!(misfits(&log, "wave"), 1, "{:?}", log.warnings());
+    rig.set(0, "stale", true);
+    rig.step(0.1);
+    assert!(list(&rig).is_empty());
+    assert_eq!(misfits(&log, "stale"), 1, "{:?}", log.warnings());
+    let told = log.warnings().join("\n");
+    assert!(told.contains("2 positions"), "{told}");
+    assert!(told.contains("the mesh has 3"), "{told}");
+
+    // The attachment under the deform's own name is not a mesh: data where
+    // "flag" is a region
+    let log = capture_log();
     use crate::core::skeleton::RegionAttachment;
     let region = Attachment::Region(RegionAttachment::new(0, 4.0, 4.0));
     let mut rig = Rig::of(banner_with(region, |builder| builder));
@@ -4531,27 +4530,8 @@ mod tests {
       rig.step(0.1);
       assert!(list(&rig).is_empty());
     }
-    assert_eq!(misfits(&log, "wave"), 2, "{:?}", log.warnings());
-    assert_eq!(log.containing("is not a mesh"), 1, "{:?}", log.warnings());
-
-    // A mesh of another count of positions than the keys: a flag of four
-    // under keys for three, and keys for two under a flag of three
-    let log = capture_log();
-    let mut rig = Rig::of(banner_with(mesh(4), |builder| builder));
-    rig.set(0, "wave", true);
-    for _ in 0..5 {
-      rig.step(0.1);
-      assert!(list(&rig).is_empty());
-    }
     assert_eq!(misfits(&log, "wave"), 1, "{:?}", log.warnings());
-    let told = log.warnings().join("\n");
-    assert!(told.contains("3 positions"), "{told}");
-    assert!(told.contains("the mesh has 4"), "{told}");
-    let mut rig = Rig::of(banner());
-    rig.set(0, "stale", true);
-    rig.step(0.1);
-    assert!(list(&rig).is_empty());
-    assert_eq!(misfits(&log, "stale"), 1, "{:?}", log.warnings());
+    assert_eq!(log.containing("is not a mesh"), 1, "{:?}", log.warnings());
 
     // A slot that shows nothing has nothing to move, and nothing is said:
     // one a key hides, and one showing a name no skin has
@@ -4583,15 +4563,76 @@ mod tests {
   }
 
   #[test]
+  fn a_deform_whose_slot_shows_another_attachment_is_skipped_in_silence() {
+    // Showing another attachment than a deform's is ordinary play, and
+    // nothing is said of it, however long it lasts
+    let log = capture_log();
+    // An attachment key of a higher track shows the pennant, or the badge
+    // (a region), after the deform's own track has applied: the deform is
+    // judged by what the slot shows in the end, and the flag's is skipped
+    for shown in ["to_pennant", "to_badge"] {
+      let mut rig = Rig::of(banner());
+      rig.set(0, "wave", true);
+      rig.step(0.1);
+      close_all(moved::<6>(&rig), WAVE);
+      rig.set(1, shown, true);
+      for _ in 0..30 {
+        rig.step(0.1);
+        assert!(list(&rig).is_empty(), "{shown}: {:?}", list(&rig));
+      }
+      // With the flag shown again, its deform moves it again
+      rig.state.clear(1);
+      rig.step(0.1);
+      close_all(moved::<6>(&rig), WAVE);
+    }
+    // An animation that keys a deform for each of two names of one slot:
+    // the one for the name shown applies, and the other waits its turn
+    let mut rig = Rig::of(banner());
+    rig.set(0, "either", true);
+    rig.step(0.1);
+    close_all(moved::<6>(&rig), WAVE);
+    rig.set(1, "to_pennant", true);
+    for _ in 0..12 {
+      rig.step(0.1);
+      close_all(moved::<8>(&rig), [3.0; 8]);
+    }
+    // A crossfade from an animation that deforms the flag to one that
+    // shows the pennant and deforms that. From the step the incoming one
+    // has weight the slot shows the pennant: the flag's deform is skipped
+    // for the rest of the mix, and the pennant's grows in with it
+    let mut rig = Rig::of(banner());
+    rig.set(0, "wave", true);
+    rig.step(0.1);
+    rig.set(0, "fly", true);
+    rig.step(0.0);
+    close_all(moved::<6>(&rig), WAVE);
+    for (step, mix) in [(0.05, 0.25), (0.05, 0.5), (0.05, 0.75), (0.05, 1.0)] {
+      rig.step(step);
+      assert_eq!(rig.shown().0, Some("pennant"));
+      close_all(moved::<8>(&rig), [3.0 * mix; 8]);
+    }
+    // And a deform of an attachment the slot never shows: skipped for as
+    // long as it plays
+    let mut rig = Rig::of(banner());
+    rig.set(0, "furl", true);
+    for _ in 0..12 {
+      rig.step(0.1);
+      assert!(list(&rig).is_empty());
+    }
+    assert_eq!(log.count(log::Level::Warn), 0, "{:?}", log.warnings());
+  }
+
+  #[test]
   fn deforms_that_do_not_fit_warn_up_to_a_bound() {
-    // A skeleton with more animations whose deforms miss than the state
-    // remembers: the log is told of the first 64, and the list grows no
-    // further however long they play
+    // A skeleton with more animations whose deforms do not fit than the
+    // state remembers, each keying four positions for a flag of three:
+    // the log is told of the first 64, and the list grows no further
+    // however long they play
     let log = capture_log();
     let many = |mut builder: SkeletonDataBuilder| {
       for number in 0..80 {
         let name = format!("miss {number}");
-        builder = builder.animation(clip(&name, 1.0, vec![deform("pennant", 0.0, &[1.0; 8])]));
+        builder = builder.animation(clip(&name, 1.0, vec![deform("flag", 0.0, &[1.0; 8])]));
       }
       builder
     };

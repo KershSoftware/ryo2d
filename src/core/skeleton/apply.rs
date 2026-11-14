@@ -308,11 +308,10 @@ pub(crate) struct DeformStep {
   pub(crate) blend: MixBlend,
 }
 
-/// Why a deform timeline moved nothing though its slot shows something
+/// Why a deform timeline moved nothing though its slot shows the
+/// attachment it names
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Misfit {
-  /// The slot shows an attachment of another name
-  OtherName,
   /// What the slot shows under the name is not a mesh
   NotAMesh,
   /// The keys hold another count of positions than the mesh
@@ -330,11 +329,11 @@ pub(crate) enum Misfit {
 /// adds the key's times the alpha, the key between two keys being eased by
 /// the first one's curve. Before its first key it does nothing.
 ///
-/// Otherwise nothing moves. A slot that shows nothing (hidden, or showing
-/// a name no skin worn has in it) is passed over; one that shows an
-/// attachment of another name, one of this name that is not a mesh, or a
-/// mesh of another count of positions, is a [`Misfit`] for the caller to
-/// tell
+/// Otherwise nothing moves. A slot that shows another name, or nothing
+/// (hidden, or a name no skin worn has in it), is passed over: that is
+/// ordinary play. One that shows the timeline's name, where the attachment
+/// is not a mesh or is a mesh of another count of positions, is a
+/// [`Misfit`] for the caller to tell
 pub(crate) fn apply_deform<'a>(
   animation: &Animation,
   step: DeformStep,
@@ -352,7 +351,7 @@ pub(crate) fn apply_deform<'a>(
   let sample = locate(frames, step.time)?;
   let shown = pose.slot_attachments.get(slot.index())?.as_deref()?;
   if shown != &**attachment {
-    return worn(*slot, shown).map(|_| Misfit::OtherName);
+    return None;
   }
   let Attachment::Mesh(mesh) = worn(*slot, attachment)? else {
     return Some(Misfit::NotAMesh);

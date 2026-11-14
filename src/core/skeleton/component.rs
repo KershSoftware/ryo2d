@@ -1938,11 +1938,8 @@ mod tests {
     played.step(0.1);
     close_lists(played.lists(), (&NEXT, &NEXT));
     // "both" keys a deform for each name the slot shows in turn, and the
-    // slot shows one of them at a time: the log was told once, of the
-    // pennant's while the flag showed, and no more for the flag's since
-    let both = log.containing_all(&["\"both\"", "the deform is skipped"]);
-    assert_eq!(both, 1, "{:?}", log.warnings());
-    assert_eq!(log.containing("\"pennant\""), 1, "{:?}", log.warnings());
+    // slot shows one of them at a time: the other is skipped in silence
+    assert_eq!(log.count(log::Level::Warn), 0, "{:?}", log.warnings());
     // Back to the flag, by an animation that keys no attachment
     played.play("wave", true);
     played.step(0.1);
@@ -1976,6 +1973,9 @@ mod tests {
       .skeleton
       .appear(data, newer, animation, Affine2::IDENTITY.into());
     close_lists(played.lists(), (&scaled(KEY, 0.5), &scaled(KEY, 0.5)));
+    // Nothing was said of any of it: a slot the game or a key gives
+    // another attachment, or hides, under a deform of the one before
+    assert_eq!(log.count(log::Level::Warn), 0, "{:?}", log.warnings());
   }
 
   #[test]
@@ -1983,12 +1983,12 @@ mod tests {
     let log = capture_log();
     let skipped = |log: &crate::testing::LogCapture| log.containing("the deform is skipped");
     // "furl" keys the pennant's deform, and the slot's setup attachment is
-    // the flag: skipped
+    // the flag: skipped, in silence
     let mut played = Played::new(banner());
     played.play("furl", true);
     played.step(0.1);
     close_lists(played.lists(), (&[], &[]));
-    assert_eq!(skipped(&log), 1, "{:?}", log.warnings());
+    assert_eq!(skipped(&log), 0, "{:?}", log.warnings());
     // The game shows the pennant in the slot. What the game sets is
     // written after the animation, and the deform is judged after that
     played.skeleton.set_attachment("banner", Some("pennant"));
@@ -2014,9 +2014,9 @@ mod tests {
       played.step(0.1);
       assert_eq!(played.lists().1, KEY);
     }
-    // One warning for each animation of each skeleton, however often the
-    // skin comes and goes
-    assert_eq!(skipped(&log), 2, "{:?}", log.warnings());
+    // One warning for the animation, however often the skin comes and
+    // goes; and none for the pennant's deform under the flag, above
+    assert_eq!(skipped(&log), 1, "{:?}", log.warnings());
     assert_eq!(log.containing("the mesh has 4"), 1, "{:?}", log.warnings());
     // With no animation state there are no deform keys
     let mut bare = posed(banner(), Affine2::IDENTITY, |_| {});
