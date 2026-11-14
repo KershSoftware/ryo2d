@@ -277,3 +277,66 @@ Every page builds and steps headlessly with no warnings, and the tour captures e
 - **Mixing semantics:** Spine's mixing rules (hold previous, the event threshold, additive with an empty track) are subtle. Tests pin each rule with a worked example. Where we differ from Spine, it is written down, so stage 4 knows.
 - **Art:** the CC0 pack may lack parts for a convincing rig. The fallback is Kenney's, and stage 1 checks both before planning the demo pages.
 - **The stage 4 licence:** this is outside our control, and is the owner's step.
+
+## Meshes: details settled at planning (2026-11-13)
+
+Stage 2 builds on the merged core. These are the planner's calls. The owner may revisit them when the plan comes for approval.
+
+### What a mesh is
+
+- **A mesh attachment** names a region and carries:
+  - vertices;
+  - a UV per vertex, as a fraction of the region (0 to 1 across it);
+  - triangles, as vertex indices;
+  - a hull, the number of vertices that form its outline in order (for the debug overlay);
+  - a colour.
+- **Vertices are unweighted or weighted.**
+  - An unweighted vertex is a position in the slot's bone space.
+  - A weighted vertex is a list of influences, each a bone, a position in that bone's space and a weight. Its place is the weighted sum of those positions, each under its bone.
+  - A vertex may have any number of influences. Weights are normalised at load, and a vertex whose weights sum to zero fails to load.
+- **Skinning is on the CPU**, each frame a mesh is drawn, from the same interpolated bone matrices the region quads use. It writes into the frame's triangle stream. GPU skinning stays a backlog lever.
+
+### Deform keys
+
+- **A deform timeline** belongs to one slot and one attachment name. Each key holds an offset per influence position: for an unweighted mesh, one per vertex in the slot's bone space; for a weighted mesh, one per influence in that influence's bone space. So a keyed deformation turns with the bones it rides.
+- An empty key means no offset: the setup shape.
+- **Mixing:** Replace moves the offsets toward the key by alpha. Add adds the key's offsets times alpha. The cover rule of a crossfade treats (slot, attachment name) as the property.
+- **When a deform applies:** only while its slot shows that attachment and the attachment is a mesh with the key's count of positions. Otherwise it is skipped: a skin's mesh of another shape, a region under the same name, or data reloaded with a different count. Nothing is drawn wrong, and one warning is given per skeleton per animation.
+- **Reset:** the offsets return to zero when the slot's attachment changes.
+- **Interpolation:** deform offsets are blended between steps at draw time, as bones are.
+
+### Drawing
+
+- **Order:** a mesh draws in the skeleton's draw order, between its regions, as part of the entity's place in the entity ordering. The draw list gains a triangles item of the entity kind.
+- **Look:** a mesh must look exactly like a region quad of the same image.
+  - It uses a mesh shader made of the sprite shader's sampling and tint.
+  - Its colour is slot × attachment × the entity's tint and alpha.
+  - It is lit by the entity's `lit` flag, and lifted by its floor.
+  - It mirrors with a flip, and no face is culled.
+- **Shadows:** a drop shadow draws the mesh's silhouette as it does a region's. Blob and contact shadows are the entity's, unchanged.
+- **Limits, recorded:**
+  - A game's own sprite shader does not apply to mesh parts. The engine's custom sprite shaders are quad-only, so under one a skeleton's regions take the shader and its meshes draw plain.
+  - Pixel-art snapping does not apply to mesh vertices.
+- **Debug:** `debug:skeletons` draws a mesh's hull and triangles.
+
+### File format
+
+A `Mesh(..)` attachment and a `deform` block per slot in an animation. The exact keys are in the plan and are checked by the loader's tests. The format carries everything the data can hold.
+
+### Acceptance (stage 2)
+
+- **Pixel tests:**
+  - a two-triangle mesh of a region draws the same pixels as the region quad;
+  - a weighted mesh bends between two bones;
+  - a mesh sorts between regions by draw order;
+  - a mesh on a y-sorted, lit, floored, flipped and interpolated skeleton behaves as its regions do;
+  - a deform key moves a vertex;
+  - a crossfade blends two deforms.
+- **Robustness:**
+  - a reload that changes a mesh's vertex count while a deform plays does not panic and draws the setup shape;
+  - malformed meshes fail to load with the item named.
+- **Allocations:** no per-frame allocation with meshes drawn.
+- **Speed** (release, quiet machine, median of three):
+  - 200 skeletons of 25 regions plus one weighted mesh of 60 vertices each: the drawing work in extract is at most 600 µs a frame, and the update at most 1,000 µs a step;
+  - the region-only figures of the core do not rise by more than 5%.
+- **Demo:** a new page with a weighted cape that swings with its bones, a banner rippled by deform keys, and a toggle for the overlay. The page tests cover it.
