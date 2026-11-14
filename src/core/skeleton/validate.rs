@@ -505,10 +505,19 @@ fn mesh_ok(
             ));
           }
         }
-        if influences.iter().map(|i| i.weight).sum::<f32>() <= 0.0 {
+        let sum = influences.iter().map(|i| i.weight).sum::<f32>();
+        if sum <= 0.0 {
           return Err(error(
             item(),
             format!("vertex {vertex}'s weights sum to 0; they need to sum above 0"),
+          ));
+        }
+        // Weights that sum past what a float holds were left as given, and
+        // would skin the vertex to no finite place
+        if !sum.is_finite() {
+          return Err(error(
+            item(),
+            format!("vertex {vertex}'s weights sum to {sum}; they need a finite sum"),
           ));
         }
       }
@@ -1246,6 +1255,16 @@ mod tests {
       with_mesh(weighted(vec![Vec::new(); 4])),
       CAPE,
       "vertex 0's weights sum to 0",
+    );
+    // Weights that are each finite and sum past what a float holds cannot
+    // be made to sum to 1 either: left as given, they would skin the
+    // vertex to no finite place
+    let good = vec![influence(0, 1.0)];
+    let huge = vec![influence(0, f32::MAX), influence(1, f32::MAX)];
+    fails(
+      with_mesh(weighted(vec![good.clone(), huge, good.clone(), good])),
+      CAPE,
+      "vertex 1's weights sum to inf",
     );
   }
 
