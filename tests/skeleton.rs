@@ -2571,18 +2571,26 @@ fn a_reload_that_changes_a_mesh_s_vertex_count_skips_its_deform() {
     assert!(told.contains(part), "{part} in {told}");
   }
 
-  // Saved with four again, the deform moves the flag again
+  // Saved with four again, the deform moves the flag again, and nothing
+  // more is said
   save(&mut engine, &files, &data, banner_file(FLAG_OF_FOUR));
   engine.step_frames(3).expect("frames");
   near_all(&flag(&engine), &flag_at(at, &FLAG, &WAVE, 1.0));
+  assert_eq!(skipped(&log), 1, "{:?}", log.warnings());
   // The flag made a region under the same name, which no deform moves:
   // the slot shows the region, the deform is skipped and nothing panics.
-  // The log has been told of this skeleton's "wave" already
+  // Each save is news: the log is told of this one too, once, however
+  // long the animation then plays
   save(&mut engine, &files, &data, banner_file(FLAG_AS_A_REGION));
-  engine.step_frames(3).expect("frames");
+  engine.step_frames(40).expect("frames");
   assert!(flag(&engine).is_empty());
   assert_eq!(skeleton(&engine, banner).attachment("banner"), Some("flag"));
-  assert_eq!(skipped(&log), 1, "{:?}", log.warnings());
+  assert_eq!(skipped(&log), 2, "{:?}", log.warnings());
+  assert!(
+    log.warnings().join("\n").contains("is not a mesh"),
+    "{:?}",
+    log.warnings()
+  );
 
   // A save that takes the flag out of its skin and leaves its deform does
   // not load: the deform names an attachment no skin has in its slot. The
@@ -2607,11 +2615,13 @@ fn a_reload_that_changes_a_mesh_s_vertex_count_skips_its_deform() {
     Some("flag"),
     "the region of the last good save"
   );
-  // And a good save lands as ever: four corners, moved by the deform
+  // And a good save lands as ever: four corners, moved by the deform.
+  // The save that did not load was no new data, and told the log of no
+  // deform
   save(&mut engine, &files, &data, banner_file(FLAG_OF_FOUR));
   engine.step_frames(3).expect("frames");
   near_all(&flag(&engine), &flag_at(at, &FLAG, &WAVE, 1.0));
-  assert_eq!(skipped(&log), 1, "{:?}", log.warnings());
+  assert_eq!(skipped(&log), 2, "{:?}", log.warnings());
   assert_eq!(animation(&engine, banner).current(0), Some(wave));
 }
 

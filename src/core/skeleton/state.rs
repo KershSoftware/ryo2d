@@ -472,7 +472,8 @@ pub struct SkeletonAnimation {
   /// Names already warned about (at most [`MAX_WARNED`])
   warned: Vec<Arc<str>>,
   /// The animations whose deform keys the log has been told do not fit
-  /// what their slot shows (at most [`MAX_WARNED`])
+  /// what their slot shows (at most [`MAX_WARNED`]), in the data the state
+  /// last took up: forgotten when new data comes
   warned_deform: Vec<Arc<str>>,
   warned_track: bool,
   warned_kept: bool,
@@ -846,7 +847,8 @@ impl SkeletonAnimation {
 
   /// Tells the log that a deform timeline of `animation` does not fit the
   /// attachment its slot shows under its name, once per skeleton per
-  /// animation, for the first [`MAX_WARNED`] animations
+  /// animation for each version of its data, for the first [`MAX_WARNED`]
+  /// animations
   fn warn_misfit(
     &mut self,
     data: &SkeletonData,
@@ -1061,6 +1063,9 @@ impl SkeletonAnimation {
     self.catalogue = Some(catalogue.clone());
     if !first {
       self.rename(catalogue);
+      // A deform that does not fit the new data is news: a mesh cut again
+      // and saved is what a reload is for. The list keeps its room
+      self.warned_deform.clear();
     }
     for kept in std::mem::take(&mut self.kept) {
       match kept {
@@ -4645,6 +4650,53 @@ mod tests {
       assert_eq!(rig.state.warned_deform.len(), MAX_WARNED, "round {round}");
       assert_eq!(log.containing("the deform is skipped"), MAX_WARNED);
     }
+    // The bound is one version of the data's: new data is told of afresh,
+    // of 64 more and no more than that
+    rig.reload(banner_with(mesh(3), many));
+    for round in 0..2 {
+      for number in 0..80 {
+        rig.set(0, &format!("miss {number}"), true);
+        rig.step(0.3);
+      }
+      assert_eq!(rig.state.warned_deform.len(), MAX_WARNED, "round {round}");
+      assert_eq!(log.containing("the deform is skipped"), 2 * MAX_WARNED);
+    }
+  }
+
+  #[test]
+  fn new_data_is_told_again_of_a_deform_that_does_not_fit() {
+    let log = capture_log();
+    // A flag of four positions under keys for three: told of once
+    let mut rig = Rig::of(banner_with(mesh(4), |builder| builder));
+    rig.set(0, "wave", true);
+    for _ in 0..10 {
+      rig.step(0.1);
+    }
+    assert_eq!(misfits(&log, "wave"), 1, "{:?}", log.warnings());
+    // The data comes again with the flag cut to five, so the deform still
+    // does not fit: told of once more, with the new count, and not once a
+    // step
+    rig.reload(banner_with(mesh(5), |builder| builder));
+    for _ in 0..10 {
+      rig.step(0.1);
+      assert!(list(&rig).is_empty(), "{:?}", list(&rig));
+    }
+    assert_eq!(misfits(&log, "wave"), 2, "{:?}", log.warnings());
+    let told = log.warnings().join("\n");
+    assert!(told.contains("the mesh has 5"), "{told}");
+    // It comes again fitting: nothing is said, and the deform moves the flag
+    rig.reload(banner());
+    for _ in 0..10 {
+      rig.step(0.1);
+      assert!(!list(&rig).is_empty());
+    }
+    assert_eq!(misfits(&log, "wave"), 2, "{:?}", log.warnings());
+    // And a misfit after a fit is news again
+    rig.reload(banner_with(mesh(4), |builder| builder));
+    for _ in 0..10 {
+      rig.step(0.1);
+    }
+    assert_eq!(misfits(&log, "wave"), 3, "{:?}", log.warnings());
   }
 
   #[test]
