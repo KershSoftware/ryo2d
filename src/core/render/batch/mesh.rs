@@ -3,14 +3,6 @@
 //! a mesh carries everything else, and the sprite shader's own fragment
 //! stages draw it (`vs_mesh`, `shaders/core/mesh.wgsl`).
 
-#![cfg_attr(
-  not(test),
-  expect(
-    dead_code,
-    reason = "skeletons' mesh attachments draw meshes; until they do, only tests add one"
-  )
-)]
-
 use std::ops::Range;
 
 use glam::Vec2;

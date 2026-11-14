@@ -158,8 +158,11 @@ pub mod colors {
   pub const BONE: [u8; 4] = [0xff, 0xc0, 0x20, 0xff];
   /// White for a skeleton's joints (its bones' origins)
   pub const BONE_JOINT: [u8; 4] = [0xff, 0xff, 0xff, 0xff];
-  /// Blue for the outlines of the regions a skeleton draws
+  /// Blue for the outlines of the regions a skeleton draws, and of its
+  /// meshes (their hulls)
   pub const SKELETON_REGION: [u8; 4] = [0x60, 0x90, 0xff, 0xff];
+  /// A darker blue for the triangles of the meshes a skeleton draws
+  pub const SKELETON_MESH: [u8; 4] = [0x30, 0x50, 0xb0, 0xff];
   /// Green for a skeleton's bounding boxes
   pub const BOUNDING_BOX: [u8; 4] = [0x00, 0xff, 0x00, 0xff];
   /// Magenta for a skeleton's points

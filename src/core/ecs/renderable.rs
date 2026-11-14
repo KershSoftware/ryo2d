@@ -421,7 +421,7 @@ pub enum RenderStyle {
     target_size: f32,
   },
   /// The entity's [`Skeleton`](crate::core::skeleton::Skeleton), drawn as
-  /// the regions its slots show (see [`Renderable::skeleton`])
+  /// the regions and meshes its slots show (see [`Renderable::skeleton`])
   Skeleton,
 }
 
@@ -541,8 +541,8 @@ impl Renderable {
   }
 
   /// Draws the entity's [`Skeleton`](crate::core::skeleton::Skeleton): the
-  /// regions its slots show, back to front in its draw order, where its
-  /// bones put them.
+  /// regions and the meshes its slots show, back to front in its draw
+  /// order, where its bones put them.
   ///
   /// The skeleton takes this renderable's place among the entities as a
   /// sprite would (`z_order`, `YSort`, its floor), and `visible`,
@@ -550,15 +550,23 @@ impl Renderable {
   /// `flip_y` mirror it about the entity's position, its bones and sockets
   /// with it.
   ///
-  /// Each region is then drawn as a sprite of its own: with this
-  /// renderable's `alpha` and `tint` (times its slot's and its attachment's
-  /// colours), its `blend` (a slot with a blend of its own keeps that),
-  /// its `emission`, and its sprite `shader` (or the entity's `Material`),
-  /// a built-in effect or a game's own. So a flash whitens every part,
-  /// and an outline outlines each part, not the figure. The drop shadow is
-  /// cast part by part too: where parts overlap, a translucent one is
-  /// darker than a sprite's. The blob and contact shadows are a sprite's,
-  /// under the entity, and suit a character better.
+  /// Each part, a region or a mesh, is then drawn as a sprite of its own:
+  /// with this renderable's `alpha` and `tint` (times its slot's and its
+  /// attachment's colours), its `blend` (a slot with a blend of its own
+  /// keeps that), its `emission`, and its sprite `shader` (or the entity's
+  /// `Material`), a built-in effect or a game's own. So a flash whitens
+  /// every part, and an outline outlines each region, not the figure. The
+  /// drop shadow is cast part by part too, a mesh's in its own shape:
+  /// where parts overlap, a translucent one is darker than a sprite's. The
+  /// blob and contact shadows are a sprite's, under the entity, and suit a
+  /// character better.
+  ///
+  /// An effect that draws round its sprite (an outline, a glow, a
+  /// directional outline) does not reach a mesh: the regions take it and
+  /// the meshes draw without, and the log says so once. Such an effect
+  /// grows a sprite's rectangle to hold what it draws, and a mesh has its
+  /// own shape. A mesh's vertices are not snapped to whole pixels in pixel
+  /// art, as a region's rectangle is.
   ///
   /// `image`, `anchor` and `target` are not used: a skeleton's origin is
   /// its entity's position, which is also where a `YSort` sorts it

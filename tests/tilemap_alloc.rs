@@ -426,12 +426,16 @@ fn engine(scene: StaticMap, at: Vec2) -> Option<HeadlessEngine> {
 const GPU: [&str; 5] = ["wgpu", "naga::", "objc2", "metal::", "block2"];
 
 /// The entity drawer's functions that draw a skeleton and nothing else
-/// (`render/entities.rs`): they are outside the skeleton module, and are
-/// the skeletons' path all the same
-const SKELETON_DRAWER: [&str; 3] = [
+/// (`render/entities.rs`), and the frame's mesh stream, which only a
+/// skeleton's meshes join (`render/batch/mesh.rs`): they are outside the
+/// skeleton module, and are the skeletons' path all the same
+const SKELETON_DRAWER: [&str; 6] = [
   "ryo2d::core::render::entities::collect_skeleton",
-  "ryo2d::core::render::entities::Emitter::draw_runs",
+  "ryo2d::core::render::entities::Emitter::draw_parts",
   "ryo2d::core::render::entities::Emitter::draw_shaded",
+  "ryo2d::core::render::entities::Emitter::draw_skinned",
+  "ryo2d::core::render::entities::Emitter::draw_mesh",
+  "ryo2d::core::render::batch::mesh::",
 ];
 
 /// One frame's allocations: how many; of those not made inside the GPU API,
@@ -489,13 +493,16 @@ fn traced_after(engine: &mut HeadlessEngine, calls: impl FnOnce(&mut HeadlessEng
   let (mut skeleton_gpu, mut in_skeleton) = (Vec::new(), Vec::new());
   // A function of the skeletons' own path: one of the skeleton module (a
   // type that names it in its parameters is not one), or one of the
-  // entity drawer's that only a skeleton's drawing reaches
+  // entity drawer's that only a skeleton's drawing reaches. A method's
+  // name is its type's in angle brackets and then its own
+  // (`<..::Emitter>::draw_parts::<..>`), so the brackets are taken out
+  // before a drawer's path is looked for at its start
   let skeleton_fn = |name: &&&str| {
     name.starts_with("ryo2d::core::skeleton::")
       || name.starts_with("<ryo2d::core::skeleton::")
       || SKELETON_DRAWER
         .iter()
-        .any(|drawer| name.starts_with(drawer))
+        .any(|drawer| name.replace(['<', '>'], "").starts_with(drawer))
   };
   let mut timed = 0;
   for trace in traces {

@@ -1,13 +1,14 @@
 //! The `debug:skeletons` overlay: every skeleton's bones and joints, the
-//! outlines of the regions its slots show, and its bounding boxes and
-//! points, where the frame draws the skeleton.
+//! outlines of the regions its slots show, the triangles and hulls of
+//! their meshes, and its bounding boxes and points, where the frame draws
+//! the skeleton.
 
 use glam::Vec2;
 
 use super::attachment::Attachment;
 use super::component::Skeleton;
 use super::data::{SkeletonData, SlotId};
-use super::draw::{Carrier, RegionQuad};
+use super::draw::{Carrier, Part, Parts};
 use super::scope::SkeletonStore;
 use crate::core::asset::Assets;
 use crate::core::diagnostics::colors;
@@ -35,7 +36,9 @@ type Shown = (
 /// Adds every posed skeleton's overlay to `debug` for this frame, for the
 /// cameras on its entity's layers: each bone as a line its length along
 /// it, with a ring at its origin (its joint); the outline of each region
-/// drawn; each bounding box its slots show; and each point as a cross
+/// drawn; each mesh drawn, as its triangles with its hull over them (the
+/// first vertices, as many as its `hull` says, joined in order and back to
+/// the first); each bounding box its slots show; and each point as a cross
 /// with a line the way it faces.
 ///
 /// All of it is where the frame draws the skeleton (`alpha` of the way
@@ -53,7 +56,7 @@ pub(crate) fn draw(world: &mut World, alpha: f32, pixel: f32, debug: &mut DebugD
     .get_resource::<SkeletonStore>()
     .map(SkeletonStore::step);
   let color = |c: [u8; 4]| Color::new(c[0], c[1], c[2], c[3]);
-  let mut quads: Vec<RegionQuad> = Vec::new();
+  let mut parts = Parts::default();
   let mut corners: Vec<Vec2> = Vec::new();
   for (skeleton, global, previous, lift, y_sort, layers) in skeletons.iter(world) {
     let id = skeleton.data().id();
@@ -73,11 +76,33 @@ pub(crate) fn draw(world: &mut World, alpha: f32, pixel: f32, debug: &mut DebugD
     let drawn = skeleton.drawn(&carrier, alpha, step);
     let mut pen = debug.layers(layers.copied().unwrap_or_default());
 
-    quads.clear();
-    skeleton.regions(data, (id, version), drawn.root, drawn.between, &mut quads);
-    for quad in &quads {
-      let [a, b, c, d] = quad.corners();
-      pen.polyline(&[a, b, c, d, a], color(colors::SKELETON_REGION));
+    skeleton.parts(data, (id, version), drawn.root, drawn.between, &mut parts);
+    for part in &parts.list {
+      let mesh = match part {
+        Part::Region(quad) => {
+          let [a, b, c, d] = quad.corners();
+          pen.polyline(&[a, b, c, d, a], color(colors::SKELETON_REGION));
+          continue;
+        }
+        Part::Mesh(mesh) => mesh,
+      };
+      // Where the skinning put its vertices: each triangle, then the hull
+      // over them
+      let vertices = parts.vertices(mesh);
+      let corner = |index: u16| vertices.get(usize::from(index)).copied();
+      for &[a, b, c] in mesh.mesh.triangles.as_chunks::<3>().0 {
+        let (Some(a), Some(b), Some(c)) = (corner(a), corner(b), corner(c)) else {
+          continue;
+        };
+        pen.polyline(&[a, b, c, a], color(colors::SKELETON_MESH));
+      }
+      let hull = vertices.get(..usize::from(mesh.mesh.hull));
+      if let Some(&first) = hull.and_then(<[Vec2]>::first) {
+        corners.clear();
+        corners.extend_from_slice(hull.unwrap_or_default());
+        corners.push(first);
+        pen.polyline(&corners, color(colors::SKELETON_REGION));
+      }
     }
 
     for (index, bone) in data.bones().iter().enumerate() {
@@ -137,7 +162,7 @@ mod tests {
   use crate::core::render::ShapeKind;
   use crate::core::skeleton::component::{Fired, Flip, Stand};
   use crate::core::skeleton::{
-    BoneSetup, BoundingBoxAttachment, PointAttachment, Region, RegionAttachment, SlotSetup,
+    BoneId, BoneSetup, BoundingBoxAttachment, PointAttachment, Region, RegionAttachment, SlotSetup,
   };
   use crate::testing::asset_world;
 
@@ -264,6 +289,106 @@ mod tests {
     // The point's cross
     let crosses = shapes(&debug, ShapeKind::Cross);
     assert_eq!(crosses, [vec![corner(6.0, 0.0), Vec2::new(3.5, 0.0)]]);
+  }
+
+  #[test]
+  fn the_overlay_draws_a_mesh_s_triangles_and_its_hull_where_it_is_skinned() {
+    use crate::core::skeleton::{Influence, MeshAttachment, MeshVertices, WeightedVertices};
+    // A skeleton at (100, 50): a root, and a tip 8 px right of it. Its one
+    // slot shows a mesh of four vertices in two triangles, its left pair
+    // the root's and its right pair the tip's, with a hull of all four
+    let mut world = asset_world();
+    let image = world
+      .resource_mut::<Assets<Image>>()
+      .add(Image::solid_rect(8, 4, 255, 255, 255, 255));
+    let (root, tip) = (BoneId(0), BoneId(1));
+    let corners = [
+      vec![Influence::new(root, 0.0, 0.0, 1.0)],
+      vec![Influence::new(tip, 0.0, 0.0, 1.0)],
+      vec![Influence::new(tip, 0.0, 4.0, 1.0)],
+      vec![Influence::new(root, 0.0, 4.0, 1.0)],
+    ];
+    let cloth = |hull| {
+      Attachment::Mesh(MeshAttachment {
+        hull,
+        ..MeshAttachment::new(
+          0,
+          MeshVertices::Weighted(WeightedVertices::new(corners.clone())),
+          vec![Vec2::ZERO, Vec2::X, Vec2::ONE, Vec2::Y],
+          vec![0, 1, 2, 0, 2, 3],
+        )
+      })
+    };
+    let shown = SlotSetup {
+      attachment: Some(Arc::from("cloth")),
+      ..SlotSetup::default()
+    };
+    let tip_setup = BoneSetup {
+      x: 8.0,
+      ..BoneSetup::default()
+    };
+    let data = SkeletonData::builder()
+      .bone("root", None, BoneSetup::default())
+      .bone("tip", Some("root"), tip_setup)
+      .slot("cloth", "root", shown)
+      .region(Region {
+        name: Arc::from("cloth"),
+        image,
+        x: 0,
+        y: 0,
+        width: 8,
+        height: 4,
+      })
+      .skin("bare")
+      .attachment(SkeletonData::DEFAULT_SKIN, "cloth", "cloth", cloth(4))
+      .attachment("bare", "cloth", "cloth", cloth(0))
+      .build()
+      .expect("a valid skeleton");
+    let handle = world.resource_mut::<Assets<SkeletonData>>().add(data);
+    let assets = world.resource::<Assets<SkeletonData>>();
+    let seen = (handle.id(), assets.version(&handle).expect("a version"));
+    let data = assets.get(&handle).expect("the data").clone();
+    let at = Transform::from_xy(100.0, 50.0);
+    let mut skeleton = Skeleton::new(handle);
+    let fired = &mut Fired::default();
+    skeleton.step(&data, seen, None, 1.0 / 60.0, at.to_affine().into(), fired);
+    let entity = world.spawn((at, skeleton)).id();
+
+    let outlines = |world: &mut World| {
+      let mut debug = DebugDraw::default();
+      draw(world, 0.0, 1.0, &mut debug);
+      let lines = debug
+        .each()
+        .filter(|(shape, _)| shape.kind == ShapeKind::Polyline);
+      let each = lines.map(|(shape, points)| (shape.color, points.to_vec()));
+      each.collect::<Vec<_>>()
+    };
+    let color = |c: [u8; 4]| Color::new(c[0], c[1], c[2], c[3]);
+    let (inner, outer) = (color(colors::SKELETON_MESH), color(colors::SKELETON_REGION));
+    let corner = |x: f32, y: f32| Vec2::new(100.0 + x, 50.0 + y);
+    let [a, b, c, d] = [
+      corner(0.0, 0.0),
+      corner(8.0, 0.0),
+      corner(8.0, 4.0),
+      corner(0.0, 4.0),
+    ];
+    // Each triangle closed, then the hull over them: its vertices in
+    // order and back to the first
+    assert_eq!(
+      outlines(&mut world),
+      [
+        (inner, vec![a, b, c, a]),
+        (inner, vec![a, c, d, a]),
+        (outer, vec![a, b, c, d, a]),
+      ]
+    );
+    // A mesh with no hull shows its triangles alone
+    let mut skeleton = world.get_mut::<Skeleton>(entity).expect("the skeleton");
+    skeleton.set_skin("bare");
+    assert_eq!(
+      outlines(&mut world),
+      [(inner, vec![a, b, c, a]), (inner, vec![a, c, d, a])]
+    );
   }
 
   #[test]

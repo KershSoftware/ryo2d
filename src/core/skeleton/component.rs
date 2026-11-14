@@ -254,9 +254,10 @@ impl From<Affine2> for Stand {
 /// gives what it wears.
 ///
 /// It is drawn when its entity has a [`Renderable::skeleton`]: its regions
-/// where its bones are, sorted, lit, shadowed and lifted as a sprite is,
-/// and mirrored about the entity's origin by that renderable's `flip_x`
-/// and `flip_y`, its bones (as `bone_world` answers) and sockets with it.
+/// where its bones are and its meshes skinned to them, sorted, lit,
+/// shadowed and lifted as a sprite is, and mirrored about the entity's
+/// origin by that renderable's `flip_x` and `flip_y`, its bones (as
+/// `bone_world` answers) and sockets with it.
 ///
 /// Adding a `Skeleton` makes its entity [`Interpolated`], so the entity,
 /// its bones and its sockets are drawn between fixed steps, smooth on any
@@ -1538,6 +1539,83 @@ mod tests {
     skeleton.clear_override("part 1");
     skeleton.override_bone("another", turned);
     assert_eq!(skeleton.overrides.len(), MAX_BONES);
+  }
+
+  #[test]
+  fn a_slot_showing_a_mesh_answers_as_any_slot_and_is_no_point_or_box() {
+    use crate::core::graphics::Image;
+    use crate::core::skeleton::{BoundingBoxAttachment, MeshAttachment, MeshVertices, Region};
+    // Three slots that each show an attachment called "mark": a mesh, then
+    // a point, then a bounding box
+    let mut world = asset_world();
+    let image = world
+      .resource_mut::<Assets<Image>>()
+      .add(Image::solid_rect(4, 4, 255, 255, 255, 255));
+    let shown = || SlotSetup {
+      attachment: Some(Arc::from("mark")),
+      ..SlotSetup::default()
+    };
+    let corners = vec![Vec2::ZERO, Vec2::new(4.0, 0.0), Vec2::new(0.0, 4.0)];
+    let mesh = MeshAttachment::new(
+      0,
+      MeshVertices::Unweighted(corners.clone()),
+      vec![Vec2::ZERO, Vec2::X, Vec2::Y],
+      vec![0, 1, 2],
+    );
+    let point = PointAttachment {
+      x: 3.0,
+      y: 4.0,
+      rotation: 0.0,
+    };
+    let data = SkeletonData::builder()
+      .bone("root", None, BoneSetup::default())
+      .slot("cape", "root", shown())
+      .slot("aim", "root", shown())
+      .slot("hit", "root", shown())
+      .region(Region {
+        name: Arc::from("cloth"),
+        image,
+        x: 0,
+        y: 0,
+        width: 4,
+        height: 4,
+      })
+      .attachment("default", "cape", "mark", Attachment::Mesh(mesh))
+      .attachment("default", "aim", "mark", Attachment::Point(point))
+      .attachment(
+        "default",
+        "hit",
+        "mark",
+        Attachment::BoundingBox(BoundingBoxAttachment {
+          vertices: corners.clone(),
+        }),
+      )
+      .build()
+      .expect("a valid skeleton");
+    let root = Affine2::from_translation(Vec2::new(10.0, 20.0));
+    let mut skeleton = posed(data.clone(), root, |_| {});
+    // The slot says what it shows, a mesh as anything else
+    assert_eq!(skeleton.attachment("cape"), Some("mark"));
+    // The mesh is neither a point nor a bounding box: those of its name
+    // are found in the slots after it
+    assert_eq!(skeleton.point("mark"), Some((Vec2::new(13.0, 24.0), 0.0)));
+    let mut out = Vec::new();
+    assert!(skeleton.bounding_box("mark", &mut out));
+    let moved: Vec<Vec2> = corners.iter().map(|&at| at + root.translation).collect();
+    assert_eq!(out, moved);
+    // With those two hidden only the mesh has the name: no point, no box
+    skeleton.set_attachment("aim", None);
+    skeleton.set_attachment("hit", None);
+    let fired = &mut Fired::default();
+    let seen = skeleton.seen().expect("a pose");
+    skeleton.step(&data, seen, None, 1.0 / 60.0, root.into(), fired);
+    assert_eq!(skeleton.attachment("cape"), Some("mark"));
+    assert_eq!(skeleton.point("mark"), None);
+    assert!(!skeleton.bounding_box("mark", &mut out) && out.is_empty());
+    // The game hides the mesh's slot as it hides any
+    skeleton.set_attachment("cape", None);
+    skeleton.step(&data, seen, None, 1.0 / 60.0, root.into(), fired);
+    assert_eq!(skeleton.attachment("cape"), None);
   }
 
   /// A root with a slot "hand" showing "open" and a bare slot "hat". The

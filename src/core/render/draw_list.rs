@@ -42,13 +42,6 @@ pub(crate) enum DrawPayload {
   /// a skeleton's regions)
   Run(usize),
   /// Index into the list's meshes (an entity's own triangles of an image)
-  #[cfg_attr(
-    not(test),
-    expect(
-      dead_code,
-      reason = "skeletons' mesh attachments draw meshes; until they do, only tests push one"
-    )
-  )]
   Mesh(usize),
 }
 
@@ -345,13 +338,6 @@ impl DrawList {
   /// takes its entity's place among the entities' draws, where a trail or
   /// line follows every entity and sprite at its z. For the cameras on its
   /// layers that see its box; `lit` ones draw before lighting.
-  #[cfg_attr(
-    not(test),
-    expect(
-      dead_code,
-      reason = "skeletons' mesh attachments draw meshes; until they do, only tests push one"
-    )
-  )]
   pub(crate) fn push_mesh(&mut self, lit: bool, z: i32, mesh: DrawMesh) {
     let payload = DrawPayload::Mesh(self.meshes.len());
     self.meshes.push(mesh);

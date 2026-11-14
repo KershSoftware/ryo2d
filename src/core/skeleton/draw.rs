@@ -1,20 +1,31 @@
-//! Drawing a skeleton: where its entity puts it this frame, and the quads
-//! its slots' regions make there, its bones between their last two steps.
-//! The entity drawer (`render/entities.rs`) turns the quads into draw items.
+//! Drawing a skeleton: where its entity puts it this frame, and what its
+//! slots show there, its bones between their last two steps: a quad for
+//! each region, and each mesh's vertices skinned to the bones that hold
+//! them. The entity drawer (`render/entities.rs`) turns the parts into
+//! draw items.
+
+use std::ops::Range;
 
 use glam::{Affine2, Mat2, Vec2, Vec4};
 
-use super::attachment::{Attachment, RegionAttachment};
+use super::attachment::{Attachment, MeshAttachment, MeshVertices, RegionAttachment};
 use super::component::Skeleton;
-use super::data::{DataVersion, SkeletonData, SlotBlend};
+use super::data::{BoneId, DataVersion, SkeletonData, SlotBlend};
 use crate::core::asset::AssetId;
 use crate::core::ecs::interpolate::render_global;
 use crate::core::ecs::{GlobalTransform, PreviousGlobalTransform, YSort};
 use crate::core::graphics::Image;
+use crate::core::render::scratch::recycle;
 use crate::core::ui::Color;
 
 /// Below this, a bone's x axis has no direction to turn by
 const FLAT: f32 = 1e-6;
+
+#[cfg(test)]
+thread_local! {
+  /// How many times this thread's tests have asked where a bone draws
+  static BONES_DRAWN: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 
 /// Where a skeleton draws this frame
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -85,6 +96,8 @@ impl Skeleton {
   /// it: `between` of the way from where the step before the last left it
   /// to where the last one did, or where it is
   pub(crate) fn drawn_bone(&self, bone: usize, between: Option<f32>) -> Option<Affine2> {
+    #[cfg(test)]
+    BONES_DRAWN.with(|drawn| drawn.set(drawn.get() + 1));
     let now = self.pose.skeleton_space.get(bone)?;
     Some(match (between, self.previous_space.get(bone)) {
       (Some(t), Some(before)) => blend(before, now, t),
@@ -92,22 +105,25 @@ impl Skeleton {
     })
   }
 
-  /// Adds to `out` the regions the skeleton's slots show, back to front in
-  /// its draw order, each a quad under `root` (the skeleton's space to the
-  /// world) with its bone `between` its last two steps.
+  /// Fills `out` with what the skeleton's slots show, back to front in its
+  /// draw order, under `root` (the skeleton's space to the world) with its
+  /// bones `between` their last two steps: a region as a quad on its
+  /// slot's bone, and a mesh as its vertices where the bones that hold
+  /// them put them ([`Parts::vertices`]). What `out` held is forgotten.
   ///
   /// Nothing for a skeleton with no pose, or whose pose was made from
   /// another version of its data than `seen`, the one `data` is: its slots
   /// and bones are not this data's. A slot showing nothing, a point or a
   /// bounding box, or a name its skins lack, adds nothing
-  pub(crate) fn regions(
-    &self,
+  pub(crate) fn parts<'s>(
+    &'s self,
     data: &SkeletonData,
     seen: DataVersion,
     root: Affine2,
     between: Option<f32>,
-    out: &mut Vec<RegionQuad>,
+    out: &mut Parts<'s>,
   ) {
+    out.clear();
     if self.seen() != Some(seen) {
       return;
     }
@@ -117,28 +133,171 @@ impl Skeleton {
       let Some(name) = shown.and_then(Option::as_deref) else {
         continue;
       };
-      let Some(Attachment::Region(shown)) = self.skin_attachment(slot, name) else {
+      let Some(slot_data) = data.slots().get(slot.index()) else {
         continue;
       };
-      let (Some(region), Some(slot_data)) = (
-        data.regions().get(shown.region),
-        data.slots().get(slot.index()),
-      ) else {
-        continue;
-      };
-      let Some(bone) = self.drawn_bone(slot_data.bone.index(), between) else {
-        continue;
-      };
-      let slot_color = pose.slot_colors.get(slot.index());
-      out.push(RegionQuad {
-        image: region.image.id(),
-        rect: [region.x, region.y, region.width, region.height],
-        blend: slot_data.blend,
-        quad: root * bone * local_quad(shown),
-        color: tinted(slot_color.copied().unwrap_or(Vec4::ONE), shown.color),
-      });
+      let slot_color = || pose.slot_colors.get(slot.index()).copied();
+      match self.skin_attachment(slot, name) {
+        Some(Attachment::Region(shown)) => {
+          let Some(region) = data.regions().get(shown.region) else {
+            continue;
+          };
+          let Some(bone) = self.drawn_bone(slot_data.bone.index(), between) else {
+            continue;
+          };
+          out.list.push(Part::Region(RegionQuad {
+            image: region.image.id(),
+            rect: [region.x, region.y, region.width, region.height],
+            blend: slot_data.blend,
+            quad: root * bone * local_quad(shown),
+            color: tinted(slot_color().unwrap_or(Vec4::ONE), shown.color),
+          }));
+        }
+        Some(Attachment::Mesh(mesh)) => {
+          let Some(region) = data.regions().get(mesh.region) else {
+            continue;
+          };
+          let Some(vertices) = out.skin(self, mesh, slot_data.bone, root, between) else {
+            continue;
+          };
+          out.list.push(Part::Mesh(MeshPart {
+            image: region.image.id(),
+            rect: [region.x, region.y, region.width, region.height],
+            blend: slot_data.blend,
+            color: tinted(slot_color().unwrap_or(Vec4::ONE), mesh.color),
+            vertices,
+            mesh,
+          }));
+        }
+        _ => {}
+      }
     }
   }
+}
+
+/// What a skeleton draws in a frame: its parts back to front, and the
+/// buffers its meshes are skinned into. A drawer keeps one from frame to
+/// frame ([`Parts::recycle`]) and fills it for each skeleton in turn
+/// ([`Skeleton::parts`]), so a steady frame allocates nothing
+#[derive(Debug, Default)]
+pub(crate) struct Parts<'s> {
+  /// The regions and the meshes the slots show, in the draw order
+  pub(crate) list: Vec<Part<'s>>,
+  /// Every mesh's vertices where they draw, in the world: each mesh's are
+  /// a stretch of it
+  positions: Vec<Vec2>,
+  /// Each bone a mesh has used, as it draws in the world. A bone is
+  /// placed (blended between its last two steps, then put under the root)
+  /// once a skeleton, however many vertices it holds; `None` for one no
+  /// mesh has used yet
+  bones: Vec<Option<Affine2>>,
+}
+
+impl<'s> Parts<'s> {
+  /// The buffers, emptied, for skeletons borrowed for another lifetime:
+  /// kept as `Parts<'static>` between frames, their allocations are the
+  /// next frame's
+  pub(crate) fn recycle<'t>(self) -> Parts<'t> {
+    Parts {
+      list: recycle(self.list),
+      positions: self.positions,
+      bones: self.bones,
+    }
+  }
+
+  /// Where `mesh`'s vertices draw, in the world, in the order of its
+  /// attachment's vertices
+  pub(crate) fn vertices(&self, mesh: &MeshPart<'_>) -> &[Vec2] {
+    self.positions.get(mesh.vertices.clone()).unwrap_or(&[])
+  }
+
+  /// Forgets the last skeleton's parts, keeping the allocations
+  fn clear(&mut self) {
+    self.list.clear();
+    self.positions.clear();
+    self.bones.clear();
+  }
+
+  /// Skins `mesh`: adds each of its vertices where it draws, in the world,
+  /// and gives where they went in the positions.
+  ///
+  /// An unweighted vertex is a place in the space of `slot_bone`, the bone
+  /// of the slot that shows the mesh. A weighted vertex is the sum, over
+  /// its influences, of where each one's bone puts the place given in that
+  /// bone's space, times the influence's weight (the weights of a vertex
+  /// sum to 1 in data that built). The bones are `skeleton`'s as the frame
+  /// draws them, `between` their last two steps, under `root`.
+  ///
+  /// `None`, with nothing added, when the pose lacks a bone the mesh
+  /// names: a pose made for other data. A vertex can come out at no finite
+  /// place (a root or a bone that is not finite); the drawer draws no such
+  /// mesh
+  fn skin(
+    &mut self,
+    skeleton: &Skeleton,
+    mesh: &MeshAttachment,
+    slot_bone: BoneId,
+    root: Affine2,
+    between: Option<f32>,
+  ) -> Option<Range<usize>> {
+    let first = self.positions.len();
+    let whole = match &mesh.vertices {
+      MeshVertices::Unweighted(vertices) => {
+        self.placed(skeleton, slot_bone, root, between).map(|bone| {
+          let placed = vertices.iter().map(|&vertex| bone.transform_point2(vertex));
+          self.positions.extend(placed);
+        })
+      }
+      MeshVertices::Weighted(weighted) => weighted.each().try_for_each(|influences| {
+        let mut at = Vec2::ZERO;
+        for influence in influences {
+          let bone = self.placed(skeleton, influence.bone, root, between)?;
+          let held = Vec2::new(influence.x, influence.y);
+          at += bone.transform_point2(held) * influence.weight;
+        }
+        self.positions.push(at);
+        Some(())
+      }),
+    };
+    if whole.is_none() {
+      self.positions.truncate(first);
+      return None;
+    }
+    Some(first..self.positions.len())
+  }
+
+  /// Bone `bone` of `skeleton` as it draws in the world: `between` its
+  /// last two steps, under `root`. Worked out the first time a mesh of the
+  /// skeleton asks and kept for the rest of its meshes, so a bone that
+  /// holds a hundred vertices is blended once
+  fn placed(
+    &mut self,
+    skeleton: &Skeleton,
+    bone: BoneId,
+    root: Affine2,
+    between: Option<f32>,
+  ) -> Option<Affine2> {
+    let index = bone.index();
+    if let Some(Some(placed)) = self.bones.get(index) {
+      return Some(*placed);
+    }
+    let placed = root * skeleton.drawn_bone(index, between)?;
+    // The pose has the bone, so this grows to its bone count at most
+    if self.bones.len() <= index {
+      self.bones.resize(index + 1, None);
+    }
+    if let Some(kept) = self.bones.get_mut(index) {
+      *kept = Some(placed);
+    }
+    Some(placed)
+  }
+}
+
+/// One part of a skeleton as a frame draws it
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Part<'s> {
+  Region(RegionQuad),
+  Mesh(MeshPart<'s>),
 }
 
 /// One region as a skeleton draws it
@@ -164,6 +323,25 @@ impl RegionQuad {
     [(-0.5, -0.5), (0.5, -0.5), (0.5, 0.5), (-0.5, 0.5)]
       .map(|(x, y)| self.quad.transform_point2(Vec2::new(x, y)))
   }
+}
+
+/// One mesh as a skeleton draws it. Its vertices' places are in the
+/// [`Parts`] it was added to
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct MeshPart<'s> {
+  pub(crate) image: AssetId<Image>,
+  /// Its region's rectangle of the image, in pixels: left, top, width,
+  /// height. Its vertices' UVs run across it
+  pub(crate) rect: [u32; 4],
+  /// Its slot's blend
+  pub(crate) blend: SlotBlend,
+  /// The slot's colour times the attachment's: sRGB with straight alpha,
+  /// each within 0 to 1
+  pub(crate) color: [f32; 4],
+  /// Where its vertices are in the positions of its [`Parts`]
+  vertices: Range<usize>,
+  /// The attachment: a UV for each vertex, the triangles and the hull
+  pub(crate) mesh: &'s MeshAttachment,
 }
 
 /// A region attachment's quad in its bone's space: the unit quad scaled to
@@ -254,7 +432,8 @@ mod tests {
   use crate::core::ecs::{Renderable, Transform};
   use crate::core::skeleton::component::{Fired, Flip, Stand};
   use crate::core::skeleton::{
-    BoneOverride, BoneSetup, BoundingBoxAttachment, PointAttachment, Region, SlotSetup,
+    BoneOverride, BoneSetup, BoundingBoxAttachment, Influence, PointAttachment, Region, SlotSetup,
+    WeightedVertices,
   };
   use crate::testing::asset_world;
 
@@ -454,13 +633,23 @@ mod tests {
   /// A skeleton of [`rig`] stepped once where `stand` puts it, after `set`,
   /// with its data and the version its pose was made from
   fn posed(stand: Stand, set: impl FnOnce(&mut Skeleton)) -> (Skeleton, SkeletonData, DataVersion) {
+    posed_of(rig, stand, set)
+  }
+
+  /// A skeleton of the rig `build` makes, stepped once where `stand` puts
+  /// it, after `set`, with its data and the version its pose was made from
+  fn posed_of(
+    build: fn(&Handle<Image>) -> SkeletonData,
+    stand: Stand,
+    set: impl FnOnce(&mut Skeleton),
+  ) -> (Skeleton, SkeletonData, DataVersion) {
     let mut world = asset_world();
     let image = world
       .resource_mut::<Assets<Image>>()
       .add(Image::solid_rect(20, 8, 255, 255, 255, 255));
     let handle = world
       .resource_mut::<Assets<SkeletonData>>()
-      .add(rig(&image));
+      .add(build(&image));
     let assets = world.resource::<Assets<SkeletonData>>();
     let data = assets.get(&handle).expect("the data").clone();
     let seen = (handle.id(), assets.version(&handle).expect("a version"));
@@ -471,10 +660,23 @@ mod tests {
     (skeleton, data, seen)
   }
 
+  /// The regions a skeleton draws under `root`, back to front
+  fn quads_under(
+    (skeleton, data, seen): (&Skeleton, &SkeletonData, DataVersion),
+    root: Affine2,
+    between: Option<f32>,
+  ) -> Vec<RegionQuad> {
+    let mut parts = Parts::default();
+    skeleton.parts(data, seen, root, between, &mut parts);
+    let regions = parts.list.iter().filter_map(|part| match part {
+      Part::Region(quad) => Some(*quad),
+      Part::Mesh(_) => None,
+    });
+    regions.collect()
+  }
+
   fn quads(skeleton: &Skeleton, data: &SkeletonData, seen: DataVersion) -> Vec<RegionQuad> {
-    let mut out = Vec::new();
-    skeleton.regions(data, seen, Affine2::IDENTITY, None, &mut out);
-    out
+    quads_under((skeleton, data, seen), Affine2::IDENTITY, None)
   }
 
   #[test]
@@ -527,8 +729,7 @@ mod tests {
 
     // Under a root, every quad is carried by it
     let root = Affine2::from_scale_angle_translation(Vec2::splat(2.0), FRAC_PI_2, Vec2::X);
-    let mut carried = Vec::new();
-    skeleton.regions(&data, seen, root, None, &mut carried);
+    let carried = quads_under((&skeleton, &data, seen), root, None);
     assert!(carried[1].quad.abs_diff_eq(root * sleeve.quad, 1e-3));
   }
 
@@ -608,12 +809,295 @@ mod tests {
     same(arm(Some(0.5)), at(FRAC_PI_2 + FRAC_PI_4));
     // And its region with it: half way round, the sleeve's centre is where
     // the bone half way round puts it
-    let mut out = Vec::new();
-    skeleton.regions(&data, seen, Affine2::IDENTITY, Some(0.5), &mut out);
+    let out = quads_under((&skeleton, &data, seen), Affine2::IDENTITY, Some(0.5));
     let centre = at(FRAC_PI_2 + FRAC_PI_4).transform_point2(Vec2::new(6.0, 1.0));
     assert!(out[1].quad.translation.abs_diff_eq(centre, 1e-4));
     // The root did not move: its region is exactly where it is
     assert_eq!(out[0].quad, quads(&skeleton, &data, seen)[0].quad);
+  }
+
+  /// A rig for the mesh tests: a root, an arm at (10, 0) turned a quarter
+  /// turn, and a hand at (0, 20). Slots, back to front: "body" on the root
+  /// (a region), "sleeve" on the arm (a triangle of three unweighted
+  /// vertices, its slot and attachment coloured, adding light), "cape" on
+  /// the root (four vertices weighted over the arm and the hand) and
+  /// "badge" on the hand (a region)
+  fn mesh_rig(image: &Handle<Image>) -> SkeletonData {
+    let shown = |name: &str| SlotSetup {
+      attachment: Some(Arc::from(name)),
+      ..SlotSetup::default()
+    };
+    let region = |name: &str, x: u32, width: u32| Region {
+      name: Arc::from(name),
+      image: image.clone(),
+      x,
+      y: 2,
+      width,
+      height: 4,
+    };
+    let (arm, hand) = (BoneId(1), BoneId(2));
+    let held = Influence::new(hand, 2.0, 2.0, 1.0);
+    let sleeve = MeshAttachment {
+      color: Color::new(102, 255, 51, 204),
+      ..MeshAttachment::new(
+        1,
+        MeshVertices::Unweighted(vec![Vec2::ZERO, Vec2::new(4.0, 0.0), Vec2::new(0.0, 2.0)]),
+        vec![Vec2::ZERO, Vec2::X, Vec2::Y],
+        vec![0, 1, 2],
+      )
+    };
+    // The first vertex is three parts the arm's and one the hand's, the
+    // last half each; the two between are one bone's alone
+    let cape = MeshAttachment {
+      hull: 4,
+      ..MeshAttachment::new(
+        1,
+        MeshVertices::Weighted(WeightedVertices::new([
+          vec![Influence::new(arm, 4.0, 0.0, 3.0), held],
+          vec![held],
+          vec![Influence::new(arm, 0.0, 0.0, 1.0)],
+          vec![Influence::new(arm, 4.0, 0.0, 1.0), held],
+        ])),
+        vec![Vec2::ZERO, Vec2::X, Vec2::Y, Vec2::ONE],
+        vec![0, 1, 2, 1, 3, 2],
+      )
+    };
+    let skin = SkeletonData::DEFAULT_SKIN;
+    let part = || Attachment::Region(RegionAttachment::new(0, 8.0, 4.0));
+    SkeletonData::builder()
+      .bone("root", None, BoneSetup::default())
+      .bone(
+        "arm",
+        Some("root"),
+        BoneSetup {
+          x: 10.0,
+          rotation: FRAC_PI_2,
+          ..BoneSetup::default()
+        },
+      )
+      .bone(
+        "hand",
+        Some("root"),
+        BoneSetup {
+          y: 20.0,
+          ..BoneSetup::default()
+        },
+      )
+      .slot("body", "root", shown("body"))
+      .slot(
+        "sleeve",
+        "arm",
+        SlotSetup {
+          color: Color::new(255, 102, 51, 128),
+          blend: SlotBlend::Additive,
+          ..shown("sleeve")
+        },
+      )
+      .slot("cape", "root", shown("cape"))
+      .slot("badge", "hand", shown("badge"))
+      .region(region("body", 0, 8))
+      .region(region("cloth", 8, 12))
+      .attachment(skin, "body", "body", part())
+      .attachment(skin, "sleeve", "sleeve", Attachment::Mesh(sleeve))
+      .attachment(skin, "cape", "cape", Attachment::Mesh(cape))
+      .attachment(skin, "badge", "badge", part())
+      .build()
+      .expect("a valid skeleton")
+  }
+
+  /// What `parts` holds, in order: each region as `None`, each mesh as
+  /// where its vertices draw
+  fn meshes(parts: &Parts<'_>) -> Vec<Option<Vec<Vec2>>> {
+    let each = parts.list.iter().map(|part| match part {
+      Part::Region(_) => None,
+      Part::Mesh(mesh) => Some(parts.vertices(mesh).to_vec()),
+    });
+    each.collect()
+  }
+
+  fn near(actual: &[Vec2], expected: &[Vec2]) {
+    assert_eq!(actual.len(), expected.len(), "{actual:?}");
+    for (index, (got, want)) in actual.iter().zip(expected).enumerate() {
+      assert!(
+        got.abs_diff_eq(*want, 1e-4),
+        "vertex {index}: expected {want}, got {got}"
+      );
+    }
+  }
+
+  #[test]
+  fn meshes_and_regions_come_in_the_draw_order_each_mesh_skinned_to_its_bones() {
+    let (mut skeleton, data, seen) = posed_of(mesh_rig, Affine2::IDENTITY.into(), |_| {});
+    let mut parts = Parts::default();
+    skeleton.parts(&data, seen, Affine2::IDENTITY, None, &mut parts);
+    // A region, the two meshes, a region: one walk, in the slots' order
+    let drawn = meshes(&parts);
+    assert_eq!(drawn.len(), 4);
+    assert!(drawn[0].is_none() && drawn[3].is_none(), "{drawn:?}");
+    let (Some(sleeve), Some(cape)) = (&drawn[1], &drawn[2]) else {
+      panic!("the meshes are the second and third parts: {drawn:?}");
+    };
+    // The sleeve's vertices are in its slot's bone's space: the arm is at
+    // (10, 0) pointing down the screen (its x axis (0, 1), its y axis
+    // (-1, 0)), so (4, 0) is at (10, 4) and (0, 2) at (8, 0)
+    let corners = [(10.0, 0.0), (10.0, 4.0), (8.0, 0.0)];
+    near(sleeve, &corners.map(|(x, y)| Vec2::new(x, y)));
+    // Each of the cape's is the weighted sum of where its bones put it,
+    // each in its own space: the arm holds (4, 0) at (10, 4) and the hand,
+    // at (0, 20), holds (2, 2) at (2, 22). Three parts and one of those is
+    // (8, 8.5); half each is (6, 13). Its slot's bone, the root, plays no
+    // part
+    let corners = [(8.0, 8.5), (2.0, 22.0), (10.0, 0.0), (6.0, 13.0)];
+    near(cape, &corners.map(|(x, y)| Vec2::new(x, y)));
+
+    // What a mesh carries besides: its region's image and rectangle, its
+    // slot's blend, and its slot's colour times its attachment's
+    let (Part::Mesh(sleeve), Part::Mesh(cape)) = (&parts.list[1], &parts.list[2]) else {
+      panic!("the meshes are the second and third parts");
+    };
+    let Part::Region(body) = &parts.list[0] else {
+      panic!("the body is a region");
+    };
+    assert_eq!(sleeve.image, body.image);
+    assert_eq!((sleeve.rect, cape.rect), ([8, 2, 12, 4], [8, 2, 12, 4]));
+    assert_eq!(
+      (sleeve.blend, cape.blend),
+      (SlotBlend::Additive, SlotBlend::Normal)
+    );
+    let slot = [255.0, 102.0, 51.0, 128.0].map(|c: f32| c / 255.0);
+    let attachment = [102.0, 255.0, 51.0, 204.0].map(|c: f32| c / 255.0);
+    for c in 0..4 {
+      let want = slot[c] * attachment[c];
+      assert!((sleeve.color[c] - want).abs() < 1e-6, "component {c}");
+    }
+    assert_eq!(cape.color, [1.0; 4]);
+    assert_eq!((sleeve.mesh.hull, cape.mesh.hull), (0, 4));
+    assert_eq!(cape.mesh.triangles, [0, 1, 2, 1, 3, 2]);
+
+    // Under a root every vertex is carried by it
+    let root = Affine2::from_scale_angle_translation(Vec2::splat(2.0), FRAC_PI_2, Vec2::X);
+    let mut carried = Parts::default();
+    skeleton.parts(&data, seen, root, None, &mut carried);
+    let under = meshes(&carried);
+    let (Some(moved), Some(folded)) = (&under[1], &under[2]) else {
+      panic!("the meshes are the second and third parts: {under:?}");
+    };
+    let carry = |vertices: &[Vec2]| -> Vec<Vec2> {
+      let each = vertices.iter().map(|&at| root.transform_point2(at));
+      each.collect()
+    };
+    near(moved, &carry(sleeve_at(&parts)));
+    near(folded, &carry(parts.vertices(cape)));
+
+    // The pose's draw order is the order walked, and a slot the game hides
+    // adds nothing
+    skeleton.pose.draw_order.swap(0, 2);
+    skeleton.pose.slot_attachments[1] = None;
+    let mut reordered = Parts::default();
+    skeleton.parts(&data, seen, Affine2::IDENTITY, None, &mut reordered);
+    let kinds: Vec<bool> = meshes(&reordered).iter().map(Option::is_some).collect();
+    assert_eq!(kinds, [true, false, false], "the cape, the body, the badge");
+  }
+
+  /// Where the sleeve of a walked [`mesh_rig`] draws
+  fn sleeve_at<'p>(parts: &'p Parts<'_>) -> &'p [Vec2] {
+    match &parts.list[1] {
+      Part::Mesh(sleeve) => parts.vertices(sleeve),
+      Part::Region(_) => panic!("the sleeve is the second part"),
+    }
+  }
+
+  #[test]
+  fn each_bone_a_mesh_uses_is_placed_once_a_skeleton() {
+    let (mut skeleton, data, seen) = posed_of(mesh_rig, Affine2::IDENTITY.into(), |_| {});
+    turn_arm(&mut skeleton, &data, seen, PI);
+    let drawn = || BONES_DRAWN.with(std::cell::Cell::get);
+    let mut parts = Parts::default();
+    let before = drawn();
+    skeleton.parts(&data, seen, Affine2::IDENTITY, Some(0.5), &mut parts);
+    // Each region asks for its slot's bone. The meshes between them use
+    // the arm (the sleeve's three vertices, three of the cape's) and the
+    // hand (three of the cape's): each is blended between its last two
+    // steps once, not once for each vertex it holds
+    assert_eq!(drawn() - before, 2 + 2, "two regions, and two bones");
+    // And the vertices are where the blended bones put them: the arm half
+    // way from a quarter turn to a half turn
+    let arm = turned(FRAC_PI_2 + FRAC_PI_4, Vec2::ONE, Vec2::new(10.0, 0.0));
+    let corners = [Vec2::ZERO, Vec2::new(4.0, 0.0), Vec2::new(0.0, 2.0)];
+    near(
+      sleeve_at(&parts),
+      &corners.map(|at| arm.transform_point2(at)),
+    );
+
+    // The next skeleton's bones are its own: nothing is kept from the last
+    // walk but the buffers' room
+    let root = Affine2::from_translation(Vec2::new(100.0, 0.0));
+    let before = drawn();
+    skeleton.parts(&data, seen, root, None, &mut parts);
+    assert_eq!(drawn() - before, 2 + 2);
+    let arm = root * turned(PI, Vec2::ONE, Vec2::new(10.0, 0.0));
+    near(
+      sleeve_at(&parts),
+      &corners.map(|at| arm.transform_point2(at)),
+    );
+    assert_eq!(parts.list.len(), 4, "and its parts alone");
+  }
+
+  #[test]
+  fn walking_a_skeleton_again_takes_no_more_room() {
+    let (skeleton, data, seen) = posed_of(mesh_rig, Affine2::IDENTITY.into(), |_| {});
+    let mut parts = Parts::default();
+    skeleton.parts(&data, seen, Affine2::IDENTITY, None, &mut parts);
+    let room = |parts: &Parts<'_>| {
+      (
+        (parts.list.as_ptr() as usize, parts.list.capacity()),
+        (
+          parts.positions.as_ptr() as usize,
+          parts.positions.capacity(),
+        ),
+        (parts.bones.as_ptr() as usize, parts.bones.capacity()),
+      )
+    };
+    let first = room(&parts);
+    // Kept between frames for skeletons borrowed afresh, the buffers are
+    // the same ones, emptied of the last frame's parts
+    let mut parts: Parts<'_> = parts.recycle();
+    assert!(parts.list.is_empty());
+    assert_eq!(room(&parts), first);
+    for _ in 0..3 {
+      skeleton.parts(&data, seen, Affine2::IDENTITY, None, &mut parts);
+      assert_eq!(room(&parts), first);
+    }
+    assert_eq!(parts.positions.len(), 3 + 4, "one skeleton's vertices");
+  }
+
+  #[test]
+  fn a_mesh_that_cannot_be_placed_is_left_out_and_nothing_panics() {
+    let (mut skeleton, data, seen) = posed_of(mesh_rig, Affine2::IDENTITY.into(), |_| {});
+    // Under a root no number describes, every vertex is walked all the
+    // same, to a place that is not finite: the drawer refuses such a mesh
+    for scale in [f32::NAN, f32::INFINITY, f32::MAX] {
+      let root = Affine2::from_scale(Vec2::splat(scale));
+      let mut parts = Parts::default();
+      skeleton.parts(&data, seen, root, Some(0.5), &mut parts);
+      let cape = meshes(&parts)[2].clone().expect("the cape");
+      assert_eq!(cape.len(), 4);
+      assert!(!cape[1].is_finite(), "scaled by {scale}: {:?}", cape[1]);
+    }
+    // A pose with fewer bones than a mesh's influences name (which only a
+    // pose made for other data could be): the mesh is left out whole, and
+    // the vertices added for it taken back
+    skeleton.pose.skeleton_space.truncate(2);
+    let mut parts = Parts::default();
+    skeleton.parts(&data, seen, Affine2::IDENTITY, None, &mut parts);
+    let kinds: Vec<bool> = meshes(&parts).iter().map(Option::is_some).collect();
+    assert_eq!(kinds, [false, true], "the body and the sleeve");
+    assert_eq!(parts.positions.len(), 3, "the sleeve's vertices alone");
+    // With no pose for the data nothing is walked, and what the buffers
+    // held of the last skeleton is forgotten
+    let newer = (seen.0, seen.1 + 1);
+    skeleton.parts(&data, newer, Affine2::IDENTITY, None, &mut parts);
+    assert!(parts.list.is_empty() && parts.positions.is_empty());
   }
 
   /// An entity at `global`, which was at `previous` a step ago

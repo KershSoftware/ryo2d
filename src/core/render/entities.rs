@@ -22,10 +22,11 @@
 //! target's size; the camera drawing into that target skips it.
 //!
 //! A renderable drawing its entity's skeleton (`RenderStyle::Skeleton`) is
-//! one drawable like any other: it sorts as a sprite does, and emits the
-//! regions its slots show, back to front in the skeleton's draw order,
-//! each stretch of one image and blend as one run item
-//! ([`DrawList::push_run_as`]), after its shadows.
+//! one drawable like any other: it sorts as a sprite does, and emits what
+//! its slots show, back to front in the skeleton's draw order, after its
+//! shadows: each stretch of regions of one image and blend as one run
+//! item ([`DrawList::push_run_as`]), and each mesh between them as an
+//! item of its own.
 //!
 //! A mesh an entity draws (`Emitter::draw_mesh`) is an entity item too:
 //! its triangles join the frame's mesh stream and take their entity's
@@ -62,7 +63,7 @@ use crate::core::graphics::{
   SpriteInstance, TextureId, images_of,
 };
 use crate::core::skeleton::{
-  Carrier, RegionQuad, Skeleton, SkeletonData, SkeletonStore, SlotBlend,
+  Carrier, MeshPart, Part, Parts, Skeleton, SkeletonData, SkeletonStore, SlotBlend,
 };
 use crate::core::ui::Color;
 use glam::Affine2;
@@ -235,8 +236,9 @@ pub(crate) struct EntityDrawer {
   /// The frame's drawables in order (empty between frames; its allocation
   /// is reused)
   items: Vec<(DrawOrder, Drawable<'static>)>,
-  /// The regions of the skeleton being drawn (its allocation is reused)
-  quads: Vec<RegionQuad>,
+  /// What the skeleton being drawn shows, and the buffers its meshes are
+  /// skinned into (empty between frames; the allocations are reused)
+  parts: Parts<'static>,
   /// Whether the log was told that a mesh draws plain under an effect that
   /// grows a quad
   warned_grown: bool,
@@ -292,6 +294,7 @@ impl EntityDrawer {
       targets: world.get_resource::<RenderTargets>(),
       images,
       shaders: shaders_of(world),
+      entity: Entity::PLACEHOLDER,
       layers: RenderLayers::default(),
       shows: None,
       filter: Filter::Default,
@@ -301,7 +304,7 @@ impl EntityDrawer {
       skeleton_step: world
         .get_resource::<SkeletonStore>()
         .map(SkeletonStore::step),
-      quads: &mut self.quads,
+      parts: std::mem::take(&mut self.parts).recycle(),
     };
     let mut ordered = ordered.iter().peekable();
     for (order, drawable) in &items {
@@ -321,14 +324,14 @@ impl EntityDrawer {
           drawable.entity
         );
       }
+      out.entity = drawable.entity;
       out.layers = drawable.layers;
       out.shows = shows;
       out.filter = drawable.renderable.filter;
       out.lit = drawable.renderable.lighting;
       // A test's mesh draws in its entity's place
       #[cfg(test)]
-      if let Some(probe) = world.get::<MeshProbe>(drawable.entity) {
-        probe.draw(&frame, drawable, &mut out);
+      if mesh_probe::draw(world, &frame, drawable, &mut out) {
         continue;
       }
       collect_entity(&frame, drawable, &mut out);
@@ -346,6 +349,7 @@ impl EntityDrawer {
     }
     let count = items.len();
     self.items = recycle(items);
+    self.parts = out.parts.recycle();
     count
   }
 }
@@ -568,23 +572,9 @@ struct Emitter<'a> {
   queue: &'a wgpu::Queue,
   list: &'a mut DrawList,
   /// The frame's mesh stream, which an entity's meshes join
-  #[cfg_attr(
-    not(test),
-    expect(
-      dead_code,
-      reason = "skeletons' mesh attachments draw meshes; until they do, only tests draw one"
-    )
-  )]
   meshes: &'a mut MeshStream,
   /// Whether the log was told that a mesh draws plain under an effect that
   /// grows a quad (kept across frames: told once)
-  #[cfg_attr(
-    not(test),
-    expect(
-      dead_code,
-      reason = "skeletons' mesh attachments draw meshes; until they do, only tests draw one"
-    )
-  )]
   warned_grown: &'a mut bool,
   /// Quads none of these cameras on `layers` can see are skipped (and
   /// never uploaded)
@@ -595,7 +585,8 @@ struct Emitter<'a> {
   images: &'a Assets<Image>,
   /// The game shaders they draw with
   shaders: &'a Assets<Shader>,
-  /// The layers of the entity being drawn, and the render target it shows
+  /// The entity being drawn, its layers, and the render target it shows
+  entity: Entity,
   layers: RenderLayers,
   shows: Option<RenderTarget>,
   /// The entity's filter, and whether it is lit (its shadows follow it)
@@ -606,8 +597,8 @@ struct Emitter<'a> {
   /// The skeletons' data, and the number of their last fixed step
   rigs: Option<&'a Assets<SkeletonData>>,
   skeleton_step: Option<u64>,
-  /// The regions of the skeleton being drawn (scratch, kept across frames)
-  quads: &'a mut Vec<RegionQuad>,
+  /// What the skeleton being drawn shows (scratch, kept across frames)
+  parts: Parts<'a>,
 }
 
 impl<'a> Emitter<'a> {
@@ -740,12 +731,32 @@ struct RunQuad {
   tint: [f32; 4],
 }
 
-/// How every quad of a skeleton's runs is drawn
+/// One mesh of a skeleton as it is drawn: how it blends, its tint (the
+/// sRGB colour with straight alpha), and its vertices where they draw
+struct RunMesh<'p> {
+  blend: BlendMode,
+  tint: [f32; 4],
+  /// Its image, the rectangle of it its UVs run across, and its
+  /// attachment: a UV for each vertex and the triangles
+  part: &'p MeshPart<'p>,
+  /// Where its vertices draw, in the world
+  positions: &'p [Vec2],
+  /// What moves every vertex from there (a drop shadow's cast)
+  cast: Option<Affine2>,
+}
+
+/// One part of a skeleton as it is drawn, in the skeleton's draw order
+enum RunPart<'p> {
+  Quad(RunQuad),
+  Mesh(RunMesh<'p>),
+}
+
+/// How every part of a skeleton is drawn
 #[derive(Clone, Copy)]
 struct RunLook<'a> {
-  /// A built-in effect on every quad
+  /// A built-in effect on every part
   effect: Option<&'a SpriteEffect>,
-  /// A game shader and its parameters on every quad (instead of `effect`)
+  /// A game shader and its parameters on every part (instead of `effect`)
   custom: Option<(AssetId<Shader>, &'a ShaderParams)>,
   emission: f32,
 }
@@ -806,19 +817,31 @@ struct OpenRun<'i> {
 }
 
 impl<'a> Emitter<'a> {
-  /// Draw a skeleton's `quads`, in order, as entity items at `z`: each
+  /// Draw a skeleton's `parts`, in order, as entity items at `z`: each
   /// stretch of quads that share an image and a blend is one run, so a
-  /// skeleton drawn from one atlas is one item. A run no camera on the
-  /// entity's layers can see is not pushed (and its image never uploaded);
-  /// an image that draws nothing (not loaded, in a release build) leaves
-  /// its quads out, as does a quad that is not finite or has no alpha.
+  /// skeleton of regions drawn from one atlas is one item; and each mesh is
+  /// an item of its own where it comes ([`draw_skinned`](Self::draw_skinned)),
+  /// which ends the run before it, the quads after it starting another. A
+  /// run no camera on the entity's layers can see is not pushed (and its
+  /// image never uploaded); an image that draws nothing (not loaded, in a
+  /// release build) leaves its quads out, as does a quad that is not
+  /// finite or has no alpha.
   ///
   /// With a game shader each quad is a sprite item of its own instead, as
   /// an entity's sprite is: a run is shaded plain or by a built-in effect.
-  fn draw_runs(&mut self, z: i32, quads: impl Iterator<Item = RunQuad>, look: RunLook<'_>) {
+  /// A mesh takes the shader in its own item, as it takes an effect.
+  fn draw_parts<'p>(
+    &mut self,
+    z: i32,
+    parts: impl Iterator<Item = RunPart<'p>>,
+    look: RunLook<'_>,
+  ) {
     if let Some(custom) = look.custom {
-      for quad in quads {
-        self.draw_shaded(z, &quad, custom, look.emission);
+      for part in parts {
+        match part {
+          RunPart::Quad(quad) => self.draw_shaded(z, &quad, custom, look.emission),
+          RunPart::Mesh(mesh) => self.draw_skinned(z, &mesh, look),
+        }
       }
       return;
     }
@@ -830,7 +853,18 @@ impl<'a> Emitter<'a> {
       None => SpriteShading::Plain,
     };
     let mut open: Option<OpenRun<'a>> = None;
-    for quad in quads {
+    for part in parts {
+      let quad = match part {
+        RunPart::Quad(quad) => quad,
+        RunPart::Mesh(mesh) => {
+          // A mesh draws between the quads before it and those after it
+          if let Some(run) = open.take() {
+            self.push_run(z, run, shading);
+          }
+          self.draw_skinned(z, &mesh, look);
+          continue;
+        }
+      };
       if !quad.shows() {
         continue;
       }
@@ -869,6 +903,35 @@ impl<'a> Emitter<'a> {
     if let Some(run) = open {
       self.push_run(z, run, shading);
     }
+  }
+
+  /// Draw one mesh of a skeleton, skinned, as an entity item at `z`: its
+  /// vertices where its bones put them (moved by its `cast`, for a
+  /// shadow), each with its UV across its region's rectangle, shaded as
+  /// `look` says ([`draw_mesh`](Self::draw_mesh)). Its culling box is its
+  /// skinned vertices'
+  fn draw_skinned(&mut self, z: i32, mesh: &RunMesh<'_>, look: RunLook<'_>) {
+    let MeshPart {
+      image,
+      rect,
+      mesh: shown,
+      ..
+    } = *mesh.part;
+    let look = MeshLook {
+      image,
+      rect,
+      blend: mesh.blend,
+      tint: mesh.tint,
+      shading: look,
+    };
+    let cast = mesh.cast;
+    let placed = mesh.positions.iter().zip(&shown.uvs);
+    let vertices = placed.map(|(&at, &uv)| {
+      let at = cast.map_or(at, |cast| cast.transform_point2(at));
+      (at, uv)
+    });
+    let corners = shown.triangles.iter().map(|&corner| u32::from(corner));
+    self.draw_mesh(z, &look, vertices, corners);
   }
 
   /// Draw one quad of a skeleton through a game shader, as an entity's
@@ -954,13 +1017,6 @@ impl<'a> Emitter<'a> {
 /// shows a rectangle of, how it blends, its tint (the sRGB colour with
 /// straight alpha, as a run's quad's), and the effect or game shader on it
 /// and its emission, as its entity's runs take them
-#[cfg_attr(
-  not(test),
-  expect(
-    dead_code,
-    reason = "skeletons' mesh attachments draw meshes; until they do, only tests draw one"
-  )
-)]
 #[derive(Clone, Copy)]
 struct MeshLook<'a> {
   image: AssetId<Image>,
@@ -997,13 +1053,6 @@ impl<'a> Emitter<'a> {
   /// image draws nothing (not loaded, in a release build). An image that
   /// is not loaded shows the checker over the whole mesh in a debug build,
   /// as a run's quad does.
-  #[cfg_attr(
-    not(test),
-    expect(
-      dead_code,
-      reason = "skeletons' mesh attachments draw meshes; until they do, only tests draw one"
-    )
-  )]
   fn draw_mesh(
     &mut self,
     z: i32,
@@ -1044,8 +1093,9 @@ impl<'a> Emitter<'a> {
           // Only a quad can grow to hold what the effect draws round it
           if !std::mem::replace(self.warned_grown, true) {
             log::warn!(
-              "a mesh draws plain under an effect that grows its sprite (an outline, a glow or \
-               a directional outline): only a quad grows"
+              "{:?}: a mesh draws plain under an effect that grows its sprite (an outline, a \
+               glow or a directional outline): only a quad grows",
+              self.entity
             );
           }
           SpriteShading::Plain
@@ -1083,66 +1133,6 @@ impl<'a> Emitter<'a> {
   }
 }
 
-/// A mesh a test draws where its entity's sprite would be: its entity's
-/// `Renderable` gives the image, tint, alpha, blend, emission, z, filter
-/// and lit flag, and its sprite shader (its `Material`'s first), as a
-/// sprite's does (tests: nothing public draws a mesh of a caller's own
-/// making)
-#[cfg(test)]
-#[derive(crate::core::ecs::Component, Clone, Debug)]
-pub(crate) struct MeshProbe {
-  /// The rectangle of the image the mesh's UVs run over, in texels: x, y,
-  /// width and height
-  pub(crate) rect: [u32; 4],
-  /// Each vertex: where it is from the entity's position, in world units,
-  /// and its UV as a fraction of `rect`
-  pub(crate) vertices: Vec<(Vec2, Vec2)>,
-  /// Three a triangle, into `vertices`
-  pub(crate) indices: Vec<u32>,
-}
-
-#[cfg(test)]
-impl MeshProbe {
-  /// Draws the mesh at `drawable`'s place among the entities' draws
-  fn draw(&self, frame: &EntityFrame, drawable: &Drawable<'_>, out: &mut Emitter<'_>) {
-    let Drawable {
-      renderable,
-      global,
-      previous,
-      material,
-      lift,
-      ..
-    } = *drawable;
-    let at = render_global(global, previous, frame.alpha).translation() + lift;
-    let (effect, custom) = match effective_shader(material, renderable.shader.as_ref()) {
-      Some(SpriteShader::BuiltIn(effect)) => (Some(effect), None),
-      Some(SpriteShader::Custom { shader, params }) => (None, Some((shader.id(), params))),
-      None => (None, None),
-    };
-    let look = MeshLook {
-      image: renderable.image.id(),
-      rect: self.rect,
-      blend: renderable.blend,
-      // The lane a sprite's instance carries its tint in
-      tint: SpriteInstance::new()
-        .with_tint(renderable.tint, renderable.alpha)
-        .tint,
-      shading: RunLook {
-        effect,
-        custom,
-        emission: renderable.emission,
-      },
-    };
-    let vertices = self.vertices.iter().map(|&(offset, uv)| (at + offset, uv));
-    out.draw_mesh(
-      renderable.z_order,
-      &look,
-      vertices,
-      self.indices.iter().copied(),
-    );
-  }
-}
-
 /// Where the first tile of a run starts, relative to the entity, for the
 /// direction (Up and Left grow backwards).
 fn tile_start(direction: TileDirection, tile_count: u32, tile_size: f32) -> (f32, f32) {
@@ -1153,8 +1143,9 @@ fn tile_start(direction: TileDirection, tile_count: u32, tile_size: f32) -> (f32
   }
 }
 
-/// One renderable entity: its shadows, then its sprite or tiles.
-fn collect_entity(frame: &EntityFrame, drawable: &Drawable<'_>, out: &mut Emitter<'_>) {
+/// One renderable entity: its shadows, then its sprite, its tiles or its
+/// skeleton's parts.
+fn collect_entity<'w>(frame: &EntityFrame, drawable: &Drawable<'w>, out: &mut Emitter<'w>) {
   let Drawable {
     renderable,
     global,
@@ -1351,28 +1342,32 @@ fn ground_shadows(renderable: &Renderable, position: Vec2, out: &mut Emitter<'_>
   }
 }
 
-/// A skeleton entity: its regions' drop shadows, its blob and contact
-/// shadows, then its regions back to front in the skeleton's draw order,
-/// all at the entity's place among the entities' draws.
+/// A skeleton entity: its parts' drop shadows, its blob and contact
+/// shadows, then its parts back to front in the skeleton's draw order, all
+/// at the entity's place among the entities' draws. A part is a region, a
+/// quad on its bone, or a mesh, triangles skinned to the bones that hold
+/// their vertices; the two are walked once, in order
+/// ([`Skeleton::parts`]).
 ///
 /// The skeleton is where its entity draws, as a sprite is
 /// ([`Skeleton::drawn`]): interpolated, lifted on a floor, scaled with its
 /// depth, and mirrored about the entity's origin by the renderable's
-/// flips. Each region's colour is its slot's times its attachment's times
+/// flips. Each part's colour is its slot's times its attachment's times
 /// the renderable's tint, and its alpha those three's times the
 /// renderable's; its blend is its slot's, a slot that blends normally
 /// taking the renderable's. The renderable's emission and sprite shader
 /// (a built-in effect or a game's own, its `Material`'s first) apply to
-/// each region on its own: a flash tints every part, an outline outlines
-/// each part.
+/// each part on its own: a flash tints every part, an outline outlines
+/// each region. An effect that grows its sprite's quad (an outline, a
+/// glow) leaves a mesh plain: a mesh has its own shape.
 ///
-/// The drop shadow is each region's own silhouette, moved by the shadow's
+/// The drop shadow is each part's own silhouette, moved by the shadow's
 /// offset and scaled about where the skeleton stands in its entity's
 /// turned axes (a sprite's is scaled from its box's corner; a skeleton has
 /// no box, and its pose's bounds move with every step). Every shadow is
-/// under every region. The blob and contact shadows are a sprite's: under
+/// under every part. The blob and contact shadows are a sprite's: under
 /// where the entity draws.
-fn collect_skeleton(frame: &EntityFrame, drawable: &Drawable<'_>, out: &mut Emitter<'_>) {
+fn collect_skeleton<'w>(frame: &EntityFrame, drawable: &Drawable<'w>, out: &mut Emitter<'w>) {
   let Drawable {
     renderable,
     global,
@@ -1404,9 +1399,8 @@ fn collect_skeleton(frame: &EntityFrame, drawable: &Drawable<'_>, out: &mut Emit
     y_sort,
   };
   let drawn = skeleton.drawn(&carrier, frame.alpha, out.skeleton_step);
-  let mut quads = std::mem::take(out.quads);
-  quads.clear();
-  skeleton.regions(data, (id, version), drawn.root, drawn.between, &mut quads);
+  let mut parts = std::mem::take(&mut out.parts);
+  skeleton.parts(data, (id, version), drawn.root, drawn.between, &mut parts);
 
   if let Some(shadow) = &renderable.drop_shadow {
     let color = shadow.color;
@@ -1422,28 +1416,37 @@ fn collect_skeleton(frame: &EntityFrame, drawable: &Drawable<'_>, out: &mut Emit
         * Affine2::from_angle(-drawn.rotation)
         * Affine2::from_translation(-drawn.position)
     };
-    let shadows = quads.iter().map(|quad| RunQuad {
-      image: quad.image,
-      rect: quad.rect,
-      // Shadows blend over what is below whatever their region's blend
-      blend: BlendMode::Alpha,
-      quad: cast * quad.quad,
-      // A region faded out by its slot or attachment casts less
-      tint: [r, g, b, strength * quad.color[3]],
+    // Shadows blend over what is below whatever their part's blend, and a
+    // part faded out by its slot or attachment casts less
+    let shadows = parts.list.iter().map(|part| match part {
+      Part::Region(quad) => RunPart::Quad(RunQuad {
+        image: quad.image,
+        rect: quad.rect,
+        blend: BlendMode::Alpha,
+        quad: cast * quad.quad,
+        tint: [r, g, b, strength * quad.color[3]],
+      }),
+      Part::Mesh(mesh) => RunPart::Mesh(RunMesh {
+        blend: BlendMode::Alpha,
+        tint: [r, g, b, strength * mesh.color[3]],
+        part: mesh,
+        positions: parts.vertices(mesh),
+        cast: Some(cast),
+      }),
     });
     let plain = RunLook {
       effect: None,
       custom: None,
       emission: 1.0,
     };
-    out.draw_runs(z, shadows, plain);
+    out.draw_parts(z, shadows, plain);
   }
 
   ground_shadows(renderable, drawn.position, out);
 
   // A Material component wins over the inline shader. Either kind is each
-  // region's own: a built-in effect on every quad of a run, a game shader
-  // on a sprite item a quad
+  // part's own: a built-in effect on every quad of a run and on a mesh, a
+  // game shader on a sprite item a quad and on a mesh
   let (effect, custom) = match effective_shader(material, renderable.shader.as_ref()) {
     Some(SpriteShader::BuiltIn(effect)) => (Some(effect), None),
     Some(SpriteShader::Custom { shader, params }) => (None, Some((shader.id(), params))),
@@ -1451,30 +1454,43 @@ fn collect_skeleton(frame: &EntityFrame, drawable: &Drawable<'_>, out: &mut Emit
   };
   let tint = renderable.tint;
   let tint = [tint.r, tint.g, tint.b, tint.a].map(|c| c as f32 / 255.0);
-  let regions = quads.iter().map(|quad| RunQuad {
-    image: quad.image,
-    rect: quad.rect,
-    blend: match quad.blend {
-      SlotBlend::Normal => renderable.blend,
-      SlotBlend::Additive => BlendMode::Additive,
-      SlotBlend::Multiply => BlendMode::Multiply,
-      SlotBlend::Screen => BlendMode::Screen,
-    },
-    quad: quad.quad,
-    tint: [
-      quad.color[0] * tint[0],
-      quad.color[1] * tint[1],
-      quad.color[2] * tint[2],
-      quad.color[3] * tint[3] * alpha,
-    ],
+  let tinted = |color: [f32; 4]| {
+    [
+      color[0] * tint[0],
+      color[1] * tint[1],
+      color[2] * tint[2],
+      color[3] * tint[3] * alpha,
+    ]
+  };
+  let blended = |blend: SlotBlend| match blend {
+    SlotBlend::Normal => renderable.blend,
+    SlotBlend::Additive => BlendMode::Additive,
+    SlotBlend::Multiply => BlendMode::Multiply,
+    SlotBlend::Screen => BlendMode::Screen,
+  };
+  let body = parts.list.iter().map(|part| match part {
+    Part::Region(quad) => RunPart::Quad(RunQuad {
+      image: quad.image,
+      rect: quad.rect,
+      blend: blended(quad.blend),
+      quad: quad.quad,
+      tint: tinted(quad.color),
+    }),
+    Part::Mesh(mesh) => RunPart::Mesh(RunMesh {
+      blend: blended(mesh.blend),
+      tint: tinted(mesh.color),
+      part: mesh,
+      positions: parts.vertices(mesh),
+      cast: None,
+    }),
   });
   let look = RunLook {
     effect,
     custom,
     emission: renderable.emission,
   };
-  out.draw_runs(z, regions, look);
-  *out.quads = quads;
+  out.draw_parts(z, body, look);
+  out.parts = parts;
 }
 
 /// A multi-part tile: static parts once, tiled parts repeated, each part at
@@ -1564,6 +1580,11 @@ fn y_sort_key(
   let (_, pivot_y) = renderable.anchor.to_pivot();
   y_sort.calculate_sort_y(y - pivot_y * height, height)
 }
+
+#[cfg(test)]
+mod mesh_probe;
+#[cfg(test)]
+pub(crate) use mesh_probe::MeshProbe;
 
 #[cfg(test)]
 mod draw_order_tests {

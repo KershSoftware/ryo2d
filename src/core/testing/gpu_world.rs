@@ -1830,6 +1830,173 @@ fn banded_skeleton(world: &mut World) -> Handle<SkeletonData> {
   world.resource_mut::<Assets<SkeletonData>>().add(data)
 }
 
+/// A skeleton whose six slots, back to front, show: two regions of one
+/// image, a mesh of it, a third region of it, then a mesh and a region of
+/// another image. Each part is 8 px square, 10 px right of the one before
+fn meshed_skeleton(world: &mut World) -> Handle<SkeletonData> {
+  use crate::core::skeleton::{Attachment, MeshAttachment, MeshVertices, Region, RegionAttachment};
+  use std::sync::Arc;
+  let mut images = world.resource_mut::<Assets<Image>>();
+  let first = images.add(Image::solid_rect(8, 8, 220, 30, 40, 255));
+  let second = images.add(Image::solid_rect(8, 8, 40, 200, 60, 255));
+  let region = |name: &str, image: Handle<Image>| Region {
+    name: Arc::from(name),
+    image,
+    x: 0,
+    y: 0,
+    width: 8,
+    height: 8,
+  };
+  let slots = [
+    ("a", 0, false),
+    ("b", 0, false),
+    ("m", 0, true),
+    ("c", 0, false),
+    ("n", 1, true),
+    ("e", 1, false),
+  ];
+  let mut builder = SkeletonData::builder()
+    .bone("root", None, BoneSetup::default())
+    .region(region("first", first))
+    .region(region("second", second));
+  for (index, (name, region, mesh)) in slots.into_iter().enumerate() {
+    let setup = SlotSetup {
+      attachment: Some(Arc::from(name)),
+      ..SlotSetup::default()
+    };
+    let x = index as f32 * 10.0;
+    let shown = if mesh {
+      let corners = [(-4.0, -4.0), (4.0, -4.0), (-4.0, 4.0), (4.0, 4.0)];
+      let corners = corners.map(|(dx, dy)| Vec2::new(x + dx, dy)).to_vec();
+      Attachment::Mesh(MeshAttachment::new(
+        region,
+        MeshVertices::Unweighted(corners),
+        vec![Vec2::ZERO, Vec2::X, Vec2::Y, Vec2::ONE],
+        vec![0, 1, 2, 1, 3, 2],
+      ))
+    } else {
+      Attachment::Region(RegionAttachment {
+        x,
+        ..RegionAttachment::new(region, 8.0, 8.0)
+      })
+    };
+    builder =
+      builder
+        .slot(name, "root", setup)
+        .attachment(SkeletonData::DEFAULT_SKIN, name, name, shown);
+  }
+  let data = builder.build().expect("a valid skeleton");
+  world.resource_mut::<Assets<SkeletonData>>().add(data)
+}
+
+#[test]
+fn a_skeleton_s_mesh_is_an_item_between_the_runs_of_its_regions() {
+  use crate::core::render::{DrawKind, DrawPayload};
+  let scene = Fixture { setup: |_| {} };
+  let Some(mut engine) = engine(EngineBuilder::new().resolution(120, 90).start_scene(scene)) else {
+    return;
+  };
+  // A skeleton far out of view, then a sprite, the skeleton and another
+  // sprite in entity order at one z
+  let world = engine.world_mut();
+  let data = meshed_skeleton(world);
+  let stand = |world: &mut World, x: f32| {
+    let at = Transform::from_xy(x, 30.0);
+    let skeleton = Skeleton::new(data.clone());
+    world.spawn((at, skeleton, Renderable::skeleton())).id()
+  };
+  stand(world, 5000.0);
+  let plain = world
+    .resource_mut::<Assets<Image>>()
+    .add(Image::solid_rect(4, 4, 255, 255, 255, 255));
+  let sprite = |world: &mut World| {
+    world.spawn((
+      Transform::from_xy(20.0, 60.0),
+      Renderable::image(plain.clone()),
+    ));
+  };
+  sprite(world);
+  let hero = stand(world, 30.0);
+  sprite(world);
+  engine.step_frames(2).unwrap();
+
+  /// What an item is: a run of so many quads, or a mesh over these
+  /// indices of the frame's mesh stream
+  #[derive(Debug, PartialEq)]
+  enum Drawn {
+    Sprite,
+    Run(usize),
+    Mesh(u32, u32),
+  }
+  let drawn = |engine: &HeadlessEngine| -> Vec<Drawn> {
+    let list = engine.engine.draw_list();
+    let items = list.items().iter().map(|item| {
+      assert_eq!(item.kind, DrawKind::Entity);
+      match item.payload {
+        DrawPayload::Run(index) => {
+          let run = list.run(index).expect("the run pushed");
+          Drawn::Run(list.run_quads(run).len())
+        }
+        DrawPayload::Mesh(index) => {
+          let mesh = list.mesh(index).expect("the mesh pushed");
+          Drawn::Mesh(mesh.indices.start, mesh.indices.end)
+        }
+        _ => Drawn::Sprite,
+      }
+    });
+    items.collect()
+  };
+  use Drawn::{Mesh, Run, Sprite};
+  // One walk of the draw order, every part an entity item between the two
+  // sprites: a and b in a run, which the mesh after them ends; the mesh;
+  // c in a run of its own, though it shares a and b's image and blend;
+  // the second mesh; and e. The skeleton out of view added nothing: the
+  // first mesh's triangles start the frame's stream
+  assert_eq!(
+    drawn(&engine),
+    [
+      Sprite,
+      Run(2),
+      Mesh(0, 6),
+      Run(1),
+      Mesh(6, 12),
+      Run(1),
+      Sprite
+    ]
+  );
+
+  // With a drop shadow, every part's shadow first, in the same order,
+  // each mesh's a mesh of its own
+  let mut renderable = engine.world_mut().get_mut::<Renderable>(hero).unwrap();
+  renderable.drop_shadow = Some(DropShadow::new());
+  engine.step_frames(1).unwrap();
+  assert_eq!(
+    drawn(&engine),
+    [
+      Sprite,
+      Run(2),
+      Mesh(0, 6),
+      Run(1),
+      Mesh(6, 12),
+      Run(1),
+      Run(2),
+      Mesh(12, 18),
+      Run(1),
+      Mesh(18, 24),
+      Run(1),
+      Sprite
+    ]
+  );
+
+  // Out of every camera's view it submits nothing, its meshes neither
+  // (a skeleton's entity is interpolated: the second frame is the first
+  // to draw it where it went)
+  let mut transform = engine.world_mut().get_mut::<Transform>(hero).unwrap();
+  transform.translation = Vec2::new(5000.0, 5000.0);
+  engine.step_frames(2).unwrap();
+  assert_eq!(drawn(&engine), [Sprite, Sprite]);
+}
+
 #[test]
 fn a_skeleton_s_regions_are_entity_runs_split_where_the_image_or_blend_changes() {
   use crate::core::render::{DrawKind, DrawPayload};

@@ -69,7 +69,16 @@ pub struct BoundingBoxAttachment {
 }
 
 /// A triangle mesh textured from one of the skeleton's image regions, its
-/// vertices placed in one bone's space or weighted over several bones
+/// vertices placed in one bone's space or weighted over several bones.
+///
+/// It is drawn in its slot's place in the draw order, as a region of the
+/// same image would be: tinted, blended, lit, shadowed, flipped and
+/// shaded with its skeleton's renderable, its vertices following their
+/// bones between fixed steps. Each mesh shown is a draw of its own, so a
+/// character is better made of a few meshes than of many. See
+/// [`Renderable::skeleton`](crate::core::ecs::Renderable::skeleton) for
+/// what does not reach a mesh (an effect that draws round its sprite, the
+/// pixel-art snap)
 #[derive(Debug, Clone, PartialEq)]
 pub struct MeshAttachment {
   /// An index into [`SkeletonData::regions`](super::SkeletonData::regions)
@@ -185,6 +194,15 @@ impl WeightedVertices {
   /// How many influence positions there are in all
   pub fn positions(&self) -> usize {
     self.influences.len()
+  }
+
+  /// Each vertex's influences, vertex by vertex: the flat list in order,
+  /// cut where each vertex's begin
+  pub(super) fn each(&self) -> impl Iterator<Item = &[Influence]> {
+    self.starts.windows(2).map(|ends| {
+      let range = ends[0] as usize..ends[1] as usize;
+      self.influences.get(range).unwrap_or(&[])
+    })
   }
 }
 
