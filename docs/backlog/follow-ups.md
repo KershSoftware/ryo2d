@@ -4,6 +4,72 @@ Small issues found while building each sub-project and left for later: deferred 
 
 Items from 4f on were copied from their execution records. Items from earlier sub-projects come from notes kept at the time, and some may have been fixed since: check before working on one.
 
+## Skeleton (the core)
+
+- Owner decisions (2026-11-12 to 2026-11-13):
+  - The old module and its demo were thrown away ("sloppy and terrible, and completely buggy") and skeletal animation rebuilt from the ground up to a professional standard, in four parts: the core (merged here), meshes, constraints (IK), and import from an animation tool. The design was left to the planner (spec `docs/specs/2026-11-12-skeleton-design.md`); the spec and the core's plan were approved together and the plan ran subagent-driven.
+  - Asked how to proceed on Spine, the owner took the planner's advice: the work is clean room. Nobody reads Esoteric's runtime source; rules come from Spine's public guide and format documents, and where those are silent a rule is chosen, written in the module notes and pinned by a test.
+  - The import tool is undecided, and is the owner's to settle before that part: Spine's licences neither allow nor forbid a third-party runtime, so a reader of its public JSON format wants Esoteric's written answer first; DragonBones 5.5 JSON is the fallback (`docs/research/2026-11-12-skeleton-formats.md`).
+  - Hand-play, twice in a real window: first with audio off ("everything looks good and surprisingly polished"), then the final build with audio on ("looks and sounds good"). Merged after the scripted tour (140 pages against main's 136; every page matches main but the replaced skeleton demo and the four that already differ run to run). The owner approved, one-time each, deleting `target/debug` three times mid-branch when the disk neared the 40 GiB floor.
+- Not hand-checked at merge (headless tests and reading only):
+  - The web build of the demo in a browser (`./dev.sh web skeleton`): only the wasm lint ran.
+  - Hot reload by hand: saving `hero.skeleton.ron` or `hero.png` while the demo runs (every reload test goes through a memory source).
+  - Any GPU backend but Metal (Vulkan, DX12, WebGL): the mirrored-sprite and skeleton drawing paths.
+  - The owner's final run logged six slow-frame warnings in one cluster in its last lines (two render spikes of 62 and 118 ms, four pacing frames with under 2 ms of engine work). Five scripted windowed runs (each page for 300 frames, 14 page switches, the help overlay, the crowd raised, the debug keys and the console) logged none. Not attributed: watch for it.
+- Rulings the owner may revisit:
+  - **A negative scale mirrors a sprite, engine-wide** (it drew a half turn before), and `GlobalTransform::lerp` keeps the mirror; `to_transform()` gives a negative `scale.y` for a mirrored transform. No demo changed. Light occluders, tiled runs and composite tiles are not mirrored.
+  - **A skeleton's entity is interpolated without asking** (`Skeleton` requires `Interpolated`); a game removes the component for step-rate drawing, and putting `Skeleton` on the entity again adds it back. A skeleton under a parent that is not interpolated trails it by up to a step's motion.
+  - **A skeleton keeps animating through a scene transition**, as particles and physics do, and the messages it sends meanwhile are not seen by a scene's `update` (scenes wait during transitions engine-wide). The skill gives the patterns that are safe: a scene system, `add_animation`, polling `is_complete()`. Holding skeletons through a transition would change how fades look.
+  - **A skeleton freezes with its scene** (under a pushed scene that stops the one below), as particles do.
+  - **A skeleton has its starting pose in the frame it appears**, even with the clock paused; its messages wait for a fixed step.
+  - **Track events:** fading a track to empty sends no `Complete`; an entry mixing out never sends `Complete`; a key at time 0 fires with the entry's `Start`, even on a zero-length step.
+  - **A start offset:** a non-looping entry started at its end sends no `Complete`; a start of whole loops does not fire the key at 0; `track_time()` reads the start before the first step.
+  - **Per-region drop shadows** darken where a skeleton's parts overlap (a sprite's is uniform); a uniform silhouette needs an offscreen pass. Characters should use blob or contact shadows.
+  - **A socket's `Transform` is the truth**, so under a skewed bone the socket stays rigid.
+  - **Caps:** 64 tracks, 64 queued entries a track, a mix chain of 16, 256 calls kept before the data lands, 1,024 buffered events, 1,000 loops a span. `set_empty` again while a track fades out does nothing, so a running fade can be shortened only by `clear`.
+  - **The file format:** image paths are from the asset root; `<empty>` is a reserved animation name; a key past its animation's end, or two timelines for one property, fail to load.
+  - **Prelude names are prefixed** (`SkeletonTrackEntry`, `SkeletonMixBlend`, `BoneInherit`, `BoneSpace`, `SkeletonClip` and the rest).
+  - **A sprite shader on a skeleton applies to each part** (a per-pixel effect works per part; an outline outlines each part), and draws the skeleton as one sprite item a region.
+  - Stand as they are (the final review set them aside): fidelity to Spine's runtime in edge cases; an unscaled mode for menu skeletons under a paused clock; a per-slot colour setter and attachments built at run time; the names `SkeletonClip` and `SkeletonAnimation`; migration for the removed API.
+- Limits recorded (`docs/backlog/skeleton.md`, Limits, and the `ryo-skeleton` skill): a sprite on a socket cannot draw between a skeleton's slots (a held item the hand must wrap is a region in a slot); a skin can add or replace an attachment but not hide one; a change made to a posed skeleton while no step runs (an animation, a skin's readback, an attachment, an override) shows from the next step, and a skeleton enabled again between steps shows its released pose until then; bones, points, boxes and events read in a scene's `update` are one step behind; physics on a socket follows a step later; a reload that changes a looping animation's duration jumps its phase; track time is f32 (a looping entry steps coarser after hours); a turn-round by a scale changing sign blinks for one step under interpolation (`flip_x` turns at once); stepped keys ignore layer alpha.
+- Deferred findings:
+  - **For a game developer.**
+    - Event audio needs glue: a table from the event's path to a loaded handle, the event's linear volume against `PlayOptions`' decibels, and no counterpart for `balance`. An event's sound as a loaded handle with a play helper is the lever.
+    - Placing a region by hand needs rotated-offset arithmetic for every limb: a pivot on region attachments would remove it (the demo's `assets/README.md` records the method).
+    - `DebugConfig` is not in the prelude, so `debug:skeletons` is console-only; the prelude lacks `AudioLogKind`, the type `HeadlessEngine::audio_log` returns (the demo's and the audio demo's tests import it from `ryo2d::core`).
+    - `BoneSocket` put back with the same missing bone name warns again; a socket attached by `ChildOf` alone while no step runs is placed in the next step, not that frame.
+    - The docs do not spell out that a skeleton moved by hand while the clock is paused draws between its old and new place until a step runs unless `skip_interpolation` is called; `src/core/ecs/AGENTS.md` and the `ryo-game-dev` skill still describe `Interpolated` as opt-in only.
+  - **Mirroring.**
+    - A sprite mirrored by a negative x scale and 115 world px or more loses the pixel-art snap that `flip_x` keeps (the half turn's f32 sine fails the shader's absolute test): read the turn from the reversed x axis, or make the test relative.
+    - A `LightOccluder2D` on a mirrored entity, and a mirrored `MapRoot`'s occluder chains, are placed by translation and turn only, so they turn where their sprites mirror.
+    - On a moving interpolated entity, a socket jumped in a flip step draws up to one step's travel from the bones for that step.
+  - **Speed.**
+    - An off-screen skeleton costs about 97% of an in-view one: every quad is built before its run is culled. Skeleton-level bounds are the lever (about 0.8 ms per 1,000 off-screen).
+    - The cover search is quadratic in timelines per entry per mix start, and `events_crossed` scans for the event timeline every entry every step: a per-animation map and an index (about 7 ms inferred, not measured, if 200 skeletons with 150-timeline animations all switch in one step).
+    - Every `BoneSocket` insert makes the next frame's pass look at every skeleton and socket (2.6 µs with 200 skeletons, 7.9 µs with a socket each); `update_skeletons` takes the skeleton store mutably every step; a moving socket's subtree is computed up to four times a step.
+    - `one_skeleton_update` read 3.0 µs in the first record and 3.7 µs in the second; which later change accounts for the difference was not measured.
+  - **The animation state.**
+    - The mixing-out window also changed for one case with no start offset: an outgoing entry with an event threshold above 0, whose queued follower was already overdue when the step began, now fires its keys while mixing out (agreeing with `set_animation` at the same moment). No test pins it, and the notes name only the start-offset route.
+    - `set_empty(track, 0.0)` then `add_animation`, made during a fade-out, no longer cuts the old entry (the demo's layers page does this).
+    - Rotation memory kept for an entry's life winds by a full turn each revolution, and a partial-alpha layer's resting angle depends on its history (documented).
+    - Without a skeleton store (test worlds only), placing numbers could repeat after a `Skeleton` is replaced on the same entity.
+    - `state.rs` is about 3,700 lines with its tests inline: split the tests out.
+  - **Tests.**
+    - The draw-order validation test covers a duplicated slot but not a wrong key length; the empty-region test covers width 0 only; attachment-timeline key names and a slot's setup attachment name are not validated (intentional, documented).
+    - No test of `stretch_along_bone`'s fallbacks (the x axis collapsed, both collapsed); the notes' "limit of the normal path" holds only for an unsheared parent.
+    - `dependency_failed` is not implemented for skeleton files (a missing image is reported with both paths, not by its `images` entry; the same as particles); no test of an absolute image path.
+    - The sprite-shader path has no test of item kind or order (it holds by construction); the y-sort pin under a mirror cannot fail; neither the allocation test nor the bench asserts that events fire or a crossfade is in progress in the traced frames.
+    - No test draws a mirrored `Local` particle emitter between steps (the particle limit removed here rests on shared code).
+  - **For the import part.**
+    - The data cannot yet express separate rgb and alpha slot colour timelines, per-channel curves on colour keys, or rotated atlas regions: check each against the tool's public format documents.
+    - The module notes list the known differences from Spine's documented behaviour (the animation state's). The bone rules were worked out from first principles and have no such list: check each inherit mode against the tool's public documents and exported files, the no-scale rule under a sheared child first (its direction is the parent's matrix applied to the child's rotation plus its shear, and the shear is then dropped).
+- Pre-existing bugs seen along the way:
+  - The entity drawer builds a `QueryState` every frame: a few dozen allocations a frame for any scene with a `Renderable` (on main before this branch; the skeleton allocation test compares against a like-for-like sprite baseline).
+  - Scenes wait during transitions, so any message sent during one (collisions as well as skeleton events) is never seen by a reader in `Scene::update`.
+  - A kill-zone respawn does not skip interpolation (`ryo-character`), so an interpolated character slides for a frame; a skeleton character meets it by default.
+  - Particle preset builders are private, and `Trail2D` samples once per fixed step (the demo's sword trail is coarser than its blade's motion).
+  - `cargo fmt` rewrites two lines of `src/core/logging/mod.rs`: the file is not rustfmt-clean on main.
+
 ## Shadows
 
 - Owner decisions (2026-11-11 to 2026-11-12):
