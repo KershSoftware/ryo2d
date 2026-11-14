@@ -294,7 +294,7 @@ Stage 2 builds on the merged core. These are the planner's calls. The owner may 
   - An unweighted vertex is a position in the slot's bone space.
   - A weighted vertex is a list of influences, each a bone, a position in that bone's space and a weight. Its place is the weighted sum of those positions, each under its bone.
   - A vertex may have any number of influences. Weights are normalised at load, and a vertex whose weights sum to zero fails to load.
-- **Skinning is on the CPU**, each frame a mesh is drawn, from the same interpolated bone matrices the region quads use. It writes into the frame's triangle stream. GPU skinning stays a backlog lever.
+- **Skinning is on the CPU**, each frame a mesh is drawn, from the same interpolated bone matrices the region quads use. It writes into the frame's mesh stream, a stream of the batch's own for meshes beside the triangles' (lines and trails). GPU skinning stays a backlog lever.
 
 ### Deform keys
 
@@ -344,4 +344,4 @@ A `Mesh(..)` attachment and a `deform` block per slot in an animation. The exact
 - **Speed** (release, quiet machine, median of three):
   - 200 skeletons of 25 regions plus one weighted mesh of 60 vertices each: the drawing work in extract is at most 600 µs a frame, and the update at most 1,000 µs a step;
   - the region-only figures of the core do not rise by more than 5%.
-- **Demo:** a new page with a weighted cape that swings with its bones, a banner rippled by deform keys, and a toggle for the overlay. The page tests cover it.
+- **Demo:** a new page with a weighted cape that swings with its bones, a banner rippled by deform keys, and a line pointing at the console's `debug:skeletons` for the overlay. The page tests cover it.

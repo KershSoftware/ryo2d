@@ -76,12 +76,12 @@ Coordinates are the engine's: y down, positive rotation clockwise. Lengths are t
 - **Slots** are places on bones where one attachment at a time shows. They are listed in draw order, back to front. A slot has its bone, a colour (multiplied into its attachment's), the name of its setup attachment and a blend (`SlotBlend`: `Normal`, `Additive`, `Multiply`, `Screen`).
 - **Attachments** are what a slot can show, each under a name:
   - a **region** (`RegionAttachment`): a quad of an image, centred on its `x`, `y` from the bone, with a rotation, scale, size and colour;
-  - a **mesh** (`MeshAttachment`): triangles between vertices, textured from a region, for a part that bends (Meshes, below);
+  - a **mesh** (`MeshAttachment`): triangles between vertices, textured from a region, for a part that bends, by the bones that hold its vertices or by an animation's deform keys (Meshes, below);
   - a **point** (`PointAttachment`): a place and a direction on the bone, drawn as nothing (a muzzle, a sole);
   - a **bounding box** (`BoundingBoxAttachment`): a polygon on the bone, drawn as nothing, for hit tests.
 - **Regions** (`SkeletonRegion`) are named pixel rectangles of images: the parts of an atlas.
 - **Skins** (`SkeletonSkin`) say which attachment each name means in each slot. Every skeleton has the skin `"default"` (`SkeletonData::DEFAULT_SKIN`); other skins add or replace attachments over it.
-- **Animations** (`SkeletonClip`) have a duration and timelines of keys (`SkeletonTimeline`): a bone's rotation, translation, scale and shear (both axes together, or one axis at a time), a slot's attachment and colour, a mesh's shape (deform keys), the draw order, and events. Each value key eases to the next by its curve (`SkeletonCurve`): `Linear`, `Stepped` or `Bezier`.
+- **Animations** (`SkeletonClip`) have a duration and timelines of keys (`SkeletonTimeline`): a bone's rotation, translation, scale and shear (both axes together, or one axis at a time), a slot's attachment and colour, a mesh's shape (deform keys: Meshes, Deform keys, below), the draw order, and events. Each value key eases to the next by its curve (`SkeletonCurve`): `Linear`, `Stepped` or `Bezier`.
 - **Events** (`SkeletonEventData`) are named moments an animation keys, with an `int`, a `float`, a `string` and an optional sound for the game to play.
 - **Mixes** are the seconds a crossfade takes: a default, and one per pair of animations, each way on its own.
 
@@ -280,7 +280,7 @@ A region is one rectangle on one bone: it can turn and scale, and nothing more. 
 
 **Use a mesh for a part that must bend or change shape; keep a region for a part that stays a rectangle** (a limb that turns on a joint, a head, a weapon). A mesh bends only where it has vertices, so give it a few rows across the bend. **Each mesh is a draw of its own** (two with a drop shadow), where all the regions of one image in a row are one draw: a character is made of a few meshes, not thirty (Limits, below).
 
-A mesh is held in one of two ways, and a deform key can move either.
+A mesh is held in one of two ways, and a deform key (an animation's key that moves its vertices: Deform keys, below) can move either.
 
 - **Unweighted:** each vertex is a place in the space of the slot's bone (`x` and `y`, in pixels along the bone's axes). The whole mesh rides that one bone, and its shape changes only by deform keys.
 - **Weighted:** each vertex is held by several bones at once. Each pull on it is an **influence**: a bone, the place the vertex sits in *that bone's* space, and a **weight**, how much that bone counts. The vertex is drawn at the sum of where each bone puts it, times its weight. Bones that swing apart stretch the vertices between them, so a cape follows its bones with no deform key at all. The slot's own bone plays no part.
@@ -471,7 +471,7 @@ Reading built data: `MeshAttachment::vertex_count()` and `position_count()` (bel
 
 A **deform key** moves a mesh's vertices in an animation. A key is a list of numbers: an offset from the mesh's setup shape, an x then a y, for each of the mesh's **positions**. A position is a vertex when the mesh is unweighted, and an *influence* when it is weighted (the influences of vertex 0 first, then vertex 1's, and so on, in the order of the file). `MeshAttachment::position_count()` counts them: the six-vertex flag above has six positions and its keys hold twelve numbers; the cape has eight influences, so its keys hold sixteen.
 
-Add this to the flag file above (before its final `)`) and the flag ripples: the pole's edge and the fly stay, the middle column goes up and down.
+Add this to the flag file above (before its final `)`) and the flag swells and settles: the pole's edge and the fly stay, and the key moves the top-middle vertex up and the bottom-middle one down.
 
 ```ron
   animations: {
@@ -488,7 +488,7 @@ Add this to the flag file above (before its final `)`) and the flag ripples: the
   },
 ```
 
-And this in place of the cape file's `animations`: the bones swing and the hem flares as well. Its eight keys' pairs, in order, are the influences of the torso (top left), the torso (top right), the torso and the cape (middle right), the cape (bottom right), the cape (bottom left), and the torso and the cape (middle left).
+And this in place of the cape file's `animations`: the bones swing and the hem flares as well. The key's eight x, y pairs, in order, are for the influences of the torso (top left), the torso (top right), the torso and the cape (middle right), the cape (bottom right), the cape (bottom left), and the torso and the cape (middle left).
 
 ```ron
   animations: {
@@ -517,7 +517,7 @@ And this in place of the cape file's `animations`: the bones swing and the hem f
 - Keys of another length cover nothing: if the incoming animation's deform holds a different count of positions than the outgoing one's, the outgoing deform fades with the mix as it would under an animation with no deform.
 - When the slot's attachment changes (an attachment key, `set_attachment`, a skin), the mesh now shown takes its own shape at once, and is not drawn from the offsets of the one before.
 
-**What skips a deform, and what is said.** A deform changes a mesh only while the engine finds the mesh it was keyed for. In order:
+**What skips a deform, and what is said.** A deform changes a mesh only while the engine finds the mesh it was keyed for. Case by case:
 
 | What happens | Said? |
 |--------------|-------|
@@ -581,7 +581,7 @@ A mesh is drawn only if a camera sees its box, worked out from where the skinnin
 - A mesh has at most 65,535 vertices (its triangle indices are 16 bits).
 - Not built: linked meshes (a mesh that borrows another's vertices) and clipping attachments.
 
-**What a mesh costs.** The engine skins a mesh on the CPU in the frame, from the bones as that frame draws them, and keeps its scratch between frames: a steady frame allocates nothing of the engine's own with meshes drawn and deforms playing. Measured on an Apple M5 Pro that was busy with other work, so rounded: a weighted mesh of 60 vertices between two runs of regions adds about 1.6 microseconds to a frame's render step, and a deform playing on it about 0.55 microseconds to a skeleton's fixed step. 200 skeletons of 25 regions each, with that mesh and a deform on every one, took about 600 microseconds a fixed step and about 285 microseconds of a frame's drawing. The wgpu graphics layer on Metal allocates about four times a mesh a frame for the extra pipeline changes; that is wgpu's, and costs nothing that shows.
+**What a mesh costs.** The engine skins a mesh on the CPU in the frame, from the bones as that frame draws them, and keeps its scratch between frames: a steady frame allocates nothing of the engine's own with meshes drawn and deforms playing. Measured on an Apple M5 Pro that was busy with other work, so rounded: a weighted mesh of 60 vertices between two runs of regions adds about 1.6 microseconds to a frame's render step, and a deform playing on it about 0.55 microseconds to a skeleton's fixed step. Those are a mesh's own. For scale, a whole crowd of 200 skeletons of 25 regions each took about 490 microseconds a fixed step and about 165 microseconds of a frame's drawing with regions alone, and about 600 and about 285 with that mesh and a deform on every one. The wgpu graphics layer on Metal allocates about four times a mesh a frame for the extra pipeline changes; that is wgpu's, and costs nothing that shows.
 
 ## Building in code
 
@@ -1109,7 +1109,7 @@ An entity with a `Skeleton` and `Renderable::skeleton()` draws the regions and m
 | `Renderable`'s `z_order`, `visible`, `lighting`, `filter` | The whole skeleton's, as for a sprite |
 | `alpha`, `tint` | Each part's colour is its slot's times its attachment's times the tint; its alpha those three's times `alpha` |
 | `blend` | For slots that blend `Normal`; a slot with a blend of its own keeps it |
-| `emission` | Every region's |
+| `emission` | Every part's, regions and meshes alike |
 | `flip_x`, `flip_y` | Mirror the skeleton about its entity's origin, its bones, points, boxes and sockets with it. It lands the other way round at once |
 | `shader` (or the entity's `Material`) | Applied to each region and mesh on its own (below) |
 | `YSort` | Sorts it among y-sorted sprites and tile layers by where it stands (below) |
@@ -1160,7 +1160,7 @@ In a development build, the console command `debug:skeletons` (`ryo-console`) dr
 - **A queue of 64:** `add_animation` on a track with 64 entries queued is refused, with one warning per skeleton.
 - **Sockets:** a skew is dropped; a socket's sprite is wholly in front of or behind the skeleton; an ordinary child of the skeleton's entity (not a socket, nor below one) does not jump with `skip_interpolation`.
 - **Mixing:** a crossfade dips a little where the incoming animation keys a property in another form (a `translate_x` over a combined `translate`), and, in a chain of three or more entries, past an entry that does not key the property. With `time_scale` at 0 no mix advances, so a track given 17 animations meanwhile jumps as its oldest entry ends.
-- **Drawing:** a drop shadow is darker where parts overlap; blob and contact shadows stand under the entity and do not follow the pose (while an animation jumps, set a blob shadow's height from a bone, as the demo's `lift_shadow` does); sprite shaders apply part by part, and outlines and glows outline each region and leave meshes plain; `YSort::foot_offset` is not used; there is no culling of single parts, and a skeleton off screen still builds its quads.
+- **Drawing:** a drop shadow is darker where parts overlap; blob and contact shadows stand under the entity and do not follow the pose (while an animation jumps, set a blob shadow's height from a bone, as the demo's `lift_shadow` does); sprite shaders apply part by part, and outlines and glows outline each region and leave meshes plain; `YSort::foot_offset` is not used; no single region is culled (a run of regions is, whole, by the box round it, and a mesh by the box of its own vertices), and a skeleton off screen still builds its quads.
 - **Meshes:** an effect that grows the quad (outline, glow, directional outline) leaves them plain, with one warning a run; pixel-art snapping does not apply to their vertices; each is a draw of its own (two with a drop shadow); a game's sprite shader may draw them plain for its first few frames; at most 65,535 vertices a mesh (Meshes, Limits of drawing a mesh).
 - **Skins** cannot hide an attachment.
 - **Event audio** is the game's to play, and `balance` has nowhere to go in `PlayOptions`.

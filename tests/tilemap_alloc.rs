@@ -576,15 +576,22 @@ fn more(drawn: &Frame, nothing: &Frame) -> Vec<String> {
 /// recorded. What it allocates is the GPU API's own handling of those
 /// commands (wgpu's Metal backend copies a pipeline's vertex buffer layouts
 /// each time a pass sets it, for one): no code of the engine's runs there,
-/// so nothing the engine makes for a drawable can hide in it
+/// so nothing the engine makes for a drawable can hide in it. A test that
+/// leaves this site out lets growth in wgpu's own encoding through: if a
+/// later wgpu allocates more there for each pipeline change or draw, that
+/// test will not say so
 const ENCODES: &str = "<wgpu::api::command_encoder::CommandEncoder>::finish <- ";
 
 /// How many more allocations a call of the engine's into the GPU API may
 /// make for one frame than for another before it counts. A buffer's write
 /// that the other frame lacks, a longer list of a pass's commands and what
-/// moves with the GPU's timing are a few: the most seen at one site is
-/// nine, the mesh stream's two writes in a debug build. A buffer, a write
-/// or a bind group for each of fifty drawables is fifty at the least
+/// moves with the GPU's timing are a few: the most seen at one site on a
+/// quiet machine is thirteen (the encoder's finish for the lit frame's
+/// shadow pass in a debug build), and beside other processes using the
+/// GPU a frame's whole count moved by four either way. Measured on Metal
+/// only: on another backend a site's own difference may be more, and the
+/// message names the site and both counts. A buffer, a write or a bind
+/// group for each of fifty drawables is fifty at the least
 const GPU_ROOM: usize = 24;
 
 /// The sites where `drawn` makes more allocations inside the GPU API than
