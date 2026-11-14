@@ -2,8 +2,11 @@
 
 | File | What |
 |---|---|
-| `hero.skeleton.ron` | The hero: 14 bones, 27 slots, six skins, seven animations and a footstep event. Written by hand; its comments say how it is put together |
+| `hero.skeleton.ron` | The hero: 16 bones, 28 slots, seven skins, seven animations and a footstep event. Written by hand; its comments say how it is put together |
 | `hero.png` | The hero's parts in one 1024 x 744 atlas: three bodies, three outfits, the faces' parts and a cap. The skeleton file names each part's rectangle |
+| `cape.png` | The cape the Meshes page puts on the hero, 280 x 292: the image of the mesh in the hero's `cape` skin |
+| `banner.skeleton.ron` | The Meshes page's banner: three bones, a pole and a flag. The flag is a mesh of 27 vertices, and the `ripple` animation's deform keys move them. Written by hand, but for the ripple's keys (below) |
+| `banner.png` | The banner's flag (296 x 176) and its pole (640 x 20, lying down) in one 656 x 220 image |
 | `sword.png` | The sword the Sockets page puts on the hero's weapon bone, 300 x 68, its grip on the left |
 | `audio/footstep.sound.ron` | The sound the skeleton's footstep event names: one of four takes, heard from where it is played |
 | `audio/step-1.wav` to `step-4.wav` | The four takes |
@@ -28,7 +31,7 @@ The hero's parts are from **Modular Characters** by Kenney (<https://kenney.nl/a
 
 The parts are assembled as the pack's `instruction.png` shows: hair and a face on a head, a neck, a shirt with a sleeve and a hand each side, the trousers' top under the shirt, a leg each side and a shoe under each. An arm and a leg are one piece each in the pack, so the rig has one bone for each, and one for each hand and shoe. The hero is turned a little to its right, so its two legs are the same piece and its two arms the same piece, the far ones drawn behind and a shade darker.
 
-The cap and the sword are not from the pack. They were drawn for this demo with ImageMagick, in the pack's flat style, and are under the repository's licence.
+The cap, the sword, the cape and the banner (its flag and its pole) are not from the pack: it has none of them. They were drawn for this demo with ImageMagick, as flat shapes with a little shading in the hero's colours (the cap's yellows, the red of the shirt, the brown of the shoes), and are under the repository's licence.
 
 ## Making the images
 
@@ -54,6 +57,45 @@ magick -size 600x136 xc:none \
   -fill '#c98a14' -draw 'rectangle 110,14 118,122' \
   -fill '#e8a923' -draw 'circle 20,68 20,86' \
   -filter Lanczos -resize 50% PNG32:sword.png
+
+# cape.png: the cloth, then its folds, hem and collar drawn only where the
+# cloth is (SrcAtop). The hem is seven scallops
+magick -size 560x584 xc:none \
+  -fill '#f2b632' -draw 'path "M 156,16 L 404,16 Q 412,16 414,24 L 536,540 Q 499.4,530 462.9,548 Q 426.3,568 389.7,550 Q 353.1,530 316.6,548 Q 280,568 243.4,550 Q 206.9,530 170.3,548 Q 133.7,568 97.1,550 Q 60.6,530 24,540 L 146,24 Q 148,16 156,16 Z"' \
+  \( -size 560x584 xc:none \
+     -fill '#e09f1f' -draw 'polygon 190,16 204,16 130,584 86,584' \
+                     -draw 'polygon 246,16 260,16 238,584 196,584' \
+                     -draw 'polygon 300,16 314,16 364,584 322,584' \
+                     -draw 'polygon 356,16 370,16 474,584 430,584' \
+     -fill '#c9861a' -draw 'path "M 0,500 L 24,500 Q 60.6,490 97.1,510 Q 133.7,528 170.3,508 Q 206.9,490 243.4,510 Q 280,528 316.6,508 Q 353.1,490 389.7,510 Q 426.3,528 462.9,508 Q 499.4,490 536,500 L 560,500 L 560,584 L 0,584 Z"' \
+                     -draw 'rectangle 0,0 560,40' \) \
+  -compose SrcAtop -composite \
+  -filter Lanczos -resize 50% PNG32:cape.png
+
+# flag.png: a red field with a darker hoist, two stripes and a disc
+magick -size 592x352 xc:none \
+  -fill '#e05848' -draw 'roundrectangle 8,8 583,343 10,10' \
+  \( -size 592x352 xc:none \
+     -fill '#bf493b' -draw 'rectangle 0,0 40,352' \
+     -fill '#f2b632' -draw 'rectangle 40,34 592,58' -draw 'rectangle 40,294 592,318' \
+                     -draw 'circle 312,176 312,244' \
+     -fill '#e09f1f' -draw 'circle 312,176 312,218' \) \
+  -compose SrcAtop -composite \
+  -filter Lanczos -resize 50% PNG32:flag.png
+
+# pole.png: a pole lying down, its foot on the left and a ball on its top
+magick -size 1280x40 xc:none \
+  -fill '#af9360' -draw 'rectangle 0,8 1240,31' \
+  -fill '#8f774c' -draw 'rectangle 0,22 1240,31' -draw 'rectangle 1208,8 1240,31' \
+  -fill '#f2b632' -draw 'circle 1258,20 1258,2' \
+  -fill '#e09f1f' -draw 'path "M 1242,26 A 18,18 0 0 0 1274,26 A 22,22 0 0 1 1242,26 Z"' \
+  -filter Lanczos -resize 50% PNG32:pole.png
+
+# banner.png: the flag and the pole, 8 pixels apart
+magick -size 656x220 xc:none \
+  flag.png -geometry +8+8 -composite \
+  pole.png -geometry +8+192 -composite \
+  PNG32:banner.png
 ```
 
 `hero.png` is the pack's own PNGs, unscaled, each laid at its place on a transparent sheet with 8 pixels between neighbours, and the cap. `PACK` is the pack's `PNG` folder:
@@ -132,6 +174,64 @@ A region attachment's `x` and `y` are where the image's centre is from its bone'
 - An arm is also flipped across its bone (`scale_y: -1`), which turns its `rotation` and its `y` the other way, so that the arm's curve bends its elbow back.
 
 A sleeve or a trouser leg is placed by the same joint as the arm or leg under it.
+
+## The meshes
+
+A mesh attachment is drawn as triangles between vertices, where a region attachment is one rectangle. Each vertex is written twice, in one order: in `uvs`, where it is in the image (0 to 1 across the region), and in `vertices`, where it is on the bones. The first `hull` vertices go round the mesh's outline, for the `debug:skeletons` overlay. Both meshes here are grids, their outlines a few pixels outside the cloth's edge, so the image's own smooth edge is what shows.
+
+### The cape: vertices weighted over bones
+
+The cape is 18 vertices, three across by six down, on the torso and the two cape bones, which hang down the hero's back one after the other. Its rows are at 3, 60, 117, 174, 231 and 278 down the 280 x 292 image (the middle of the last at 288, under the hem's scallops), each row's ends 5 outside the cloth.
+
+A weighted vertex names the bones that hold it, and for each bone where the vertex is in that bone's own space in the setup pose, with a weight. The image's point (x, y) is at:
+
+| Bone | In the bone's space |
+|---|---|
+| `torso` (its x up the spine, its y toward the hero's front) | (166 - y, x - 148) |
+| `cape_upper` (at the collar, its x down the cape) | (y - 8, 140 - x) |
+| `cape_lower` (140 further down) | (y - 148, 140 - x) |
+
+The rows' weights, from the collar down: the torso alone; half the torso and half the upper bone; the upper bone alone; half the upper and half the lower; and the lower bone alone for the last two. So the collar stays on the shoulders, and the cloth bends where a row is held by two bones.
+
+### The banner: vertices moved by deform keys
+
+The flag is 27 vertices, nine along by three down, 37 apart along the flag and 88 down it, in the space of the one bone it hangs on. No bone moves: the `ripple` animation's deform keys give every vertex an offset from its place, an x and a y each, in the mesh's order, and the flag is drawn between one key's offsets and the next.
+
+A wave runs from the pole to the fly once a loop of 1.6 seconds. It is 10 columns long and grows from nothing at the pole to 16 at the fly; each row is half a radian behind the row above; and a vertex goes round a flat ellipse, 0.3 as wide as it is tall. There are twelve keys a loop, and a thirteenth that is the first again, so the loop has no jump.
+
+The keys are written by this program, which prints the lines of the `deform` block of `banner.skeleton.ron` (Python 3; the same text every time):
+
+```python
+import math
+
+COLUMNS, ROWS, KEYS = 9, 3, 12
+DURATION, HEIGHT, LENGTH, LAG, WIDE = 1.6, 16.0, 10.0, 0.5, 0.3
+
+# The mesh's order: round the outline from the top corner on the pole,
+# then along the middle row
+order = [(c, 0) for c in range(COLUMNS)]
+order += [(COLUMNS - 1, r) for r in range(1, ROWS)]
+order += [(c, ROWS - 1) for c in range(COLUMNS - 2, -1, -1)]
+order += [(0, r) for r in range(ROWS - 2, 0, -1)]
+order += [(c, r) for r in range(1, ROWS - 1) for c in range(1, COLUMNS - 1)]
+
+def number(value):
+    text = f"{value:.1f}"
+    return "0" if text in ("0.0", "-0.0") else text.rstrip("0").rstrip(".")
+
+for key in range(KEYS + 1):
+    turn = 2 * math.pi * (key % KEYS) / KEYS
+    offsets = []
+    for column, row in order:
+        height = HEIGHT * column / (COLUMNS - 1)
+        phase = turn - 2 * math.pi * column / LENGTH - LAG * row
+        offsets += [WIDE * height * math.cos(phase), height * math.sin(phase)]
+    time = f"{DURATION * key / KEYS:.4f}".rstrip("0")
+    time = time + "0" if time.endswith(".") else time
+    print(f"            ({time}, [{', '.join(number(v) for v in offsets)}]),")
+```
+
+A deform's keys must hold an x and a y for each of the mesh's vertices: change the flag's grid, and the keys change with it.
 
 ## The sounds
 

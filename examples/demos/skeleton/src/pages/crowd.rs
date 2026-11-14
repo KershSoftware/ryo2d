@@ -143,7 +143,7 @@ impl DemoPage for CrowdPage {
   }
 
   fn description(&self) -> &str {
-    "A crowd of skeletons, 14 bones and 24 parts each, every one with its own skins and animation; some wave on a second track.\n\
+    "A crowd of skeletons, 16 bones and 24 parts each, every one with its own skins and animation; some wave on a second track.\n\
      Each is drawn as one run of quads from the atlas, y-sorted by its feet. The frame cost is the CPU's, in this build."
   }
 

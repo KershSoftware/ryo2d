@@ -88,7 +88,7 @@ impl DemoPage for CharacterPage {
 
   fn description(&self) -> &str {
     "One skeleton with idle, walk, run and jump on track 0; each change crossfades over the mix its file gives the pair.\n\
-     The rig is assets/hero.skeleton.ron: 14 bones, parts from one atlas. In a development build's console, debug:skeletons draws its bones."
+     The rig is assets/hero.skeleton.ron: 16 bones, parts from one atlas. In a development build's console, debug:skeletons draws its bones."
   }
 
   fn settings(&mut self, s: &mut Settings) {

@@ -25,6 +25,12 @@ pub static EMBEDDED: &[(&str, &[u8])] = &[
     "audio/step-4.wav",
     include_bytes!("../assets/audio/step-4.wav"),
   ),
+  ("banner.png", include_bytes!("../assets/banner.png")),
+  (
+    "banner.skeleton.ron",
+    include_bytes!("../assets/banner.skeleton.ron"),
+  ),
+  ("cape.png", include_bytes!("../assets/cape.png")),
   ("hero.png", include_bytes!("../assets/hero.png")),
   (
     "hero.skeleton.ron",

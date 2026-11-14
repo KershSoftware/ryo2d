@@ -2,7 +2,7 @@
 name = "skeleton-demo"
 version = "0.1.0"
 edition = "2024"
-description = "Skeleton demo - a cutout hero: crossfades, layers, events, sockets, skins, aiming and a crowd"
+description = "Skeleton demo - a cutout hero: crossfades, layers, events, sockets, skins, aiming, a crowd and meshes"
 
 [lib]
 name = "skeleton_demo"

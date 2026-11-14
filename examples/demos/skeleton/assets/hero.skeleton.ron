@@ -8,8 +8,12 @@
 // Units are the art's pixels: the hero stands about 530 tall, so the demo
 // draws its entity at less than half size. The origin is between its feet,
 // on the ground. Angles are degrees, clockwise.
+//
+// Every part it draws is a region, a rectangle of an image on one bone,
+// but the cape: a mesh, whose vertices are weighted over three bones, so
+// the cloth bends as the bones turn.
 (
-  images: { "parts": "hero.png" },
+  images: { "parts": "hero.png", "cape": "cape.png" },
 
   // Where each part is in the atlas, as README.md's packing command puts them
   regions: {
@@ -60,11 +64,15 @@
     "white_hips": (image: "parts", rect: (330, 639, 153, 47)),
     "grey_shoe": (image: "parts", rect: (695, 639, 94, 42)),
     "hat": (image: "parts", rect: (490, 512, 260, 84)),
+    // The cape's whole image
+    "cape": (image: "cape", rect: (0, 0, 280, 292)),
   },
 
-  // Fourteen bones. Each limb's bone lies along the limb, so turning it
+  // Sixteen bones. Each limb's bone lies along the limb, so turning it
   // swings the limb and a world rotation points it. The head's bone points
-  // the way the hero looks, the weapon's along a blade held in the fist
+  // the way the hero looks, the weapon's along a blade held in the fist.
+  // The cape's two hang down the back from the collar, one after the
+  // other: they carry no image, only the cape's vertices
   bones: [
     (name: "root"),
     (name: "hip", parent: "root", y: -180),
@@ -80,11 +88,15 @@
     (name: "shoe_far", parent: "leg_far", x: 142, rotation: -82, length: 56),
     (name: "leg_near", parent: "hip", x: -12, y: 4, rotation: 94, length: 142),
     (name: "shoe_near", parent: "leg_near", x: 142, rotation: -94, length: 56),
+    (name: "cape_upper", parent: "torso", x: 158, y: -8, rotation: 180, length: 140),
+    (name: "cape_lower", parent: "cape_upper", x: 140, length: 140),
   ],
 
   // Back to front. The far limbs are a shade darker and the trunk a touch,
   // so the near arm reads as in front and the far limbs as behind
   slots: [
+    // Behind everything, and shown only by the cape's skin
+    (name: "cape", bone: "torso", attachment: "cape"),
     (name: "arm_far", bone: "arm_far", attachment: "arm", color: "#d2d2dc"),
     (name: "sleeve_far", bone: "arm_far", attachment: "sleeve", color: "#d2d2dc"),
     (name: "hand_far", bone: "hand_far", attachment: "hand", color: "#d2d2dc"),
@@ -121,7 +133,7 @@
   // The default skin is the whole hero: light skin, brown hair, the red
   // top and blue trousers. The others each replace some of its parts, and
   // are worn together: a body ("blond", "dark"), an outfit ("ranger",
-  // "sailor") and the hat.
+  // "sailor"), the hat and the cape.
   //
   // An arm's image is flipped across its bone (`scale_y: -1`), so the
   // elbow bends back; a limb's `rotation` lays the image along the bone
@@ -221,6 +233,68 @@
     "hat": {
       "hat": { "hat": Region(region: "hat", x: 42, y: -147) },
     },
+    // The cape is a mesh: 18 vertices, three across by six down, in 20
+    // triangles. `uvs` says where each vertex is in the image (0 to 1
+    // across it) and `vertices` where it is on the bones, the two in one
+    // order: round the outline first, from the collar's left corner (the
+    // 14 that `hull` counts), then the four down the middle. The outline
+    // stands 5 outside the cloth's edge, so the image's own smooth edge is
+    // what shows.
+    //
+    // Each row down the cape is held by the bones beside it: the collar by
+    // the torso, the next row half by the torso and half by the upper cape
+    // bone, then the upper bone alone, half upper and half lower, and the
+    // last two rows by the lower bone. A vertex held by two bones is
+    // written where it is in each bone's own space, and goes where the two
+    // put it, each counting by its weight: that is what bends the cloth
+    // between one bone and the next.
+    "cape": {
+      "cape": {
+        "cape": Mesh(
+          region: "cape",
+          uvs: [
+            (0.25, 0.01), (0.5, 0.01), (0.75, 0.01),
+            (0.796, 0.205), (0.846, 0.401), (0.893, 0.596), (0.943, 0.791), (0.975, 0.952),
+            (0.5, 0.986), (0.025, 0.952),
+            (0.057, 0.791), (0.107, 0.596), (0.154, 0.401), (0.204, 0.205),
+            (0.5, 0.205), (0.5, 0.401), (0.5, 0.596), (0.5, 0.791),
+          ],
+          triangles: [
+            0, 1, 14, 0, 14, 13, 1, 2, 3, 1, 3, 14,
+            13, 14, 15, 13, 15, 12, 14, 3, 4, 14, 4, 15,
+            12, 15, 16, 12, 16, 11, 15, 4, 5, 15, 5, 16,
+            11, 16, 17, 11, 17, 10, 16, 5, 6, 16, 6, 17,
+            10, 17, 8, 10, 8, 9, 17, 6, 7, 17, 7, 8,
+          ],
+          hull: 14,
+          vertices: Weighted([
+            // The collar, left to right
+            [("torso", 163, -78, 1)],
+            [("torso", 163, -8, 1)],
+            [("torso", 163, 62, 1)],
+            // Down the right edge to the hem
+            [("torso", 106, 75, 0.5), ("cape_upper", 52, -83, 0.5)],
+            [("cape_upper", 109, -97, 1)],
+            [("cape_upper", 166, -110, 0.5), ("cape_lower", 26, -110, 0.5)],
+            [("cape_lower", 83, -124, 1)],
+            [("cape_lower", 130, -133, 1)],
+            // The hem, right to left: its middle dips under the scallops
+            [("cape_lower", 140, 0, 1)],
+            [("cape_lower", 130, 133, 1)],
+            // Up the left edge
+            [("cape_lower", 83, 124, 1)],
+            [("cape_upper", 166, 110, 0.5), ("cape_lower", 26, 110, 0.5)],
+            [("cape_upper", 109, 97, 1)],
+            [("torso", 106, -91, 0.5), ("cape_upper", 52, 83, 0.5)],
+            // Down the middle
+            [("torso", 106, -8, 0.5), ("cape_upper", 52, 0, 0.5)],
+            [("cape_upper", 109, 0, 1)],
+            [("cape_upper", 166, 0, 0.5), ("cape_lower", 26, 0, 0.5)],
+            [("cape_lower", 83, 0, 1)],
+          ]),
+        ),
+      },
+    },
   },
 
   events: {
@@ -236,6 +310,13 @@
   //   Bezier(0.4, 0, 0.6, 1)         ease in and out, for a swing
   //   Bezier(0.33, 0.67, 0.67, 1)    fast then slowing, as a body rising
   //   Bezier(0.33, 0, 0.67, 0.33)    slow then fast, as a body falling
+  //
+  // The cape's two bones are keyed in idle, walk and run. A positive turn
+  // swings the cape out behind the hero. Each bone swings between two
+  // angles, the lower one later than the upper, so a wave runs down the
+  // cloth. Where a loop begins half way through a swing, the swing's two
+  // halves are Bezier(0.3, 0.5, 0.6, 1) and Bezier(0.4, 0, 0.7, 0.5): the
+  // ease in and out, cut in two
   animations: {
     // Breathing: the hips sink a little and the legs slide up into them, so
     // the feet stay where they are. The eyes blink and glance ahead
@@ -255,6 +336,9 @@
         "arm_far": (rotate: [(0.0, 0, Bezier(0.4, 0, 0.6, 1)), (1.0, -4, Bezier(0.4, 0, 0.6, 1)), (2.0, 0)]),
         "hand_near": (rotate: [(0.0, 0, Bezier(0.4, 0, 0.6, 1)), (1.1, 6, Bezier(0.4, 0, 0.6, 1)), (2.0, 0)]),
         "hand_far": (rotate: [(0.0, 0, Bezier(0.4, 0, 0.6, 1)), (1.1, -6, Bezier(0.4, 0, 0.6, 1)), (2.0, 0)]),
+        // The cape hangs, and stirs as the hero breathes
+        "cape_upper": (rotate: [(0.0, 1, Bezier(0.4, 0, 0.6, 1)), (1.0, 3, Bezier(0.4, 0, 0.6, 1)), (2.0, 1)]),
+        "cape_lower": (rotate: [(0.0, 0, Bezier(0.4, 0, 0.6, 1)), (0.5, 2.5, Bezier(0.4, 0, 0.6, 1)), (1.5, -1.5, Bezier(0.4, 0, 0.6, 1)), (2.0, 0)]),
       },
       slots: {
         "eye_near": (attachment: [(0.0, "eye"), (1.7, "shut"), (1.8, "eye")]),
@@ -299,6 +383,16 @@
         "arm_far": (rotate: [(0.0, -30, Bezier(0.4, 0, 0.6, 1)), (0.4, 28, Bezier(0.4, 0, 0.6, 1)), (0.8, -30)]),
         "hand_near": (rotate: [(0.0, 10, Bezier(0.4, 0, 0.6, 1)), (0.4, -12, Bezier(0.4, 0, 0.6, 1)), (0.8, 10)]),
         "hand_far": (rotate: [(0.0, -12, Bezier(0.4, 0, 0.6, 1)), (0.4, 10, Bezier(0.4, 0, 0.6, 1)), (0.8, -12)]),
+        // The cape trails behind and lifts with each step: the upper bone
+        // 0.1 s after the foot lands, the lower 0.1 s after that
+        "cape_upper": (rotate: [
+          (0.0, 12, Bezier(0.3, 0.5, 0.6, 1)), (0.1, 15, Bezier(0.4, 0, 0.6, 1)), (0.3, 9, Bezier(0.4, 0, 0.6, 1)),
+          (0.5, 15, Bezier(0.4, 0, 0.6, 1)), (0.7, 9, Bezier(0.4, 0, 0.7, 0.5)), (0.8, 12),
+        ]),
+        "cape_lower": (rotate: [
+          (0.0, 5, Bezier(0.4, 0, 0.6, 1)), (0.2, 15, Bezier(0.4, 0, 0.6, 1)), (0.4, 5, Bezier(0.4, 0, 0.6, 1)),
+          (0.6, 15, Bezier(0.4, 0, 0.6, 1)), (0.8, 5),
+        ]),
       },
       events: [(0.0, "footstep", (string: "near")), (0.4, "footstep", (string: "far"))],
     ),
@@ -330,6 +424,15 @@
         "arm_far": (rotate: [(0.0, -64, Bezier(0.4, 0, 0.6, 1)), (0.25, 52, Bezier(0.4, 0, 0.6, 1)), (0.5, -64)]),
         "hand_near": (rotate: [(0.0, 14, Bezier(0.4, 0, 0.6, 1)), (0.25, -20, Bezier(0.4, 0, 0.6, 1)), (0.5, 14)]),
         "hand_far": (rotate: [(0.0, -20, Bezier(0.4, 0, 0.6, 1)), (0.25, 14, Bezier(0.4, 0, 0.6, 1)), (0.5, -20)]),
+        // The cape streams out behind, and flaps with each stride
+        "cape_upper": (rotate: [
+          (0.0, 32, Bezier(0.3, 0.5, 0.6, 1)), (0.0625, 36, Bezier(0.4, 0, 0.6, 1)), (0.1875, 28, Bezier(0.4, 0, 0.6, 1)),
+          (0.3125, 36, Bezier(0.4, 0, 0.6, 1)), (0.4375, 28, Bezier(0.4, 0, 0.7, 0.5)), (0.5, 32),
+        ]),
+        "cape_lower": (rotate: [
+          (0.0, 10, Bezier(0.4, 0, 0.6, 1)), (0.125, 26, Bezier(0.4, 0, 0.6, 1)), (0.25, 10, Bezier(0.4, 0, 0.6, 1)),
+          (0.375, 26, Bezier(0.4, 0, 0.6, 1)), (0.5, 10),
+        ]),
       },
       events: [(0.0, "footstep", (string: "near", float: 1.4)), (0.25, "footstep", (string: "far", float: 1.4))],
     ),

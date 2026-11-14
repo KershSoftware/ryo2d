@@ -5,5 +5,6 @@ pub mod character;
 pub mod crowd;
 pub mod events;
 pub mod layers;
+pub mod meshes;
 pub mod skins;
 pub mod sockets;
