@@ -589,16 +589,18 @@ const GPU_ROOM: usize = 24;
 
 /// The sites where `drawn` makes more allocations inside the GPU API than
 /// `nothing` makes there and [`GPU_ROOM`] more, a site being the GPU API's
-/// function and the engine's that called it; not the encoder's finish
-/// ([`ENCODES`]). So a GPU resource made or written for each drawable is
-/// told wherever the engine does it: laying out the frame, planning its
-/// draws, or recording a pass
-fn more_gpu(drawn: &Frame, nothing: &Frame) -> Vec<String> {
+/// function and the engine's that called it; not a site that begins with
+/// one of `apart` (the encoder's finish, [`ENCODES`], for a frame whose
+/// drawables cost the GPU API something there each). So a GPU resource
+/// made or written for each drawable is told wherever the engine does it:
+/// laying out the frame, planning its draws, or recording a pass
+fn more_gpu(drawn: &Frame, nothing: &Frame, apart: &[&str]) -> Vec<String> {
   let other = |site: &String| nothing.gpu.get(site).copied().unwrap_or(0);
+  let compared = |site: &String| !apart.iter().any(|left| site.starts_with(left));
   drawn
     .gpu
     .iter()
-    .filter(|(site, n)| !site.starts_with(ENCODES) && other(site) + GPU_ROOM < **n)
+    .filter(|(site, n)| compared(site) && other(site) + GPU_ROOM < **n)
     .map(|(site, n)| format!("{n} (the other frame {}) at {site}", other(site)))
     .collect()
 }
@@ -1332,7 +1334,6 @@ fn a_lit_frame_with_64_shadowed_lights_allocates_nothing() {
   // The same lights, unshadowed and with nothing to cast, are the
   // baseline: any allocation the shadowed frame makes and that one does
   // not is the shadows' (the plan, the atlas and its soft filter's uniform)
-  let mut extra_first = None;
   for frame in 0..7 {
     sway(&mut shadowed, frame);
     sway(&mut plain, frame);
@@ -1397,21 +1398,25 @@ fn a_lit_frame_with_64_shadowed_lights_allocates_nothing() {
       "frame {frame}: the atlas was drawn: {:#?}",
       cast.lighting_gpu
     );
-    // The same work every frame: the shadowed frame's extra allocations
-    // (the atlas's pass, and wgpu tracking it as the frame's commands
-    // finish) do not grow or vary, leaving out wgpu's staging for writes
-    // and its submissions, which follow the GPU's timing. From the second
-    // traced frame: the first's command finish now and then makes 3 or 4
-    // more of wgpu's own (seen in 5 of 10 runs, never on a later frame)
+    // The same work every frame: what the shadows cost inside the GPU API
+    // is the atlas's one pass (its edges written, the pass begun, its
+    // pipeline set, and wgpu tracking it as the frame's commands finish),
+    // a few allocations at each of those sites and none for each light.
+    // Compared with the unshadowed frame site by site, the encoder's
+    // finish among them: the whole count moves by a few either way with
+    // the GPU's timing when other processes use the GPU (an exact count
+    // read 7, 9 and 15 for 11, and failed 15 runs of 40 beside three of
+    // them), and no site moves by the room; something made or written for
+    // each of the 64 lights is 64 at one site at the least
     let settled = |frame: &Frame| (frame.count - frame.timed) as isize;
     let extra = settled(&cast) - settled(&open);
     println!("frame {frame}: {extra} more of the GPU API's than the unshadowed frame, untimed");
-    if frame > 0 {
-      match extra_first {
-        None => extra_first = Some(extra),
-        Some(first) => assert_eq!(extra, first, "frame {frame}: the extra allocations changed"),
-      }
-    }
+    let more_gpu = more_gpu(&cast, &open, &[]);
+    assert!(
+      more_gpu.is_empty(),
+      "frame {frame}: the shadowed frame made over {GPU_ROOM} more allocations inside the GPU API \
+       than the unshadowed one, where the engine called into it: {more_gpu:#?}"
+    );
   }
 }
 
@@ -1776,7 +1781,10 @@ fn skeletons_allocate_nothing(mesh: bool) {
     );
     // All four are told together, so a failure names the site, the
     // function of the skeletons' path nearest it, and the GPU's share
-    let (more, more_gpu) = (more(&drawn, &nothing), more_gpu(&drawn, &nothing));
+    let (more, more_gpu) = (
+      more(&drawn, &nothing),
+      more_gpu(&drawn, &nothing, &[ENCODES]),
+    );
     let clean = more.is_empty() && drawn.in_skeleton.is_empty() && drawn.skeleton_gpu.is_empty();
     assert!(
       clean && more_gpu.is_empty(),
