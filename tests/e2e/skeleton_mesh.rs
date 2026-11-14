@@ -409,6 +409,21 @@ fn a_mesh_draws_as_the_region_of_its_image() {
   }
 }
 
+/// Three parts 16 px square, red, green, then blue, each 8 px right of the
+/// one before and drawn over its right half; those `meshes` marks are
+/// meshes of two triangles, the others regions. Standing at (32, 32) they
+/// are at (16, 24), (24, 24) and (32, 24)
+fn overlapping(meshes: [bool; 3]) -> Vec<Part> {
+  let colours = [("a", RED), ("b", GREEN), ("c", BLUE)];
+  let each = colours.into_iter().zip(meshes).enumerate();
+  each
+    .map(|(index, ((name, colour), mesh))| {
+      let part = part(name, colour, (16, 16)).at(index as f32 * 8.0 - 8.0, 0.0);
+      if mesh { part.in_triangles() } else { part }
+    })
+    .collect()
+}
+
 #[test]
 fn meshes_and_regions_keep_the_draw_order_across_images() {
   let Some(mut engine) = engine() else {
@@ -423,16 +438,7 @@ fn meshes_and_regions_keep_the_draw_order_across_images() {
     ((24, 24, 16, 16), GREEN),
     ((32, 24, 16, 16), BLUE),
   );
-  let parts = |meshes: [bool; 3]| -> Vec<Part> {
-    let colours = [("a", RED), ("b", GREEN), ("c", BLUE)];
-    let each = colours.into_iter().zip(meshes).enumerate();
-    each
-      .map(|(index, ((name, colour), mesh))| {
-        let part = part(name, colour, (16, 16)).at(index as f32 * 8.0 - 8.0, 0.0);
-        if mesh { part.in_triangles() } else { part }
-      })
-      .collect()
-  };
+  let parts = overlapping;
   // Which of the three are meshes: one between two regions, a region
   // between two meshes, a skeleton that is all meshes, and a mesh drawn
   // last and one drawn first. Each on three images, which end a run of
@@ -493,6 +499,94 @@ fn meshes_and_regions_keep_the_draw_order_across_images() {
   animation.set_animation(0, "swap", true);
   world.entity_mut(hero).insert(animation);
   assert_boxes(&stepped(&mut engine), &[floor, c, b, a], "the keyed order");
+}
+
+#[test]
+fn a_shaded_skeleton_keeps_its_mesh_in_the_draw_order() {
+  let Some(mut engine) = engine() else {
+    return;
+  };
+  // The three overlapping parts over a white floor, under a game's own
+  // sprite shader, which inverts each part's colour. With a game shader
+  // every region is a sprite item of its own and a mesh an item among
+  // them, and they must still draw in the skeleton's order: each part
+  // over the right half of the one before
+  white_floor(engine.world_mut());
+  let floor = ((0, 0, SIZE - 1, SIZE), WHITE);
+  let inverted = |[r, g, b, _]: [u8; 4]| [255 - r, 255 - g, 255 - b, 255];
+  let (a, b, c) = (
+    ((16, 24, 16, 16), inverted(RED)),
+    ((24, 24, 16, 16), inverted(GREEN)),
+    ((32, 24, 16, 16), inverted(BLUE)),
+  );
+  let invert = engine
+    .world_mut()
+    .resource_mut::<Assets<Shader>>()
+    .add(Shader::from_wgsl("skeleton-mesh-order.wgsl", INVERT));
+  // The mesh between two regions, drawn first, and drawn last; on three
+  // images and on one
+  let cases = [
+    [false, true, false],
+    [true, false, false],
+    [false, false, true],
+  ];
+  for (images, packed) in [(Images::Each, "three images"), (Images::Atlas, "one image")] {
+    for meshes in cases {
+      let world = engine.world_mut();
+      let data = rig_with(world, &overlapping(meshes), images, |builder| builder);
+      let mut renderable = Renderable::skeleton();
+      renderable.shader = Some(SpriteShader::custom(invert.clone()));
+      let hero = stand(world, data, (32.0, 32.0), renderable);
+      let what = format!("shaded, {packed}, meshes {meshes:?}");
+      // A part draws plain until the shader's pipeline for it is accepted,
+      // a mesh's apart from a quad's: wait for every part's own strip
+      step_until(
+        &mut engine,
+        |drawn| {
+          let strip = |x: u32, colour: [u8; 4]| drawn.get_pixel(x, 32).0 == colour;
+          strip(20, a.1) && strip(28, b.1) && strip(44, c.1)
+        },
+        &what,
+      );
+      assert_boxes(&frame(&engine), &[floor, a, b, c], &what);
+      engine.world_mut().despawn(hero);
+    }
+  }
+}
+
+#[test]
+fn an_effect_on_a_deformed_mesh_shows_where_the_deform_puts_it() {
+  let Some(mut engine) = engine() else {
+    return;
+  };
+  // A red flag 16 x 8 px on a pole at (16, 32), reaching right, its right
+  // corners held 8 px down by a deform key: it slants evenly from its
+  // pole, so part of its setup shape is left bare and part of what it
+  // covers lies outside that shape
+  let world = engine.world_mut();
+  let data = flagged(world, 0.0);
+  let flag = stand(world, data, (16.0, 32.0), Renderable::skeleton());
+  let mut state = SkeletonAnimation::new();
+  state.set_animation(0, "slant", true);
+  world.entity_mut(flag).insert(state);
+  let slanted = |x: u32, y: u32| {
+    let edge = 28.0 + 8.0 * (x as f32 + 0.5 - 16.0) / 16.0;
+    let centre = y as f32 + 0.5;
+    (16..32).contains(&x) && centre > edge && centre < edge + 8.0
+  };
+  let drawn = settled(&mut engine);
+  assert_pixels(&drawn, |x, y| slanted(x, y).then_some(RED), "slanted");
+  // A hit flash whitens the flag where the deform puts it, every pixel of
+  // the slanted shape and none of the setup shape's that it has left
+  let mut renderable = engine.world_mut().get_mut::<Renderable>(flag).unwrap();
+  renderable.shader = Some(SpriteShader::flash(Color::WHITE, 1.0));
+  let drawn = stepped(&mut engine);
+  assert_pixels(
+    &drawn,
+    |x, y| slanted(x, y).then_some(WHITE),
+    "slanted and flashing",
+  );
+  assert_ne!(drawn.get_pixel(30, 29).0, WHITE, "the setup shape's corner");
 }
 
 #[test]

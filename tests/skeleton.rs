@@ -2625,6 +2625,86 @@ fn a_reload_that_changes_a_mesh_s_vertex_count_skips_its_deform() {
   assert_eq!(animation(&engine, banner).current(0), Some(wave));
 }
 
+/// The flag weighted: four corners, each held by the pole alone, so four
+/// positions as the deform keys
+const WEIGHTED_FLAG_OF_FOUR: &str = r#""flag": Mesh(region: "cloth",
+  uvs: [(0, 0), (1, 0), (1, 1), (0, 1)], triangles: [0, 1, 2, 0, 2, 3],
+  vertices: Weighted([
+    [("pole", 0, 0, 1)], [("pole", 16, 0, 1)], [("pole", 16, 8, 1)], [("pole", 0, 8, 1)],
+  ]))"#;
+/// The same four corners, the third held twice over: five positions. Were
+/// the keys' four offsets laid over them all the same, the second corner
+/// would rise 6 px and the third sink 3
+const WEIGHTED_FLAG_OF_FIVE: &str = r#""flag": Mesh(region: "cloth",
+  uvs: [(0, 0), (1, 0), (1, 1), (0, 1)], triangles: [0, 1, 2, 0, 2, 3],
+  vertices: Weighted([
+    [("pole", 0, 0, 1)], [("pole", 16, 0, 1)],
+    [("pole", 16, 8, 0.5), ("pole", 16, 8, 0.5)], [("pole", 0, 8, 1)],
+  ]))"#;
+
+#[test]
+fn a_reload_that_changes_a_weighted_mesh_s_influences_skips_its_deform() {
+  let log = capture_log();
+  let files = MemorySource::new();
+  let cloth = image::RgbaImage::from_pixel(2, 2, image::Rgba([255; 4]));
+  let mut png = Vec::new();
+  cloth
+    .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+    .expect("encoding a png");
+  files.insert("cloth.png", png);
+  files.insert(PATH, banner_file(WEIGHTED_FLAG_OF_FOUR));
+  let Some((mut engine, data)) = engine_over(&files) else {
+    return;
+  };
+  let at = Vec2::new(20.0, 30.0);
+  let banner = hoist(&mut engine, &data, at);
+  let wave = play(&mut engine, banner, 0, "wave", true);
+  engine.step_frames(4).expect("frames");
+  let flag = |engine: &HeadlessEngine| skeleton_mesh(engine.world(), banner, "banner");
+  // A weighted mesh's positions are its influences: one a corner here, so
+  // the deform moves the corners as it moves an unweighted flag's
+  near_all(&flag(&engine), &flag_at(at, &FLAG, &WAVE, 1.0));
+  assert_eq!(skipped(&log), 0, "{:?}", log.warnings());
+
+  // The saved file holds the same four corners, one of them by two
+  // influences: five positions under keys for four. It lands while the
+  // clock is paused and is drawn in that frame in its setup shape, with no
+  // panic and no read past the keys or the offsets
+  save_paused(
+    &mut engine,
+    &files,
+    &data,
+    banner_file(WEIGHTED_FLAG_OF_FIVE),
+  );
+  near_all(&flag(&engine), &flag_at(at, &FLAG, &[], 0.0));
+  engine.step_frames(2).expect("frames");
+  time(&mut engine).game.resume();
+  // The animation plays on, loop after loop, and its deform is skipped:
+  // one warning, which counts the positions and not the vertices
+  let before = track_time(&engine, banner, wave);
+  engine.step_frames(40).expect("frames");
+  assert!(track_time(&engine, banner, wave) > before + 0.5, "it loops");
+  near_all(&flag(&engine), &flag_at(at, &FLAG, &[], 0.0));
+  assert_eq!(skipped(&log), 1, "{:?}", log.warnings());
+  let told = log.warnings().join("\n");
+  for part in ["\"wave\"", "4 positions", "the mesh has 5"] {
+    assert!(told.contains(part), "{part} in {told}");
+  }
+  assert_eq!(animation(&engine, banner).current(0), Some(wave));
+
+  // Saved with an influence a corner again, the deform moves the flag
+  // again and nothing more is said
+  save(
+    &mut engine,
+    &files,
+    &data,
+    banner_file(WEIGHTED_FLAG_OF_FOUR),
+  );
+  engine.step_frames(3).expect("frames");
+  near_all(&flag(&engine), &flag_at(at, &FLAG, &WAVE, 1.0));
+  assert_eq!(skipped(&log), 1, "{:?}", log.warnings());
+}
+
 /// Saves `text`, which must not load, over the skeleton's file and runs
 /// frames until its reload has failed: the error it failed with
 fn save_broken(
