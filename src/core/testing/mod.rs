@@ -84,11 +84,12 @@ use std::time::Duration;
 
 use glam::Vec2;
 
-use crate::core::asset::{AssetServer, MemorySource, insert_registry};
+use crate::core::asset::{AssetServer, Assets, MemorySource, insert_registry};
 use crate::core::audio::{AudioEngine, audio_system};
 use crate::core::ecs::{Entity, World};
 use crate::core::particles::ParticleEmitter;
 use crate::core::particles::ParticleStore;
+use crate::core::skeleton::{Attachment, Part, Parts, Skeleton, SkeletonData};
 use crate::core::time::Time;
 
 /// Turns the log's stderr output on or off (for `benches/dev_tools.rs`,
@@ -180,6 +181,35 @@ pub fn particle_positions(world: &World, emitter: Entity) -> Vec<Vec2> {
         })
         .collect()
     })
+}
+
+/// Where the vertices of the mesh that slot `slot` of `entity`'s skeleton
+/// shows are in the world, as its last step left them (moved by its
+/// animations' deform keys; where its bones are, not between steps), in the
+/// order of the attachment's vertices. None without a skeleton, its data, a
+/// pose made for that data, or a mesh in the slot
+#[doc(hidden)]
+pub fn skeleton_mesh(world: &World, entity: Entity, slot: &str) -> Vec<Vec2> {
+  let found = || {
+    let skeleton = world.get::<Skeleton>(entity)?;
+    let assets = world.get_resource::<Assets<SkeletonData>>()?;
+    let handle = skeleton.data();
+    let data = assets.get(handle)?;
+    let seen = (handle.id(), assets.version(handle)?);
+    let slot = data.slot(slot)?;
+    let shown = skeleton.pose.slot_attachments.get(slot.index())?;
+    let Attachment::Mesh(mesh) = skeleton.skin_attachment(slot, shown.as_deref()?)? else {
+      return None;
+    };
+    let root = skeleton.flip().under(skeleton.root());
+    let mut parts = Parts::default();
+    skeleton.parts(data, seen, root, None, &mut parts);
+    parts.list.iter().find_map(|part| match part {
+      Part::Mesh(part) if std::ptr::eq(part.mesh, mesh) => Some(parts.vertices(part).to_vec()),
+      _ => None,
+    })
+  };
+  found().unwrap_or_default()
 }
 
 /// A world with the asset registry, as the engine's world starts: an

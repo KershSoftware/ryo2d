@@ -125,6 +125,12 @@ use crate::core::ui::Color;
 ///       slots: { "gear": (
 ///         attachment: [(0.0, "gear"), (0.5, None)],           // None hides the slot
 ///         color: [(0.0, "#ffffff"), (1.0, "#ff000000", Stepped)],
+///         // The shape of a mesh the slot shows, by its attachment's name. A key
+///         // holds an offset from the setup shape, x then y, for each position
+///         // of the mesh: a vertex each when unweighted (in the slot's bone), an
+///         // influence each when weighted (in that influence's bone). [] is no
+///         // offset, the setup shape
+///         deform: { "flag": [(0.0, []), (0.5, [0, -6, 0, -6, 0, 6], Bezier(0.25, 0, 0.75, 1)), (1.0, [])] },
 ///       ) },
 ///       // Every slot, back to front, or None for the setup order
 ///       draw_order: [(0.25, ["gear", "torso"]), (0.75, None)],
@@ -142,7 +148,11 @@ use crate::core::ui::Color;
 /// A region attachment's `width` and `height` are its region's size when left
 /// out. A mesh's `hull` is 0 when left out, its positions are in pixels (no
 /// angles occur) and a vertex's weights are normalised as it loads. A
-/// draw-order key lists the slots by name. A bone or slot of an animation, a
+/// deform's keys are each empty or one length, an x and a y for each
+/// position; that they fit a mesh is found when the animation plays, since
+/// the skins worn decide which mesh a name shows, and a deform that does
+/// not fit is skipped with one warning. A draw-order key lists the slots by
+/// name. A bone or slot of an animation, a
 /// region's image, an attachment's region, a mesh influence's bone and an
 /// event key's event are names the file declares. Unknown fields are refused, so a
 /// misspelt one fails rather than doing nothing, and so is a name written
@@ -545,6 +555,8 @@ struct BoneTimelinesFile {
 struct SlotTimelinesFile {
   attachment: Option<Vec<(f32, Option<String>)>>,
   color: Option<Vec<Key<ColorFile>>>,
+  /// By attachment name, keys of offsets: x then y for each position
+  deform: Ordered<Vec<Key<Vec<f32>>>>,
 }
 
 #[derive(Deserialize)]
@@ -863,8 +875,9 @@ impl SkeletonFile {
     })
   }
 
-  /// The animation `file` called `name`: bones' timelines, then slots', the
-  /// draw order and the events
+  /// The animation `file` called `name`: bones' timelines, then slots'
+  /// (each slot's attachment, colour and deforms), the draw order and the
+  /// events
   fn animation(
     builder: &crate::core::skeleton::SkeletonDataBuilder,
     name: &str,
@@ -941,6 +954,13 @@ impl SkeletonFile {
         timelines.push(Timeline::Color {
           slot,
           frames: frames(keys, |color| color.0),
+        });
+      }
+      for (attachment, keys) in &t.deform.0 {
+        timelines.push(Timeline::Deform {
+          slot,
+          attachment: Arc::from(attachment.as_str()),
+          frames: frames(keys, Vec::clone),
         });
       }
     }
@@ -1308,10 +1328,13 @@ mod tests {
             shear_y: [(0.0, 0), (1.0, -180)],
           ),
         },
-        slots: { "head": (
-          attachment: [(0.0, "head"), (0.5, None)],
-          color: [(0.0, "#ffffff"), (1.0, "#ff000000", Stepped)],
-        ) },
+        slots: {
+          "head": (
+            attachment: [(0.0, "head"), (0.5, None)],
+            color: [(0.0, "#ffffff"), (1.0, "#ff000000", Stepped)],
+          ),
+          "glow": (deform: { "flag": [(0.0, []), (0.5, [0, -6, 0, -6, 0, 6, 0, 6], Bezier(0.25, 0, 0.75, 1)), (1.0, [])] }),
+        },
         draw_order: [(0.25, ["head", "torso", "gear", "glow"]), (0.75, None)],
         events: [
           (0.5, "step"),
@@ -1551,6 +1574,7 @@ mod tests {
     let bone = |name: &str| builder.bone_id(name).expect("a bone");
     let (torso, head) = (bone("torso"), bone("head"));
     let head_slot = builder.slot_id("head").expect("a slot");
+    let glow_slot = builder.slot_id("glow").expect("a slot");
     let slot_ids: Vec<SlotId> = ["head", "torso", "gear", "glow"]
       .iter()
       .map(|name| builder.slot_id(name).expect("a slot"))
@@ -1635,6 +1659,24 @@ mod tests {
           frames: vec![
             (0.0, rgb(255, 255, 255), linear),
             (1.0, Color::new(255, 0, 0, 0), Curve::Stepped),
+          ],
+        },
+        Timeline::Deform {
+          slot: glow_slot,
+          attachment: Arc::from("flag"),
+          frames: vec![
+            (0.0, Vec::new(), linear),
+            (
+              0.5,
+              vec![0.0, -6.0, 0.0, -6.0, 0.0, 6.0, 0.0, 6.0],
+              Curve::Bezier {
+                cx1: 0.25,
+                cy1: 0.0,
+                cx2: 0.75,
+                cy2: 1.0,
+              },
+            ),
+            (1.0, Vec::new(), linear),
           ],
         },
         Timeline::DrawOrder {
@@ -1770,6 +1812,167 @@ mod tests {
         Vec2::new(64.0, 40.0)
       ])
     );
+  }
+
+  /// A pole with a slot "banner" showing "flag", a mesh of four vertices,
+  /// and a bare slot "spare"; `slots` is the slots block of its one
+  /// animation, "wave"
+  fn banner_file(slots: &str) -> String {
+    format!(
+      r#"(
+        images: {{ "parts": "hero.png" }},
+        regions: {{ "r": (image: "parts", rect: (0, 0, 64, 64)) }},
+        bones: [(name: "pole")],
+        slots: [(name: "banner", bone: "pole", attachment: "flag"), (name: "spare", bone: "pole")],
+        skins: {{ "default": {{ "banner": {{
+          "flag": Mesh(region: "r", uvs: [(0, 0), (1, 0), (1, 1), (0, 1)], triangles: [0, 1, 2, 0, 2, 3],
+                       vertices: Unweighted([(0, 0), (64, 0), (64, 40), (0, 40)])),
+        }} }} }},
+        animations: {{ "wave": (duration: 1.0, slots: {{ {slots} }}) }},
+      )"#
+    )
+  }
+
+  #[test]
+  fn a_deform_timeline_loads_and_matches_the_builder_s() {
+    // A slot's block holds a `deform` map from attachment names to keys:
+    // each key a time, a list of offsets (x then y for each position, or
+    // none for the setup shape) and, if written, a curve
+    let mut world = registry_over(files(&banner_file(
+      r#"
+      "banner": (
+        deform: {
+          "flag": [(0.0, []), (0.5, [0, -6, 0, -6, 0, 6, 0, 6], Bezier(0.25, 0, 0.75, 1)), (1.0, [])],
+          "pennant": [(0.25, [1.5, 2, 3, -4.25], Stepped)],
+        },
+        attachment: [(0.0, "flag")],
+      ),
+      "spare": (deform: { "flag": [(0.0, [])] }),
+      "#,
+    )));
+    let data = match load_in(&mut world) {
+      Ok(data) => data,
+      Err(error) => panic!("{error}"),
+    };
+    // The same animation built in code: a slot's attachment and colour
+    // timelines come first, then its deforms in the file's order
+    let mut assets = AssetsView::new(&mut world);
+    let image = assets.load_now::<Image>("hero.png").expect("the image");
+    let builder = SkeletonData::builder()
+      .bone("pole", None, BoneSetup::default())
+      .slot(
+        "banner",
+        "pole",
+        SlotSetup {
+          attachment: Some(Arc::from("flag")),
+          ..SlotSetup::default()
+        },
+      )
+      .slot("spare", "pole", SlotSetup::default())
+      .region(Region {
+        name: Arc::from("r"),
+        image,
+        x: 0,
+        y: 0,
+        width: 64,
+        height: 64,
+      })
+      .attachment(
+        "default",
+        "banner",
+        "flag",
+        Attachment::Mesh(MeshAttachment::new(
+          0,
+          MeshVertices::Unweighted(vec![
+            Vec2::new(0.0, 0.0),
+            Vec2::new(64.0, 0.0),
+            Vec2::new(64.0, 40.0),
+            Vec2::new(0.0, 40.0),
+          ]),
+          unit_square(),
+          vec![0, 1, 2, 0, 2, 3],
+        )),
+      );
+    let (banner, spare) = (
+      builder.slot_id("banner").expect("a slot"),
+      builder.slot_id("spare").expect("a slot"),
+    );
+    let deform = |slot: SlotId, attachment: &str, frames| Timeline::Deform {
+      slot,
+      attachment: Arc::from(attachment),
+      frames,
+    };
+    let ease = Curve::Bezier {
+      cx1: 0.25,
+      cy1: 0.0,
+      cx2: 0.75,
+      cy2: 1.0,
+    };
+    let wave = animation(
+      "wave",
+      1.0,
+      vec![
+        Timeline::Attachment {
+          slot: banner,
+          frames: vec![(0.0, Some(Arc::from("flag")))],
+        },
+        deform(
+          banner,
+          "flag",
+          vec![
+            (0.0, Vec::new(), Curve::Linear),
+            (0.5, vec![0.0, -6.0, 0.0, -6.0, 0.0, 6.0, 0.0, 6.0], ease),
+            (1.0, Vec::new(), Curve::Linear),
+          ],
+        ),
+        deform(
+          banner,
+          "pennant",
+          vec![(0.25, vec![1.5, 2.0, 3.0, -4.25], Curve::Stepped)],
+        ),
+        deform(spare, "flag", vec![(0.0, Vec::new(), Curve::Linear)]),
+      ],
+    );
+    let expected = builder.animation(wave).build().expect("a valid skeleton");
+    assert_eq!(data.animations(), expected.animations());
+    assert_eq!(data.skins(), expected.skins());
+    assert_eq!(data.slots(), expected.slots());
+
+    // That a deform's keys fit a mesh is found when it plays, as the skin
+    // worn decides the mesh; what can be checked in the file is, naming
+    // the animation and its timeline
+    for (slots, item, reason) in [
+      (
+        r#""banner": (deform: { "flag": [(0.0, [1, 2, 3, 4]), (1.0, [1, 2])] })"#,
+        r#"animation "wave" timeline 0 (deform)"#,
+        "key 1 holds 2 values where key 0 holds 4",
+      ),
+      (
+        r#""banner": (color: [(0.0, (r: 9, g: 9, b: 9))], deform: { "flag": [(0.5, [1, 2]), (0.25, [1, 2])] })"#,
+        r#"animation "wave" timeline 1 (deform)"#,
+        "time order",
+      ),
+      (
+        r#""banner": (deform: { "flag": [(0.0, [1, 2])], "flag": [(0.0, [1, 2])] })"#,
+        "",
+        "`flag` is written twice",
+      ),
+      (
+        r#""banner": (deform: { "flag": [] })"#,
+        r#"animation "wave" timeline 0 (deform)"#,
+        "no keys",
+      ),
+      (
+        r#""flagpole": (deform: { "flag": [(0.0, [])] })"#,
+        r#"animation "wave""#,
+        r#""flagpole" is not a slot"#,
+      ),
+    ] {
+      let error = failure(&banner_file(slots));
+      assert!(error.contains(PATH), "{error}");
+      assert!(error.contains(item), "{item} in {error}");
+      assert!(error.contains(reason), "{reason} in {error}");
+    }
   }
 
   #[test]
@@ -1941,6 +2144,19 @@ mod tests {
     assert_eq!(data.animations().len(), 2);
     assert_eq!(data.skins().len(), 2);
     assert_eq!(data.mix("walk", "run"), 0.2);
+    // Its deform keys are for the flag it declares: three positions
+    let walk = data.animation("walk").expect("walk");
+    let deforms: Vec<_> = walk
+      .timelines
+      .iter()
+      .filter_map(|timeline| match timeline {
+        Timeline::Deform {
+          attachment, frames, ..
+        } => Some((&**attachment, frames.len(), frames[1].1.len())),
+        _ => None,
+      })
+      .collect();
+    assert_eq!(deforms, [("flag", 3, 6)]);
   }
 
   #[test]

@@ -10,7 +10,7 @@ use glam::{Affine2, Mat2, Vec2, Vec4};
 
 use super::attachment::{Attachment, MeshAttachment, MeshVertices, RegionAttachment};
 use super::component::Skeleton;
-use super::data::{BoneId, DataVersion, SkeletonData, SlotBlend};
+use super::data::{BoneId, DataVersion, SkeletonData, SlotBlend, SlotId};
 use crate::core::asset::AssetId;
 use crate::core::ecs::interpolate::render_global;
 use crate::core::ecs::{GlobalTransform, PreviousGlobalTransform, YSort};
@@ -105,11 +105,45 @@ impl Skeleton {
     })
   }
 
+  /// Slot `slot`'s deform offsets for `mesh`, the mesh it shows, as a frame
+  /// draws them: `between` of the way from the step before the last's to
+  /// the last's, or the last's.
+  ///
+  /// The lists were filled by a step, for the mesh the slot showed then,
+  /// and a frame may find another there (a skin put on since, which shows
+  /// at once), so each is taken only if it holds an x and a y for each of
+  /// this mesh's positions. An empty one is the setup shape. This step's
+  /// of another length moves nothing; the step before's of another length
+  /// (another mesh's) is not drawn from, and this step's is drawn as it is
+  fn drawn_deform(&self, slot: SlotId, mesh: &MeshAttachment, between: Option<f32>) -> Offsets<'_> {
+    let Some(deform) = self.pose.deforms.get(slot.index()) else {
+      return Offsets::NONE;
+    };
+    let width = mesh.positions() * 2;
+    let (now, before) = (&deform.offsets[..], &deform.previous[..]);
+    if !now.is_empty() && now.len() != width {
+      return Offsets::NONE;
+    }
+    match between {
+      Some(t) if before.is_empty() || before.len() == width => Offsets {
+        from: before,
+        to: now,
+        t,
+      },
+      _ => Offsets {
+        from: now,
+        to: now,
+        t: 1.0,
+      },
+    }
+  }
+
   /// Fills `out` with what the skeleton's slots show, back to front in its
   /// draw order, under `root` (the skeleton's space to the world) with its
   /// bones `between` their last two steps: a region as a quad on its
   /// slot's bone, and a mesh as its vertices where the bones that hold
-  /// them put them ([`Parts::vertices`]). What `out` held is forgotten.
+  /// them put them ([`Parts::vertices`]), each moved first by what the
+  /// animations' deform keys give it. What `out` held is forgotten.
   ///
   /// Nothing for a skeleton with no pose, or whose pose was made from
   /// another version of its data than `seen`, the one `data` is: its slots
@@ -157,7 +191,8 @@ impl Skeleton {
           let Some(region) = data.regions().get(mesh.region) else {
             continue;
           };
-          let Some(vertices) = out.skin(self, mesh, slot_data.bone, root, between) else {
+          let deform = self.drawn_deform(slot, mesh, between);
+          let Some(vertices) = out.skin(self, mesh, slot_data.bone, deform, root, between) else {
             continue;
           };
           out.list.push(Part::Mesh(MeshPart {
@@ -225,8 +260,11 @@ impl<'s> Parts<'s> {
   /// of the slot that shows the mesh. A weighted vertex is the sum, over
   /// its influences, of where each one's bone puts the place given in that
   /// bone's space, times the influence's weight (the weights of a vertex
-  /// sum to 1 in data that built). The bones are `skeleton`'s as the frame
-  /// draws them, `between` their last two steps, under `root`.
+  /// sum to 1 in data that built). Each place is first moved by its offset
+  /// in `deform` (the mesh's positions in order: a vertex each, or an
+  /// influence each), in the space it is given in, so a keyed shape turns
+  /// with the bone it rides. The bones are `skeleton`'s as the frame draws
+  /// them, `between` their last two steps, under `root`.
   ///
   /// `None`, with nothing added, when the pose lacks a bone the mesh
   /// names: a pose made for other data. A vertex can come out at no finite
@@ -237,27 +275,44 @@ impl<'s> Parts<'s> {
     skeleton: &Skeleton,
     mesh: &MeshAttachment,
     slot_bone: BoneId,
+    deform: Offsets<'_>,
     root: Affine2,
     between: Option<f32>,
   ) -> Option<Range<usize>> {
     let first = self.positions.len();
+    // A mesh no deform moves is placed with no offsets looked up
+    let moved = !deform.none();
     let whole = match &mesh.vertices {
       MeshVertices::Unweighted(vertices) => {
         self.placed(skeleton, slot_bone, root, between).map(|bone| {
-          let placed = vertices.iter().map(|&vertex| bone.transform_point2(vertex));
-          self.positions.extend(placed);
+          if moved {
+            let offset = vertices.iter().enumerate();
+            let placed = offset.map(|(at, &vertex)| bone.transform_point2(vertex + deform.at(at)));
+            self.positions.extend(placed);
+          } else {
+            let placed = vertices.iter().map(|&vertex| bone.transform_point2(vertex));
+            self.positions.extend(placed);
+          }
         })
       }
-      MeshVertices::Weighted(weighted) => weighted.each().try_for_each(|influences| {
-        let mut at = Vec2::ZERO;
-        for influence in influences {
-          let bone = self.placed(skeleton, influence.bone, root, between)?;
-          let held = Vec2::new(influence.x, influence.y);
-          at += bone.transform_point2(held) * influence.weight;
-        }
-        self.positions.push(at);
-        Some(())
-      }),
+      MeshVertices::Weighted(weighted) => {
+        // Its positions are its influences, in the order they are held
+        let mut position = 0;
+        weighted.each().try_for_each(|influences| {
+          let mut at = Vec2::ZERO;
+          for influence in influences {
+            let bone = self.placed(skeleton, influence.bone, root, between)?;
+            let mut held = Vec2::new(influence.x, influence.y);
+            if moved {
+              held += deform.at(position);
+            }
+            position += 1;
+            at += bone.transform_point2(held) * influence.weight;
+          }
+          self.positions.push(at);
+          Some(())
+        })
+      }
     };
     if whole.is_none() {
       self.positions.truncate(first);
@@ -290,6 +345,41 @@ impl<'s> Parts<'s> {
       *kept = Some(placed);
     }
     Some(placed)
+  }
+}
+
+/// A mesh's deform offsets as a frame draws them: `t` of the way from one
+/// list to another, each an x and a y for each of the mesh's positions, or
+/// empty for none
+#[derive(Debug, Clone, Copy)]
+struct Offsets<'s> {
+  from: &'s [f32],
+  to: &'s [f32],
+  t: f32,
+}
+
+impl Offsets<'_> {
+  /// No offsets: the setup shape
+  const NONE: Offsets<'static> = Offsets {
+    from: &[],
+    to: &[],
+    t: 1.0,
+  };
+
+  /// Whether no position is moved
+  fn none(&self) -> bool {
+    self.from.is_empty() && self.to.is_empty()
+  }
+
+  /// Position `index`'s offset; nothing for one a list does not reach
+  fn at(&self, index: usize) -> Vec2 {
+    let of = |list: &[f32]| match list.get(index * 2..index * 2 + 2) {
+      Some(&[x, y]) => Vec2::new(x, y),
+      _ => Vec2::ZERO,
+    };
+    let (from, to) = (of(self.from), of(self.to));
+    // Exact where the two are the same
+    from + (to - from) * self.t
   }
 }
 
@@ -1188,5 +1278,143 @@ mod tests {
     sprite.style = crate::core::ecs::RenderStyle::Single;
     assert_eq!(Flip::of(Some(&sprite)), Flip::default());
     assert_eq!(Flip::of(None), Flip::default());
+  }
+
+  /// The sleeve's and the cape's vertices of a walked [`mesh_rig`]
+  fn walked(
+    skeleton: &Skeleton,
+    data: &SkeletonData,
+    seen: DataVersion,
+    between: Option<f32>,
+  ) -> [Vec<Vec2>; 2] {
+    let mut parts = Parts::default();
+    skeleton.parts(data, seen, Affine2::IDENTITY, between, &mut parts);
+    let drawn = meshes(&parts);
+    let (Some(sleeve), Some(cape)) = (&drawn[1], &drawn[2]) else {
+      panic!("the meshes are the second and third parts: {drawn:?}");
+    };
+    [sleeve.clone(), cape.clone()]
+  }
+
+  /// Slot `slot`'s deform offsets of the last step, and of the one before
+  fn set_deform(skeleton: &mut Skeleton, slot: usize, now: &[f32], before: &[f32]) {
+    let offsets = skeleton.pose.deform_mut(slot).expect("the slot");
+    offsets.clear();
+    offsets.extend_from_slice(now);
+    let previous = &mut skeleton.pose.deforms[slot].previous;
+    previous.clear();
+    previous.extend_from_slice(before);
+  }
+
+  fn points<const N: usize>(at: [(f32, f32); N]) -> [Vec2; N] {
+    at.map(|(x, y)| Vec2::new(x, y))
+  }
+
+  #[test]
+  fn a_deform_moves_each_position_in_its_bone_s_space_before_it_is_weighted() {
+    let (mut skeleton, data, seen) = posed_of(mesh_rig, Affine2::IDENTITY.into(), |_| {});
+    let [sleeve, cape] = walked(&skeleton, &data, seen, None);
+    near(&sleeve, &points([(10.0, 0.0), (10.0, 4.0), (8.0, 0.0)]));
+    near(
+      &cape,
+      &points([(8.0, 8.5), (2.0, 22.0), (10.0, 0.0), (6.0, 13.0)]),
+    );
+    // The sleeve's vertices are in its slot's bone, the arm, which points
+    // down the screen from (10, 0): its second vertex moved 1 along the
+    // arm goes 1 px down, and its third moved 3 back across it (the arm's
+    // y axis points left) goes 3 px right
+    set_deform(&mut skeleton, 1, &[0.0, 0.0, 1.0, 0.0, 0.0, -3.0], &[]);
+    let [sleeve, unmoved] = walked(&skeleton, &data, seen, None);
+    near(&sleeve, &points([(10.0, 0.0), (10.0, 5.0), (11.0, 0.0)]));
+    assert_eq!(unmoved, cape, "each slot's offsets are its own");
+    // The cape has a position for each influence, in its vertices' order:
+    // the first vertex's two (the arm's, three parts of it; the hand's,
+    // one), the second's one, the third's one, and the last's two (half
+    // each). An offset moves one influence's place in that influence's
+    // bone, and the vertex goes that far times the influence's weight:
+    // 4 right in the hand is 1 px right for the first vertex, and 2 down
+    // in the hand is 1 px down for the last
+    let mut offsets = [0.0; 12];
+    offsets[2] = 4.0;
+    offsets[11] = 2.0;
+    set_deform(&mut skeleton, 2, &offsets, &[]);
+    let [_, moved] = walked(&skeleton, &data, seen, None);
+    near(
+      &moved,
+      &points([(9.0, 8.5), (2.0, 22.0), (10.0, 0.0), (6.0, 14.0)]),
+    );
+    // And in the arm, which points down, 2 along it is 2 px down times the
+    // arm's three parts in four
+    let mut offsets = [0.0; 12];
+    offsets[0] = 2.0;
+    set_deform(&mut skeleton, 2, &offsets, &[]);
+    let [_, moved] = walked(&skeleton, &data, seen, None);
+    near(
+      &moved,
+      &points([(8.0, 10.0), (2.0, 22.0), (10.0, 0.0), (6.0, 13.0)]),
+    );
+  }
+
+  #[test]
+  fn a_deform_draws_between_its_last_two_steps_when_both_fit_the_mesh() {
+    let (mut skeleton, data, seen) = posed_of(mesh_rig, Affine2::IDENTITY.into(), |_| {});
+    let [setup, cape] = walked(&skeleton, &data, seen, None);
+    // The sleeve's second vertex was 2 along the arm (2 px down) a step
+    // ago and is 6 along it now
+    let (before, now) = (
+      [0.0, 0.0, 2.0, 0.0, 0.0, 0.0],
+      [0.0, 0.0, 6.0, 0.0, 0.0, 0.0],
+    );
+    set_deform(&mut skeleton, 1, &now, &before);
+    let second = |skeleton: &Skeleton, between: Option<f32>| {
+      let [sleeve, _] = walked(skeleton, &data, seen, between);
+      assert_eq!(
+        (sleeve[0], sleeve[2]),
+        (setup[0], setup[2]),
+        "the rest stays"
+      );
+      sleeve[1]
+    };
+    // The vertex is `by` px further down the screen than in the setup shape
+    let down = |at: Vec2, by: f32| near(&[at], &[Vec2::new(10.0, 4.0 + by)]);
+    down(second(&skeleton, None), 6.0);
+    down(second(&skeleton, Some(0.0)), 2.0);
+    down(second(&skeleton, Some(0.25)), 3.0);
+    down(second(&skeleton, Some(1.0)), 6.0);
+    // A list with nothing in it is the setup shape: drawn from it, and
+    // drawn to it
+    set_deform(&mut skeleton, 1, &now, &[]);
+    down(second(&skeleton, Some(0.5)), 3.0);
+    set_deform(&mut skeleton, 1, &[], &before);
+    down(second(&skeleton, Some(0.5)), 1.0);
+    down(second(&skeleton, None), 0.0);
+    // The step before's offsets were another mesh's (another count): this
+    // step's are drawn as they are
+    set_deform(&mut skeleton, 1, &now, &[9.0; 4]);
+    down(second(&skeleton, Some(0.5)), 6.0);
+    set_deform(&mut skeleton, 1, &now, &[9.0; 8]);
+    down(second(&skeleton, Some(0.0)), 6.0);
+    // This step's offsets are not this mesh's (a skin put on since the
+    // step shows a mesh of another count): nothing is moved, whatever the
+    // step before left, and no read goes past either list
+    for stale in [&[9.0; 4][..], &[9.0; 5], &[9.0; 8], &[9.0; 1]] {
+      for before in [&[][..], &before, &[9.0; 4], &[9.0; 8]] {
+        set_deform(&mut skeleton, 1, stale, before);
+        for between in [None, Some(0.0), Some(0.5), Some(1.0)] {
+          let [sleeve, _] = walked(&skeleton, &data, seen, between);
+          assert_eq!(sleeve, setup, "{stale:?} after {before:?}, {between:?}");
+        }
+      }
+    }
+    // The same for a weighted mesh, whose count is of its influences
+    for stale in [&[9.0; 8][..], &[9.0; 11], &[9.0; 14]] {
+      set_deform(&mut skeleton, 2, stale, &[9.0; 12]);
+      let [_, drawn] = walked(&skeleton, &data, seen, Some(0.5));
+      assert_eq!(drawn, cape, "{stale:?}");
+    }
+    // A pose whose deforms hold fewer slots than the data moves nothing
+    skeleton.pose.deforms.truncate(1);
+    let [sleeve, drawn] = walked(&skeleton, &data, seen, Some(0.5));
+    assert_eq!((sleeve, drawn), (setup, cape));
   }
 }

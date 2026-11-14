@@ -254,10 +254,11 @@ impl From<Affine2> for Stand {
 /// gives what it wears.
 ///
 /// It is drawn when its entity has a [`Renderable::skeleton`]: its regions
-/// where its bones are and its meshes skinned to them, sorted, lit,
-/// shadowed and lifted as a sprite is, and mirrored about the entity's
-/// origin by that renderable's `flip_x` and `flip_y`, its bones (as
-/// `bone_world` answers) and sockets with it.
+/// where its bones are and its meshes skinned to them, in the shapes its
+/// animations' deform keys give them, sorted, lit, shadowed and lifted as
+/// a sprite is, and mirrored about the entity's origin by that
+/// renderable's `flip_x` and `flip_y`, its bones (as `bone_world` answers)
+/// and sockets with it.
 ///
 /// Adding a `Skeleton` makes its entity [`Interpolated`], so the entity,
 /// its bones and its sockets are drawn between fixed steps, smooth on any
@@ -584,14 +585,7 @@ impl Skeleton {
   /// The attachment called `name` in `slot`: the last skin worn that has
   /// one there, else the default skin's
   pub(crate) fn skin_attachment(&self, slot: SlotId, name: &str) -> Option<&Attachment> {
-    let index = self.index.as_ref()?;
-    self
-      .skins
-      .iter()
-      .rev()
-      .filter_map(|worn| worn.skin)
-      .chain(std::iter::once(0))
-      .find_map(|skin| index.skins.get(skin)?.attachment(slot, name))
+    worn(self.index.as_deref()?, &self.skins, slot, name)
   }
 
   /// The place of the bone called `name` in the data the pose was made
@@ -672,41 +666,45 @@ impl Skeleton {
   }
 
   /// Nothing is drawn between its last two poses: each bone's previous
-  /// transform becomes its current one. For a step that follows one it
-  /// missed, a pose made outside a step, and a pose it was flipped in: its
-  /// sockets land across it then, and a bone aimed in the world is solved
-  /// afresh on the other side, so its bones land too
+  /// transform becomes its current one, and each mesh's previous deform
+  /// offsets its current ones. For a step that follows one it missed, a
+  /// pose made outside a step, and a pose it was flipped in: its sockets
+  /// land across it then, and a bone aimed in the world is solved afresh
+  /// on the other side, so its bones land too
   pub(crate) fn settle(&mut self) {
     self.previous_space.clone_from(&self.pose.skeleton_space);
+    self.pose.settle_deforms();
   }
 
   /// One fixed step. A step that sees other data than the last (the data
   /// landing, or a reload) first makes the pose anew and finds every kept
   /// name's place in it. Then: the animation state advances by `dt` and
   /// poses the skeleton (without one it holds its setup pose), the game's
-  /// attachments and bone overrides are put over that, and the bones'
-  /// world transforms are computed where it stands (`stand`: under the
-  /// entity's transform, mirrored as its renderable flips it). The event
-  /// keys crossed and the track events are pushed onto `fired`
+  /// attachments are put over that, the animations' deform keys move the
+  /// meshes the slots then show, the game's bone overrides are applied, and
+  /// the bones' world transforms are computed where it stands (`stand`:
+  /// under the entity's transform, mirrored as its renderable flips it).
+  /// The event keys crossed and the track events are pushed onto `fired`
   pub(crate) fn step(
     &mut self,
     data: &SkeletonData,
     seen: DataVersion,
-    animation: Option<&mut SkeletonAnimation>,
+    mut animation: Option<&mut SkeletonAnimation>,
     dt: f32,
     stand: Stand,
     fired: &mut Fired,
   ) {
     let mut carried = None;
     if self.seen == Some(seen) {
-      // The transforms the last step computed become the previous ones,
-      // and their buffer is computed over
+      // The transforms and the deform offsets the last step computed
+      // become the previous ones, and their buffers are computed over
       std::mem::swap(&mut self.previous_space, &mut self.pose.skeleton_space);
+      self.pose.step_deforms();
     } else {
       carried = Some(self.rebuild(data));
       self.seen = Some(seen);
     }
-    match animation {
+    match animation.as_deref_mut() {
       Some(animation) => animation.advance_and_apply(
         data,
         &mut self.pose,
@@ -716,7 +714,7 @@ impl Skeleton {
       ),
       None => self.pose.reset(data),
     }
-    self.finish(data, stand, carried);
+    self.finish(data, animation, stand, carried);
   }
 
   /// A pose outside a step, for a skeleton that has none for `data` as it
@@ -732,24 +730,32 @@ impl Skeleton {
     &mut self,
     data: &SkeletonData,
     seen: DataVersion,
-    animation: Option<&mut SkeletonAnimation>,
+    mut animation: Option<&mut SkeletonAnimation>,
     stand: Stand,
   ) {
     self.rebuild(data);
     self.seen = Some(seen);
-    match animation {
+    match animation.as_deref_mut() {
       Some(animation) => animation.apply_unadvanced(data, &mut self.pose),
       None => self.pose.reset(data),
     }
-    self.finish(data, stand, None);
+    self.finish(data, animation, stand, None);
     self.settle();
   }
 
   /// The end of a step and of a pose outside one: what the game set is put
-  /// over the animation's result, and the bones are placed where it
-  /// stands. After new data (`carried`), a bone with no transform from the
-  /// pose before takes its current one as its previous one
-  fn finish(&mut self, data: &SkeletonData, stand: Stand, carried: Option<Carried>) {
+  /// over the animation's result, the deform keys of `animation`, which
+  /// posed it, move the meshes its slots then show, and the bones are
+  /// placed where it stands. After new data (`carried`), a bone with no
+  /// transform from the pose before takes its current one as its previous
+  /// one
+  fn finish(
+    &mut self,
+    data: &SkeletonData,
+    animation: Option<&mut SkeletonAnimation>,
+    stand: Stand,
+    carried: Option<Carried>,
+  ) {
     // The animation state starts each pose from the setup pose, so what
     // the game set is put over its result every time
     for set in &self.attachments {
@@ -760,6 +766,15 @@ impl Skeleton {
         shown.clone_from(&set.attachment);
       }
     }
+    // The slots now show what this pose leaves them showing, in the skins
+    // worn: a deform key moves the mesh it finds there, or nothing
+    if let Some(animation) = animation {
+      let (index, skins) = (self.index.as_deref(), &self.skins);
+      animation.apply_deforms(data, &mut self.pose, |slot, name| {
+        worn(index?, skins, slot, name)
+      });
+    }
+    self.pose.deforms_follow_slots();
     for set in &mut self.overrides {
       set.animated = set
         .id
@@ -945,6 +960,22 @@ impl Skeleton {
       Named::Skin => log::warn!("skeleton skin {name:?} is not in the skeleton's data; ignored"),
     }
   }
+}
+
+/// The attachment called `name` in `slot` among `index`'s skins: the last of
+/// the `skins` worn that has one there, else the default skin's
+fn worn<'a>(
+  index: &'a SkeletonIndex,
+  skins: &[WornSkin],
+  slot: SlotId,
+  name: &str,
+) -> Option<&'a Attachment> {
+  skins
+    .iter()
+    .rev()
+    .filter_map(|worn| worn.skin)
+    .chain(std::iter::once(0))
+    .find_map(|skin| index.skins.get(skin)?.attachment(slot, name))
 }
 
 /// A skeleton was added, or put over another: it belongs to the scene
@@ -1726,5 +1757,331 @@ mod tests {
     // Once the data is known, a skin it lacks is left out of what is worn
     skeleton.set_skins(&["hats", "gold"]);
     assert_eq!(worn(&skeleton), ["hats"]);
+  }
+
+  const KEY: [f32; 6] = [2.0, -4.0, 6.0, 8.0, -10.0, 12.0];
+  const NEXT: [f32; 6] = [4.0, 0.0, 6.0, -8.0, 10.0, 0.0];
+
+  /// A root bone and a slot "banner" that shows "flag". The default skin
+  /// has "flag" and "pennant", each a mesh of three positions, and "badge",
+  /// a region; the skin "wide" has a "flag" of four positions. The
+  /// animations are named for what they do, and no mix takes time
+  fn banner() -> SkeletonData {
+    use crate::core::skeleton::{Curve, MeshAttachment, MeshVertices, Region, RegionAttachment};
+    let mesh = |corners: usize| {
+      let at: Vec<Vec2> = (0..corners)
+        .map(|corner| Vec2::new(corner as f32, (corner * corner) as f32))
+        .collect();
+      let triangles = (1..corners as u16 - 1)
+        .flat_map(|corner| [0, corner, corner + 1])
+        .collect();
+      Attachment::Mesh(MeshAttachment::new(
+        0,
+        MeshVertices::Unweighted(at.clone()),
+        at,
+        triangles,
+      ))
+    };
+    let deform = |attachment: &str, frames: Vec<(f32, Vec<f32>)>| Timeline::Deform {
+      slot: SlotId(0),
+      attachment: Arc::from(attachment),
+      frames: frames
+        .into_iter()
+        .map(|(time, offsets)| (time, offsets, Curve::Linear))
+        .collect(),
+    };
+    let clip = |name: &str, timelines: Vec<Timeline>| Animation {
+      name: Arc::from(name),
+      duration: 1.0,
+      timelines,
+    };
+    let swap = Timeline::Attachment {
+      slot: SlotId(0),
+      frames: vec![
+        (0.0, Some(Arc::from("flag"))),
+        (0.5, Some(Arc::from("pennant"))),
+      ],
+    };
+    let skin = SkeletonData::DEFAULT_SKIN;
+    SkeletonData::builder()
+      .bone("root", None, BoneSetup::default())
+      .slot(
+        "banner",
+        "root",
+        SlotSetup {
+          attachment: Some(Arc::from("flag")),
+          ..SlotSetup::default()
+        },
+      )
+      .region(Region {
+        name: Arc::from("cloth"),
+        image: Handle::detached(),
+        x: 0,
+        y: 0,
+        width: 4,
+        height: 4,
+      })
+      .skin("wide")
+      .attachment(skin, "banner", "flag", mesh(3))
+      .attachment(skin, "banner", "pennant", mesh(3))
+      .attachment(
+        skin,
+        "banner",
+        "badge",
+        Attachment::Region(RegionAttachment::new(0, 4.0, 4.0)),
+      )
+      .attachment("wide", "banner", "flag", mesh(4))
+      // The flag held in a shape, and growing into it over a second
+      .animation(clip(
+        "wave",
+        vec![deform("flag", vec![(0.0, KEY.to_vec())])],
+      ))
+      .animation(clip(
+        "grow",
+        vec![deform("flag", vec![(0.0, Vec::new()), (1.0, KEY.to_vec())])],
+      ))
+      // The pennant held in another
+      .animation(clip(
+        "furl",
+        vec![deform("pennant", vec![(0.0, NEXT.to_vec())])],
+      ))
+      // The flag in its shape, then from half way the pennant in its own
+      .animation(clip(
+        "both",
+        vec![
+          swap,
+          deform("flag", vec![(0.0, KEY.to_vec())]),
+          deform("pennant", vec![(0.0, NEXT.to_vec())]),
+        ],
+      ))
+      .build()
+      .expect("a valid skeleton")
+  }
+
+  /// A skeleton and its animation state, over data in a store, stepped by
+  /// hand
+  struct Played {
+    world: World,
+    skeleton: Skeleton,
+    animation: SkeletonAnimation,
+  }
+
+  impl Played {
+    fn new(data: SkeletonData) -> Self {
+      let mut world = asset_world();
+      let handle = world.resource_mut::<Assets<SkeletonData>>().add(data);
+      Self {
+        world,
+        skeleton: Skeleton::new(handle),
+        animation: SkeletonAnimation::new(),
+      }
+    }
+
+    fn play(&mut self, name: &str, looping: bool) {
+      let entry = self.animation.set_animation(0, name, looping);
+      assert!(entry.is_some() || self.skeleton.seen().is_none(), "{name}");
+    }
+
+    fn step(&mut self, dt: f32) {
+      let assets = self.world.resource::<Assets<SkeletonData>>();
+      let handle = self.skeleton.data().clone();
+      let data = assets.get(&handle).expect("the data");
+      let seen = (handle.id(), assets.version(&handle).expect("a version"));
+      let (stand, fired) = (Affine2::IDENTITY.into(), &mut Fired::default());
+      let animation = Some(&mut self.animation);
+      self.skeleton.step(data, seen, animation, dt, stand, fired);
+    }
+
+    /// The banner slot's offsets of the step before the last and of the
+    /// last, each empty for none
+    fn lists(&self) -> (&[f32], &[f32]) {
+      match self.skeleton.pose.deforms.first() {
+        Some(deform) => (&deform.previous, &deform.offsets),
+        None => (&[], &[]),
+      }
+    }
+  }
+
+  fn scaled(key: [f32; 6], by: f32) -> Vec<f32> {
+    key.iter().map(|value| value * by).collect()
+  }
+
+  fn close_lists(actual: (&[f32], &[f32]), expected: (&[f32], &[f32])) {
+    let near = |got: &[f32], want: &[f32]| {
+      got.len() == want.len() && got.iter().zip(want).all(|(g, w)| (g - w).abs() < 1e-4)
+    };
+    assert!(
+      near(actual.0, expected.0) && near(actual.1, expected.1),
+      "expected {expected:?}, got {actual:?}"
+    );
+  }
+
+  #[test]
+  fn a_deform_resets_when_the_slot_s_attachment_changes() {
+    let log = capture_log();
+    let mut played = Played::new(banner());
+    // While the slot shows one attachment, each step's offsets are kept
+    // for the next to be drawn from
+    played.play("grow", false);
+    played.step(0.25);
+    played.step(0.25);
+    close_lists(played.lists(), (&scaled(KEY, 0.25), &scaled(KEY, 0.5)));
+    played.play("both", false);
+    played.step(0.25);
+    close_lists(played.lists(), (&scaled(KEY, 0.5), &KEY));
+    // An attachment key shows the pennant, which has a deform of its own
+    // and as many positions as the flag. It takes its own shape at once:
+    // the flag's offsets are not the pennant's to be drawn from
+    played.step(0.5);
+    assert_eq!(played.skeleton.attachment("banner"), Some("pennant"));
+    close_lists(played.lists(), (&NEXT, &NEXT));
+    played.step(0.1);
+    close_lists(played.lists(), (&NEXT, &NEXT));
+    // "both" keys a deform for each name the slot shows in turn, and the
+    // slot shows one of them at a time: the log was told once, of the
+    // pennant's while the flag showed, and no more for the flag's since
+    let both = log.containing_all(&["\"both\"", "the deform is skipped"]);
+    assert_eq!(both, 1, "{:?}", log.warnings());
+    assert_eq!(log.containing("\"pennant\""), 1, "{:?}", log.warnings());
+    // Back to the flag, by an animation that keys no attachment
+    played.play("wave", true);
+    played.step(0.1);
+    assert_eq!(played.skeleton.attachment("banner"), Some("flag"));
+    close_lists(played.lists(), (&KEY, &KEY));
+    // The game shows the pennant, whose deform nothing playing keys: its
+    // offsets are none, the setup shape, in that step and to be drawn from
+    played.skeleton.set_attachment("banner", Some("pennant"));
+    played.step(0.1);
+    close_lists(played.lists(), (&[], &[]));
+    played.step(0.1);
+    close_lists(played.lists(), (&[], &[]));
+    // Hidden, then handed back to the animation: the flag has its key's
+    // shape at once, drawn from nothing else
+    played.skeleton.set_attachment("banner", None);
+    played.step(0.1);
+    close_lists(played.lists(), (&[], &[]));
+    played.skeleton.clear_attachment("banner");
+    played.step(0.1);
+    close_lists(played.lists(), (&KEY, &KEY));
+    // A pose made outside a step is drawn as it is, too
+    played.play("grow", false);
+    played.step(0.5);
+    close_lists(played.lists(), (&KEY, &scaled(KEY, 0.5)));
+    let assets = played.world.resource::<Assets<SkeletonData>>();
+    let handle = played.skeleton.data().clone();
+    let data = assets.get(&handle).expect("the data");
+    let newer = (handle.id(), assets.version(&handle).expect("a version") + 1);
+    let animation = Some(&mut played.animation);
+    played
+      .skeleton
+      .appear(data, newer, animation, Affine2::IDENTITY.into());
+    close_lists(played.lists(), (&scaled(KEY, 0.5), &scaled(KEY, 0.5)));
+  }
+
+  #[test]
+  fn a_deform_moves_what_its_slot_shows_once_the_game_and_the_skins_have_their_say() {
+    let log = capture_log();
+    let skipped = |log: &crate::testing::LogCapture| log.containing("the deform is skipped");
+    // "furl" keys the pennant's deform, and the slot's setup attachment is
+    // the flag: skipped
+    let mut played = Played::new(banner());
+    played.play("furl", true);
+    played.step(0.1);
+    close_lists(played.lists(), (&[], &[]));
+    assert_eq!(skipped(&log), 1, "{:?}", log.warnings());
+    // The game shows the pennant in the slot. What the game sets is
+    // written after the animation, and the deform is judged after that
+    played.skeleton.set_attachment("banner", Some("pennant"));
+    played.step(0.1);
+    close_lists(played.lists(), (&NEXT, &NEXT));
+    played.skeleton.clear_attachment("banner");
+    played.step(0.1);
+    close_lists(played.lists(), (&[], &[]));
+
+    // The mesh a deform must fit is the one the skins worn show under its
+    // name: the skin "wide" has a flag of four positions, and "wave" keys
+    // three
+    let mut played = Played::new(banner());
+    played.play("wave", true);
+    played.step(0.1);
+    close_lists(played.lists(), (&KEY, &KEY));
+    for _ in 0..3 {
+      played.skeleton.set_skin("wide");
+      played.step(0.1);
+      played.step(0.1);
+      close_lists(played.lists(), (&[], &[]));
+      played.skeleton.set_skins(&[]);
+      played.step(0.1);
+      assert_eq!(played.lists().1, KEY);
+    }
+    // One warning for each animation of each skeleton, however often the
+    // skin comes and goes
+    assert_eq!(skipped(&log), 2, "{:?}", log.warnings());
+    assert_eq!(log.containing("the mesh has 4"), 1, "{:?}", log.warnings());
+    // With no animation state there are no deform keys
+    let mut bare = posed(banner(), Affine2::IDENTITY, |_| {});
+    assert!(bare.pose.deforms.is_empty());
+    bare.settle();
+  }
+
+  #[test]
+  fn a_steady_step_takes_no_more_room_for_its_deforms() {
+    let mut played = Played::new(banner());
+    played.play("grow", true);
+    for _ in 0..4 {
+      played.step(0.1);
+    }
+    // The slot's two lists change places each step, and neither moves nor
+    // grows, through a crossfade and a settle as through plain steps
+    let rooms = |played: &Played| {
+      let deforms = &played.skeleton.pose.deforms;
+      let deform = &deforms[0];
+      let mut lists = [
+        (deform.offsets.as_ptr(), deform.offsets.capacity()),
+        (deform.previous.as_ptr(), deform.previous.capacity()),
+      ];
+      lists.sort();
+      (deforms.as_ptr(), deforms.capacity(), lists)
+    };
+    let before = rooms(&played);
+    for step in 0..40 {
+      if step % 10 == 5 {
+        let name = if step % 20 == 5 { "wave" } else { "grow" };
+        let entry = played.animation.set_animation(0, name, true);
+        let entry = entry.and_then(|id| played.animation.entry_mut(id));
+        entry.expect("a live entry").mix_duration = 0.25;
+      }
+      if step == 30 {
+        played.skeleton.settle();
+      }
+      played.step(0.1);
+      assert_eq!(rooms(&played), before, "step {step}");
+      assert_eq!(played.lists().1.len(), 6, "step {step}");
+    }
+  }
+
+  #[test]
+  fn a_first_placing_draws_its_deform_as_it_is() {
+    let mut played = Played::new(banner());
+    played.play("grow", false);
+    let step = |played: &mut Played, number: u64| {
+      played.step(0.125);
+      played.skeleton.took_step(number);
+    };
+    // Steps 7 and 8 follow each other: the second keeps the first's
+    // offsets to be drawn from
+    step(&mut played, 7);
+    step(&mut played, 8);
+    close_lists(played.lists(), (&scaled(KEY, 0.125), &scaled(KEY, 0.25)));
+    // It missed steps 9 to 11 (disabled, or held): step 12 has no shape of
+    // step 11 to be drawn from, and its mesh is drawn in the shape it has,
+    // as its bones are drawn where they are
+    step(&mut played, 12);
+    close_lists(played.lists(), (&scaled(KEY, 0.375), &scaled(KEY, 0.375)));
+    step(&mut played, 13);
+    close_lists(played.lists(), (&scaled(KEY, 0.375), &scaled(KEY, 0.5)));
+    // And a pose it is flipped in is settled, its deform with its bones
+    played.skeleton.settle();
+    close_lists(played.lists(), (&scaled(KEY, 0.5), &scaled(KEY, 0.5)));
   }
 }

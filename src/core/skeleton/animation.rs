@@ -1,5 +1,5 @@
-//! Animations: timelines of keyed values for bones and slots, the draw order
-//! and events.
+//! Animations: timelines of keyed values for bones, slots and the meshes
+//! slots show, the draw order and events.
 
 use std::sync::Arc;
 
@@ -90,6 +90,24 @@ pub enum Timeline {
     slot: SlotId,
     frames: Vec<Frame<Color>>,
   },
+  /// The shape of the mesh a slot shows under the name `attachment`: each
+  /// key holds an offset from the setup shape, an x and a y, for each
+  /// position the mesh holds
+  /// ([`MeshAttachment::positions`](super::MeshAttachment::positions)). An
+  /// unweighted mesh has a position a vertex, in the space of its slot's
+  /// bone; a weighted mesh has one an influence, in that influence's bone's
+  /// space, so a keyed shape turns with the bones it rides. An empty key is
+  /// no offset: the setup shape. Every other key of a timeline is one
+  /// length.
+  ///
+  /// It moves the mesh only while the slot shows that name and the
+  /// attachment found there is a mesh holding as many positions as the
+  /// keys; otherwise it is skipped, and the log is told once
+  Deform {
+    slot: SlotId,
+    attachment: Arc<str>,
+    frames: Vec<Frame<Vec<f32>>>,
+  },
   /// The draw order: every slot once, back to front, or `None` for the
   /// setup order; keys are stepped
   DrawOrder {
@@ -105,10 +123,20 @@ pub enum Timeline {
 
 /// What a timeline keys, for finding two timelines that key the same thing
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(super) enum Target {
+pub(super) enum Target<'a> {
   Bone(BoneId),
   Slot(SlotId),
+  /// The attachment a slot shows under a name: what a deform timeline
+  /// keys, so two of one slot for different names key different things
+  Attachment(SlotId, &'a str),
   Skeleton,
+}
+
+/// How many floats each key of a deform timeline holds that is not empty
+/// (every such key is one length in built data); 0 when all are empty
+pub(super) fn deform_width(frames: &[Frame<Vec<f32>>]) -> usize {
+  let lengths = frames.iter().map(|frame| frame.1.len());
+  lengths.into_iter().find(|&length| length > 0).unwrap_or(0)
 }
 
 impl Timeline {
@@ -127,13 +155,15 @@ impl Timeline {
       Self::ShearY { .. } => "shear y",
       Self::Attachment { .. } => "attachment",
       Self::Color { .. } => "color",
+      Self::Deform { .. } => "deform",
       Self::DrawOrder { .. } => "draw order",
       Self::Event { .. } => "event",
     }
   }
 
-  /// The bone, slot or (for draw order and events) whole skeleton it keys
-  pub(super) fn target(&self) -> Target {
+  /// The bone, slot, slot's attachment or (for draw order and events)
+  /// whole skeleton it keys
+  pub(super) fn target(&self) -> Target<'_> {
     match self {
       Self::Rotate { bone, .. }
       | Self::Translate { bone, .. }
@@ -146,6 +176,9 @@ impl Timeline {
       | Self::ShearX { bone, .. }
       | Self::ShearY { bone, .. } => Target::Bone(*bone),
       Self::Attachment { slot, .. } | Self::Color { slot, .. } => Target::Slot(*slot),
+      Self::Deform {
+        slot, attachment, ..
+      } => Target::Attachment(*slot, attachment),
       Self::DrawOrder { .. } | Self::Event { .. } => Target::Skeleton,
     }
   }
@@ -166,6 +199,7 @@ impl Timeline {
       Self::Rotate { .. } => &["rotate"],
       Self::Attachment { .. } => &["attachment"],
       Self::Color { .. } => &["color"],
+      Self::Deform { .. } => &["deform"],
       Self::DrawOrder { .. } => &["draw order"],
       Self::Event { .. } => &["event"],
     }
@@ -185,6 +219,7 @@ impl Timeline {
         frames.first().map(|frame| frame.0)
       }
       Self::Color { frames, .. } => frames.first().map(|frame| frame.0),
+      Self::Deform { frames, .. } => frames.first().map(|frame| frame.0),
       Self::Attachment { frames, .. } => frames.first().map(|frame| frame.0),
       Self::DrawOrder { frames } => frames.first().map(|frame| frame.0),
       Self::Event { frames } => frames.first().map(|frame| frame.0),
@@ -208,6 +243,7 @@ impl Timeline {
         of(frames)
       }
       Self::Color { frames, .. } => of(frames),
+      Self::Deform { frames, .. } => of(frames),
       Self::Attachment { frames, .. } => frames.iter().map(|frame| frame.0).collect(),
       Self::DrawOrder { frames } => frames.iter().map(|frame| frame.0).collect(),
       Self::Event { frames } => frames.iter().map(|frame| frame.0).collect(),

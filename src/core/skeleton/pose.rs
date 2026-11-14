@@ -1,6 +1,7 @@
 //! A skeleton's pose: each bone's local transform, and the world transforms
 //! computed from them with Spine's inherit modes, plus each slot's colour and
-//! attachment and the draw order.
+//! attachment, the offsets deform keys give the mesh it shows, and the draw
+//! order.
 
 use std::f32::consts::FRAC_PI_2;
 use std::sync::Arc;
@@ -64,6 +65,22 @@ pub(super) fn setup_order(data: &SkeletonData) -> impl Iterator<Item = SlotId> {
   (0..data.slots().len()).filter_map(|index| u8::try_from(index).ok().map(SlotId))
 }
 
+/// The offsets deform keys give the mesh a slot shows, from its setup
+/// shape: an x and a y for each position the mesh holds
+/// (`MeshAttachment::positions`), in their order. A list with nothing in it
+/// is no offset at all, the setup shape, so a slot no deform key moves
+/// costs two empty lists
+#[derive(Debug, Clone, Default)]
+pub(crate) struct SlotDeform {
+  /// As this step's animations left them
+  pub(crate) offsets: Vec<f32>,
+  /// As the step before left them, for drawing between the two
+  pub(crate) previous: Vec<f32>,
+  /// The attachment the slot showed when a step last looked
+  /// ([`Pose::deforms_follow_slots`])
+  shown: Option<Arc<str>>,
+}
+
 /// One skeleton's current pose, indexed like the data's bones and slots.
 /// The default is the pose of no skeleton: nothing in it
 #[derive(Debug, Clone, Default)]
@@ -80,6 +97,11 @@ pub(crate) struct Pose {
   /// drawing clamps and converts it to 8 bits
   pub(crate) slot_colors: Vec<Vec4>,
   pub(crate) slot_attachments: Vec<Option<Arc<str>>>,
+  /// Each slot's deform offsets: one for every slot from the first time a
+  /// deform key moves a mesh of the skeleton, and none until then, so a
+  /// skeleton no deform plays on holds nothing here. The lists keep their
+  /// room from step to step
+  pub(crate) deforms: Vec<SlotDeform>,
   /// Slots, back to front
   pub(crate) draw_order: Vec<SlotId>,
 }
@@ -94,12 +116,14 @@ impl Pose {
       world: vec![Affine2::IDENTITY; data.bones().len()],
       slot_colors: slots.iter().map(|slot| srgb(slot.color)).collect(),
       slot_attachments: slots.iter().map(|slot| slot.attachment.clone()).collect(),
+      deforms: Vec::new(),
       draw_order: setup_order(data).collect(),
     }
   }
 
   /// Puts the pose back to the setup pose without allocating: the bones'
-  /// local transforms, the slots' colours and attachments and the draw
+  /// local transforms, the slots' colours and attachments, their meshes'
+  /// shapes (no deform offsets; the last step's are left) and the draw
   /// order (world transforms are left as they are). The pose must be one
   /// made from `data` ([`Pose::setup`]): the skeleton step makes a new one
   /// whenever its data changes
@@ -123,8 +147,54 @@ impl Pose {
     for (attachment, slot) in self.slot_attachments.iter_mut().zip(data.slots()) {
       attachment.clone_from(&slot.attachment);
     }
+    for deform in &mut self.deforms {
+      deform.offsets.clear();
+    }
     self.draw_order.clear();
     self.draw_order.extend(setup_order(data));
+  }
+
+  /// A step begins: the deform offsets the last one left become the
+  /// previous ones, and their lists are this step's to fill (emptied by
+  /// [`Pose::reset`]), so neither is allocated again
+  pub(crate) fn step_deforms(&mut self) {
+    for deform in &mut self.deforms {
+      std::mem::swap(&mut deform.offsets, &mut deform.previous);
+    }
+  }
+
+  /// Slot `slot`'s deform offsets of this step, to blend a key into. The
+  /// first call makes every slot's (empty) lists; `None` for a slot the
+  /// pose lacks
+  pub(crate) fn deform_mut(&mut self, slot: usize) -> Option<&mut Vec<f32>> {
+    if self.deforms.is_empty() {
+      self
+        .deforms
+        .resize_with(self.slot_attachments.len(), SlotDeform::default);
+    }
+    self.deforms.get_mut(slot).map(|deform| &mut deform.offsets)
+  }
+
+  /// A slot's offsets belong to the attachment it shows. Called once the
+  /// slots show what a step leaves them showing: where a slot shows
+  /// another name than when the last step looked, the offsets that step
+  /// left were another attachment's, so nothing is drawn between them and
+  /// this step's
+  pub(crate) fn deforms_follow_slots(&mut self) {
+    for (deform, shown) in self.deforms.iter_mut().zip(&self.slot_attachments) {
+      if deform.shown != *shown {
+        deform.shown.clone_from(shown);
+        deform.previous.clone_from(&deform.offsets);
+      }
+    }
+  }
+
+  /// Nothing is drawn between the last two steps' deform offsets: each
+  /// slot's previous ones become its current ones
+  pub(crate) fn settle_deforms(&mut self) {
+    for deform in &mut self.deforms {
+      deform.previous.clone_from(&deform.offsets);
+    }
   }
 
   /// Computes every bone's world transform from the local poses. `root`
@@ -711,6 +781,19 @@ mod tests {
     pose.draw_order.reverse();
     let placed = affine((0.0, 2.0), (-1.0, 0.0), (10.0, 20.0));
     pose.world[0] = placed;
+    // Deform keys moved the front slot's mesh in this step and the last
+    assert!(
+      setup.deforms.is_empty(),
+      "none until a deform key moves one"
+    );
+    pose
+      .deform_mut(1)
+      .expect("the front slot")
+      .extend_from_slice(&[1.0, 2.0, 3.0, 4.0]);
+    assert_eq!(pose.deforms.len(), 2, "one for each slot from then on");
+    assert!(pose.deform_mut(2).is_none(), "the pose has two slots");
+    pose.deforms[1].previous.extend_from_slice(&[5.0, 6.0]);
+    let room = pose.deforms[1].offsets.capacity();
     pose.reset(&data);
     assert_eq!(pose.bones, setup.bones);
     assert_eq!(pose.slot_colors, setup.slot_colors);
@@ -718,5 +801,96 @@ mod tests {
     assert_eq!(pose.draw_order, setup.draw_order);
     // The world transforms are the last ones computed, until the next
     assert_affine(pose.world[0], placed);
+    // No slot's mesh is moved from its setup shape; the list keeps its
+    // room, and the last step's offsets are still there to be drawn from
+    assert!(pose.deforms[1].offsets.is_empty());
+    assert_eq!(pose.deforms[1].offsets.capacity(), room);
+    assert_eq!(pose.deforms[1].previous, [5.0, 6.0]);
+  }
+
+  #[test]
+  fn deform_offsets_pass_from_step_to_step_and_stay_with_their_attachment() {
+    let data = SkeletonData::builder()
+      .bone("root", None, BoneSetup::default())
+      .slot(
+        "banner",
+        "root",
+        SlotSetup {
+          attachment: Some(Arc::from("flag")),
+          ..SlotSetup::default()
+        },
+      )
+      .build()
+      .expect("a valid skeleton");
+    let mut pose = Pose::setup(&data);
+    // One step as a skeleton takes it: the last step's offsets become the
+    // previous ones, the pose is reset, the deform keys fill this step's,
+    // and the offsets follow what the slot shows
+    let step = |pose: &mut Pose, shown: Option<&str>, offsets: &[f32]| {
+      pose.step_deforms();
+      pose.reset(&data);
+      pose.slot_attachments[0] = shown.map(Arc::from);
+      if !offsets.is_empty() {
+        pose
+          .deform_mut(0)
+          .expect("the banner")
+          .extend_from_slice(offsets);
+      }
+      pose.deforms_follow_slots();
+    };
+    let lists = |pose: &Pose| {
+      (
+        pose.deforms[0].previous.clone(),
+        pose.deforms[0].offsets.clone(),
+      )
+    };
+    // The first offsets a slot has are drawn as they are: nothing was
+    // known of what it showed before
+    step(&mut pose, Some("flag"), &[1.0, 2.0]);
+    assert_eq!(lists(&pose), (vec![1.0, 2.0], vec![1.0, 2.0]));
+    // From then on the previous ones are the last step's
+    step(&mut pose, Some("flag"), &[3.0, 4.0]);
+    assert_eq!(lists(&pose), (vec![1.0, 2.0], vec![3.0, 4.0]));
+    step(&mut pose, Some("flag"), &[5.0, 6.0]);
+    assert_eq!(lists(&pose), (vec![3.0, 4.0], vec![5.0, 6.0]));
+    // A step in which nothing moves the mesh leaves it its last offsets to
+    // be drawn from, toward none
+    step(&mut pose, Some("flag"), &[]);
+    assert_eq!(lists(&pose), (vec![5.0, 6.0], vec![]));
+    step(&mut pose, Some("flag"), &[7.0, 8.0]);
+    assert_eq!(lists(&pose), (vec![], vec![7.0, 8.0]));
+    // The slot shows another attachment: the flag's offsets are not the
+    // pennant's to be drawn from, whether or not a key moves the pennant
+    step(&mut pose, Some("pennant"), &[9.0, 9.0]);
+    assert_eq!(lists(&pose), (vec![9.0, 9.0], vec![9.0, 9.0]));
+    step(&mut pose, Some("flag"), &[]);
+    assert_eq!(lists(&pose), (vec![], vec![]));
+    step(&mut pose, Some("flag"), &[1.0, 1.0]);
+    step(&mut pose, None, &[]);
+    assert_eq!(lists(&pose), (vec![], vec![]));
+    // The same name, held in another string, is no change
+    step(&mut pose, Some("flag"), &[1.0, 1.0]);
+    step(&mut pose, Some(&String::from("flag")), &[2.0, 2.0]);
+    assert_eq!(lists(&pose), (vec![1.0, 1.0], vec![2.0, 2.0]));
+    // Settled, nothing is drawn between the two
+    pose.settle_deforms();
+    assert_eq!(lists(&pose), (vec![2.0, 2.0], vec![2.0, 2.0]));
+
+    // Steady steps allocate nothing: the two lists change places, and
+    // neither grows
+    let rooms = |pose: &Pose| {
+      let deform = &pose.deforms[0];
+      let mut rooms = [
+        (deform.offsets.as_ptr(), deform.offsets.capacity()),
+        (deform.previous.as_ptr(), deform.previous.capacity()),
+      ];
+      rooms.sort();
+      (pose.deforms.as_ptr(), rooms)
+    };
+    let before = rooms(&pose);
+    for round in 0..8 {
+      step(&mut pose, Some("flag"), &[round as f32, 1.0]);
+      assert_eq!(rooms(&pose), before, "step {round}");
+    }
   }
 }

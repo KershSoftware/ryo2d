@@ -10,7 +10,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use ryo2d::prelude::*;
-use ryo2d::testing::{HeadlessEngine, capture_log, particle_positions};
+use ryo2d::testing::{HeadlessEngine, capture_log, particle_positions, skeleton_mesh};
 
 /// A scene that does nothing: the tests place entities between steps
 struct Stage;
@@ -2382,4 +2382,327 @@ fn a_socket_added_while_the_clock_is_paused_is_on_its_bone_that_frame() {
   time(&mut engine).game.resume();
   engine.step().expect("a frame");
   same(global(&engine, socket), bone(&engine, body, "hand"));
+}
+
+/// The offsets "wave" holds the flag's four corners at: its right corners
+/// 6 px up and 6 px down
+const WAVE: [f32; 8] = [0.0, 0.0, 0.0, -6.0, 0.0, 6.0, 0.0, 0.0];
+
+/// The flag's four corners, 16 x 8 px from its pole, and its six in the
+/// skin "long" (a corner more in the middle of each long side)
+const FLAG: [(f32, f32); 4] = [(0.0, 0.0), (16.0, 0.0), (16.0, 8.0), (0.0, 8.0)];
+const LONG_FLAG: [(f32, f32); 6] = [
+  (0.0, 0.0),
+  (8.0, 0.0),
+  (16.0, 0.0),
+  (16.0, 8.0),
+  (8.0, 8.0),
+  (0.0, 8.0),
+];
+
+/// A mesh of region 0 with these unweighted corners, in order round it
+fn flag_mesh(corners: &[(f32, f32)]) -> SkeletonAttachment {
+  let at: Vec<Vec2> = corners.iter().map(|&(x, y)| Vec2::new(x, y)).collect();
+  let uvs = at.iter().map(|at| *at / Vec2::new(16.0, 8.0)).collect();
+  let triangles = (1..corners.len() as u16 - 1)
+    .flat_map(|corner| [0, corner, corner + 1])
+    .collect();
+  SkeletonAttachment::Mesh(MeshAttachment::new(
+    0,
+    MeshVertices::Unweighted(at),
+    uvs,
+    triangles,
+  ))
+}
+
+/// A pole, and a slot "banner" on it showing "flag": a mesh of four corners
+/// in the default skin and of six in the skin "long". "wave" holds the
+/// flag's deform at [`WAVE`], and "sway" grows it from nothing to that
+/// over a second; both key four positions
+fn banner(white: Handle<Image>) -> SkeletonData {
+  let deform = |frames: Vec<(f32, Vec<f32>, SkeletonCurve)>| SkeletonTimeline::Deform {
+    slot: SlotId(0),
+    attachment: Arc::from("flag"),
+    frames,
+  };
+  let linear = SkeletonCurve::Linear;
+  SkeletonData::builder()
+    .bone("pole", None, BoneSetup::default())
+    .slot(
+      "banner",
+      "pole",
+      SlotSetup {
+        attachment: Some(Arc::from("flag")),
+        ..SlotSetup::default()
+      },
+    )
+    .region(SkeletonRegion {
+      name: Arc::from("cloth"),
+      image: white,
+      x: 0,
+      y: 0,
+      width: 1,
+      height: 1,
+    })
+    .skin("long")
+    .attachment("default", "banner", "flag", flag_mesh(&FLAG))
+    .attachment("long", "banner", "flag", flag_mesh(&LONG_FLAG))
+    .animation(clip(
+      "wave",
+      0.25,
+      vec![deform(vec![(0.0, WAVE.to_vec(), linear)])],
+    ))
+    .animation(clip(
+      "sway",
+      1.0,
+      vec![deform(vec![
+        (0.0, Vec::new(), linear),
+        (1.0, WAVE.to_vec(), linear),
+      ])],
+    ))
+    .build()
+    .expect("a valid skeleton")
+}
+
+/// Where a banner standing at `at` has its flag's corners: `corners` from
+/// its pole, each moved by `share` of its offset in `offsets` (x then y
+/// for each corner; none past the list's end)
+fn flag_at(at: Vec2, corners: &[(f32, f32)], offsets: &[f32], share: f32) -> Vec<Vec2> {
+  let offset = |index: usize| offsets.get(index).copied().unwrap_or(0.0) * share;
+  let each = corners.iter().enumerate();
+  let moved = each
+    .map(|(corner, &(x, y))| at + Vec2::new(x + offset(corner * 2), y + offset(corner * 2 + 1)));
+  moved.collect()
+}
+
+fn near_all(actual: &[Vec2], expected: &[Vec2]) {
+  assert_eq!(actual.len(), expected.len(), "{actual:?}");
+  for (index, (got, want)) in actual.iter().zip(expected).enumerate() {
+    assert!(
+      got.abs_diff_eq(*want, 1e-3),
+      "corner {index}: expected {expected:?}, got {actual:?}"
+    );
+  }
+}
+
+/// A drawn skeleton entity of `data` at `at`, with an animation state
+fn hoist(engine: &mut HeadlessEngine, data: &Handle<SkeletonData>, at: Vec2) -> Entity {
+  let entity = spawn(engine, data, Transform::from_xy(at.x, at.y));
+  engine
+    .world_mut()
+    .entity_mut(entity)
+    .insert(Renderable::skeleton());
+  entity
+}
+
+/// How many times the log was told of a deform that does not fit
+fn skipped(log: &ryo2d::testing::LogCapture) -> usize {
+  log.containing("the deform is skipped")
+}
+
+/// The banner as a file, with `flag` written as its slot's attachments in
+/// the default skin (the flag as a mesh of four or six corners, as a
+/// region, or nothing); "wave" keys the flag's deform for four positions
+fn banner_file(flag: &str) -> String {
+  format!(
+    r#"(
+      images: {{ "cloth": "cloth.png" }},
+      regions: {{ "cloth": (image: "cloth", rect: (0, 0, 2, 2)) }},
+      bones: [(name: "pole")],
+      slots: [(name: "banner", bone: "pole", attachment: "flag")],
+      skins: {{ "default": {{ "banner": {{ {flag} }} }} }},
+      animations: {{
+        "wave": (duration: 0.25, slots: {{
+          "banner": (deform: {{ "flag": [(0.0, [0, 0, 0, -6, 0, 6, 0, 0])] }}),
+        }}),
+      }},
+    )"#
+  )
+}
+
+const FLAG_OF_FOUR: &str = r#""flag": Mesh(region: "cloth",
+  uvs: [(0, 0), (1, 0), (1, 1), (0, 1)], triangles: [0, 1, 2, 0, 2, 3],
+  vertices: Unweighted([(0, 0), (16, 0), (16, 8), (0, 8)]))"#;
+const FLAG_OF_SIX: &str = r#""flag": Mesh(region: "cloth",
+  uvs: [(0, 0), (0.5, 0), (1, 0), (1, 1), (0.5, 1), (0, 1)],
+  triangles: [0, 1, 4, 0, 4, 5, 1, 2, 3, 1, 3, 4],
+  vertices: Unweighted([(0, 0), (8, 0), (16, 0), (16, 8), (8, 8), (0, 8)]))"#;
+const FLAG_AS_A_REGION: &str = r#""flag": Region(region: "cloth")"#;
+
+#[test]
+fn a_reload_that_changes_a_mesh_s_vertex_count_skips_its_deform() {
+  let log = capture_log();
+  let files = MemorySource::new();
+  let cloth = image::RgbaImage::from_pixel(2, 2, image::Rgba([255; 4]));
+  let mut png = Vec::new();
+  cloth
+    .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+    .expect("encoding a png");
+  files.insert("cloth.png", png);
+  files.insert(PATH, banner_file(FLAG_OF_FOUR));
+  let Some((mut engine, data)) = engine_over(&files) else {
+    return;
+  };
+  let at = Vec2::new(20.0, 30.0);
+  let banner = hoist(&mut engine, &data, at);
+  let wave = play(&mut engine, banner, 0, "wave", true);
+  engine.step_frames(4).expect("frames");
+  let flag = |engine: &HeadlessEngine| skeleton_mesh(engine.world(), banner, "banner");
+  near_all(&flag(&engine), &flag_at(at, &FLAG, &WAVE, 1.0));
+
+  // The saved file gives the flag six vertices, and its deform still keys
+  // four. It lands while the clock is paused and is drawn in that frame:
+  // the new mesh in its setup shape, with no panic and no read past the
+  // keys or the offsets
+  save_paused(&mut engine, &files, &data, banner_file(FLAG_OF_SIX));
+  near_all(&flag(&engine), &flag_at(at, &LONG_FLAG, &[], 0.0));
+  engine.step_frames(2).expect("frames");
+  time(&mut engine).game.resume();
+  // The animation plays on, loop after loop, and its deform is skipped:
+  // one warning, which names the animation and both counts
+  let before = track_time(&engine, banner, wave);
+  engine.step_frames(40).expect("frames");
+  assert!(track_time(&engine, banner, wave) > before + 0.5, "it loops");
+  near_all(&flag(&engine), &flag_at(at, &LONG_FLAG, &[], 0.0));
+  assert_eq!(skipped(&log), 1, "{:?}", log.warnings());
+  let told = log.warnings().join("\n");
+  for part in ["\"wave\"", "4 positions", "the mesh has 6"] {
+    assert!(told.contains(part), "{part} in {told}");
+  }
+
+  // Saved with four again, the deform moves the flag again
+  save(&mut engine, &files, &data, banner_file(FLAG_OF_FOUR));
+  engine.step_frames(3).expect("frames");
+  near_all(&flag(&engine), &flag_at(at, &FLAG, &WAVE, 1.0));
+  // The flag made a region, which no deform moves, and then taken out of
+  // the skin, so that the slot shows nothing: nothing panics, and the log
+  // has been told of this skeleton's "wave" already
+  save(&mut engine, &files, &data, banner_file(FLAG_AS_A_REGION));
+  engine.step_frames(3).expect("frames");
+  assert!(flag(&engine).is_empty());
+  save(&mut engine, &files, &data, banner_file(""));
+  engine.step_frames(3).expect("frames");
+  assert!(flag(&engine).is_empty());
+  assert_eq!(skeleton(&engine, banner).attachment("banner"), None);
+  // And back once more
+  save(&mut engine, &files, &data, banner_file(FLAG_OF_FOUR));
+  engine.step_frames(3).expect("frames");
+  near_all(&flag(&engine), &flag_at(at, &FLAG, &WAVE, 1.0));
+  assert_eq!(skipped(&log), 1, "{:?}", log.warnings());
+  assert_eq!(animation(&engine, banner).current(0), Some(wave));
+}
+
+#[test]
+fn a_skin_swap_to_another_shape_skips_the_deform_without_repeating_the_warning() {
+  let log = capture_log();
+  let Some(mut engine) = engine() else {
+    return;
+  };
+  let white = engine
+    .assets()
+    .add(Image::solid_rect(1, 1, 255, 255, 255, 255));
+  let data = engine.assets().add(banner(white));
+  let at = Vec2::new(20.0, 30.0);
+  let flying = hoist(&mut engine, &data, at);
+  play(&mut engine, flying, 0, "wave", true);
+  engine.step_frames(4).expect("frames");
+  let flag = |engine: &HeadlessEngine| skeleton_mesh(engine.world(), flying, "banner");
+  near_all(&flag(&engine), &flag_at(at, &FLAG, &WAVE, 1.0));
+  assert_eq!(skipped(&log), 0, "{:?}", log.warnings());
+
+  for round in 0..4 {
+    // The skin "long" has a flag of six corners. A skin shows at once, in
+    // a frame with no step too, so that frame draws the long flag while
+    // the pose still holds the offsets the last step made for four: they
+    // are not the long flag's, and it is drawn in its setup shape
+    time(&mut engine).game.pause();
+    skeleton_mut(&mut engine, flying).set_skin("long");
+    engine.step().expect("a frame");
+    near_all(&flag(&engine), &flag_at(at, &LONG_FLAG, &[], 0.0));
+    time(&mut engine).game.resume();
+    // From its next step the deform is skipped, for as many loops as the
+    // skin is worn
+    engine.step_frames(40).expect("frames");
+    near_all(&flag(&engine), &flag_at(at, &LONG_FLAG, &[], 0.0));
+    assert_eq!(skipped(&log), 1, "round {round}: {:?}", log.warnings());
+    // The skin taken off shows the flag of four at once too, in its setup
+    // shape until a step applies the deform to it again
+    time(&mut engine).game.pause();
+    skeleton_mut(&mut engine, flying).set_skins(&[]);
+    engine.step().expect("a frame");
+    near_all(&flag(&engine), &flag_at(at, &FLAG, &[], 0.0));
+    time(&mut engine).game.resume();
+    engine.step_frames(2).expect("frames");
+    near_all(&flag(&engine), &flag_at(at, &FLAG, &WAVE, 1.0));
+  }
+  // Swapped back and forth, the log was told once of this skeleton's
+  // animation, with both counts
+  assert_eq!(skipped(&log), 1, "{:?}", log.warnings());
+  let told = log.warnings().join("\n");
+  for part in [
+    "\"wave\"",
+    "\"flag\"",
+    "slot \"banner\"",
+    "4 positions",
+    "the mesh has 6",
+  ] {
+    assert!(told.contains(part), "{part} in {told}");
+  }
+  // Another skeleton of the same data is told of its own
+  let other = hoist(&mut engine, &data, Vec2::new(20.0, 50.0));
+  skeleton_mut(&mut engine, other).set_skin("long");
+  play(&mut engine, other, 0, "wave", true);
+  engine.step_frames(3).expect("frames");
+  assert_eq!(skipped(&log), 2, "{:?}", log.warnings());
+}
+
+#[test]
+fn skeletons_sharing_data_keep_their_own_deform() {
+  let log = capture_log();
+  let Some(mut engine) = engine() else {
+    return;
+  };
+  let white = engine
+    .assets()
+    .add(Image::solid_rect(1, 1, 255, 255, 255, 255));
+  let data = engine.assets().add(banner(white));
+  let made = version(&engine, &data);
+  let places = [(4.0, 4.0), (4.0, 20.0), (4.0, 36.0), (40.0, 4.0)].map(|(x, y)| Vec2::new(x, y));
+  let [still, waving, swaying, late] = places.map(|at| hoist(&mut engine, &data, at));
+  // One plays nothing, one holds the flag in its waved shape, and two grow
+  // into it over a second, one of them from half way
+  play(&mut engine, waving, 0, "wave", true);
+  play(&mut engine, swaying, 0, "sway", false);
+  let half = play(&mut engine, late, 0, "sway", false);
+  animation_mut(&mut engine, late)
+    .entry_mut(half)
+    .expect("a live entry")
+    .start = 0.5;
+  engine.step_frames(6).expect("frames");
+  let dt = timestep(&engine);
+  let flag =
+    |engine: &HeadlessEngine, entity: Entity| skeleton_mesh(engine.world(), entity, "banner");
+  let shape = |at: Vec2, share: f32| flag_at(at, &FLAG, &WAVE, share);
+  // Each has the shape its own animation gives it
+  near_all(&flag(&engine, still), &shape(places[0], 0.0));
+  near_all(&flag(&engine, waving), &shape(places[1], 1.0));
+  near_all(&flag(&engine, swaying), &shape(places[2], 6.0 * dt));
+  near_all(&flag(&engine, late), &shape(places[3], 0.5 + 6.0 * dt));
+  // And goes on in its own way: one stops its animation, one starts
+  // another, and the rest are as they were going
+  animation_mut(&mut engine, waving).clear(0);
+  play(&mut engine, still, 0, "wave", true);
+  engine.step_frames(6).expect("frames");
+  near_all(&flag(&engine, still), &shape(places[0], 1.0));
+  near_all(&flag(&engine, waving), &shape(places[1], 0.0));
+  near_all(&flag(&engine, swaying), &shape(places[2], 12.0 * dt));
+  near_all(&flag(&engine, late), &shape(places[3], 0.5 + 12.0 * dt));
+  // A skin on one is its own too: the others' flags have four corners
+  skeleton_mut(&mut engine, swaying).set_skin("long");
+  engine.step().expect("a frame");
+  assert_eq!(flag(&engine, swaying).len(), 6);
+  near_all(&flag(&engine, late), &shape(places[3], 0.5 + 13.0 * dt));
+  assert_eq!(skipped(&log), 1, "{:?}", log.warnings());
+  // The shared data is as it was made
+  assert_eq!(version(&engine, &data), made);
 }

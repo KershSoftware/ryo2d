@@ -6,8 +6,9 @@ use std::f32::consts::TAU;
 
 use glam::{Vec2, Vec4};
 
-use super::animation::{Animation, EventValues, Frame, Timeline};
-use super::data::{BoneData, BoneId, SkeletonData};
+use super::animation::{Animation, EventValues, Frame, Timeline, deform_width};
+use super::attachment::Attachment;
+use super::data::{BoneData, BoneId, SkeletonData, SlotId};
 use super::pose::{BonePose, Pose, setup_order, srgb};
 use crate::core::ui::Color;
 
@@ -31,10 +32,12 @@ pub(crate) enum MixDirection {
 }
 
 /// Blends `animation` at `time` (its own time: the caller wraps a looping
-/// track's time) into `pose`, by `alpha` (0 leaves bone and colour values,
-/// 1 takes them fully) and `blend`. Before a timeline's first key it leaves
-/// the pose; after its last key the last value holds. Event timelines do
-/// nothing here (see [`events_between`])
+/// track's time) into `pose`, by `alpha` (0 leaves bone, colour and deform
+/// values, 1 takes them fully) and `blend`. Before a timeline's first key
+/// it leaves the pose; after its last key the last value holds. Its deform
+/// keys move the meshes of the default skin that the slots show once its
+/// other keys have applied. Event timelines do nothing here (see
+/// [`events_between`])
 #[cfg(test)]
 pub(crate) fn apply(
   animation: &Animation,
@@ -45,11 +48,13 @@ pub(crate) fn apply(
   blend: MixBlend,
   direction: MixDirection,
 ) {
+  let mut deforms = Vec::new();
   apply_layer(
     animation,
     data,
     pose,
     Layer {
+      animation: 0,
       time,
       alpha,
       fades: &[],
@@ -57,14 +62,21 @@ pub(crate) fn apply(
       direction,
     },
     &mut [],
+    &mut deforms,
   );
+  for step in deforms {
+    let worn = |slot, name: &str| data.default_skin().attachment(slot, name);
+    apply_deform(animation, step, pose, worn);
+  }
 }
 
-/// How one entry applies in a step: its animation time, its alpha, each
-/// timeline's fade (a factor on the alpha, by timeline index; missing ones
-/// are 1), its blend and its direction
+/// How one entry applies in a step: its animation's place in the data (for
+/// the deform keys it leaves to be applied later), its animation time, its
+/// alpha, each timeline's fade (a factor on the alpha, by timeline index;
+/// missing ones are 1), its blend and its direction
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Layer<'a> {
+  pub(crate) animation: usize,
   pub(crate) time: f32,
   pub(crate) alpha: f32,
   pub(crate) fades: &'a [f32],
@@ -77,15 +89,22 @@ pub(crate) struct Layer<'a> {
 /// the blend takes the turn nearest the one it took last step (the short
 /// way on the first, while it is NaN) and records it, so a turn that would
 /// cross half a circle mid-mix keeps going the way it started. Timelines
-/// past the end of `turns` blend the short way every step
+/// past the end of `turns` blend the short way every step.
+///
+/// A deform timeline is not applied here: what its slot shows is not
+/// settled until every track has applied and the game's attachments are
+/// over them. Each one that would move anything is pushed onto `deforms`,
+/// in the order applied, for [`apply_deform`] then
 pub(crate) fn apply_layer(
   animation: &Animation,
   data: &SkeletonData,
   pose: &mut Pose,
   layer: Layer<'_>,
   turns: &mut [f32],
+  deforms: &mut Vec<DeformStep>,
 ) {
   let Layer {
+    animation: place,
     time,
     alpha: base,
     fades,
@@ -260,8 +279,133 @@ pub(crate) fn apply_layer(
           }
         }
       }
+      Timeline::Deform { .. } => {
+        if alpha > 0.0 {
+          deforms.push(DeformStep {
+            animation: place,
+            timeline: index,
+            time,
+            alpha,
+            blend,
+          });
+        }
+      }
       Timeline::Event { .. } => {}
     }
+  }
+}
+
+/// A deform timeline as one entry applies it in a step: the animation's
+/// place in the data and the timeline's in the animation, the animation's
+/// time, and the alpha (the entry's, times the timeline's fade) and blend
+/// its key is taken by
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct DeformStep {
+  pub(crate) animation: usize,
+  pub(crate) timeline: usize,
+  pub(crate) time: f32,
+  pub(crate) alpha: f32,
+  pub(crate) blend: MixBlend,
+}
+
+/// Why a deform timeline moved nothing though its slot shows something
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Misfit {
+  /// The slot shows an attachment of another name
+  OtherName,
+  /// What the slot shows under the name is not a mesh
+  NotAMesh,
+  /// The keys hold another count of positions than the mesh
+  Positions { keys: usize, mesh: usize },
+}
+
+/// Blends timeline `step.timeline` of `animation`, a deform timeline, into
+/// its slot's offsets in `pose`, whose slots show what the step leaves them
+/// showing. `worn` finds an attachment by its slot and name in the skins
+/// the skeleton wears.
+///
+/// It moves the mesh the slot shows under the timeline's name when that
+/// mesh holds as many positions as the keys (keys that are all empty fit
+/// any mesh): replace moves the offsets toward the key's by the alpha, add
+/// adds the key's times the alpha, the key between two keys being eased by
+/// the first one's curve. Before its first key it does nothing.
+///
+/// Otherwise nothing moves. A slot that shows nothing (hidden, or showing
+/// a name no skin worn has in it) is passed over; one that shows an
+/// attachment of another name, one of this name that is not a mesh, or a
+/// mesh of another count of positions, is a [`Misfit`] for the caller to
+/// tell
+pub(crate) fn apply_deform<'a>(
+  animation: &Animation,
+  step: DeformStep,
+  pose: &mut Pose,
+  worn: impl FnOnce(SlotId, &str) -> Option<&'a Attachment>,
+) -> Option<Misfit> {
+  let Some(Timeline::Deform {
+    slot,
+    attachment,
+    frames,
+  }) = animation.timelines.get(step.timeline)
+  else {
+    return None;
+  };
+  let sample = locate(frames, step.time)?;
+  let shown = pose.slot_attachments.get(slot.index())?.as_deref()?;
+  if shown != &**attachment {
+    return worn(*slot, shown).map(|_| Misfit::OtherName);
+  }
+  let Attachment::Mesh(mesh) = worn(*slot, attachment)? else {
+    return Some(Misfit::NotAMesh);
+  };
+  let (keys, width) = (deform_width(frames), mesh.positions() * 2);
+  if keys != 0 && keys != width {
+    return Some(Misfit::Positions {
+      keys: keys / 2,
+      mesh: mesh.positions(),
+    });
+  }
+  let (from, to, eased) = match sample {
+    Sample::Hold(index) => (frames.get(index)?, frames.get(index)?, 0.0),
+    Sample::Between(index, eased) => (frames.get(index)?, frames.get(index + 1)?, eased),
+  };
+  let offsets = pose.deform_mut(slot.index())?;
+  mix_deform(
+    offsets,
+    width,
+    (&from.1, &to.1, eased),
+    step.alpha,
+    step.blend,
+  );
+  None
+}
+
+/// Blends a deform key into a slot's offsets, `width` floats that are all 0
+/// while the list is empty. The key is `eased` of the way from one list to
+/// another, each `width` floats or empty (all 0)
+fn mix_deform(
+  offsets: &mut Vec<f32>,
+  width: usize,
+  (from, to, eased): (&[f32], &[f32], f32),
+  alpha: f32,
+  blend: MixBlend,
+) {
+  if offsets.len() != width {
+    // Nothing has moved them in this step, and a key of no offsets moves
+    // them nowhere: the list stays empty
+    offsets.clear();
+    if from.is_empty() && to.is_empty() {
+      return;
+    }
+    offsets.resize(width, 0.0);
+  }
+  let value = |list: &[f32], index: usize| list.get(index).copied().unwrap_or(0.0);
+  for (index, offset) in offsets.iter_mut().enumerate() {
+    let (from, to) = (value(from, index), value(to, index));
+    let key = from + (to - from) * eased;
+    *offset += match blend {
+      MixBlend::Replace => (key - *offset) * alpha,
+      MixBlend::Add => key * alpha,
+    };
   }
 }
 
@@ -1162,5 +1306,232 @@ mod tests {
     }
     let tiny = animation(1e-30, vec![event_keys(&[0.0])]);
     assert!(events(&tiny, 0.0, 1.0, true).len() <= 1001);
+  }
+
+  /// A root bone and a slot "banner" on it showing "flag": a mesh of three
+  /// unweighted vertices, so of three positions
+  fn banner() -> SkeletonData {
+    use crate::core::skeleton::{MeshAttachment, MeshVertices, Region};
+    let corners = vec![Vec2::ZERO, Vec2::X, Vec2::Y];
+    let flag = MeshAttachment::new(
+      0,
+      MeshVertices::Unweighted(corners.clone()),
+      corners,
+      vec![0, 1, 2],
+    );
+    SkeletonData::builder()
+      .bone("root", None, BoneSetup::default())
+      .slot(
+        "banner",
+        "root",
+        SlotSetup {
+          attachment: Some(Arc::from("flag")),
+          ..SlotSetup::default()
+        },
+      )
+      .region(Region {
+        name: Arc::from("cloth"),
+        image: crate::core::asset::Handle::detached(),
+        x: 0,
+        y: 0,
+        width: 4,
+        height: 4,
+      })
+      .attachment(
+        SkeletonData::DEFAULT_SKIN,
+        "banner",
+        "flag",
+        Attachment::Mesh(flag),
+      )
+      .build()
+      .expect("a valid skeleton")
+  }
+
+  /// A deform of the banner's flag with these keys
+  fn deform(frames: Vec<(f32, Vec<f32>, Curve)>) -> Animation {
+    animation(
+      1.0,
+      vec![Timeline::Deform {
+        slot: SlotId(0),
+        attachment: Arc::from("flag"),
+        frames,
+      }],
+    )
+  }
+
+  /// The banner's six offsets in `pose`: all 0 while nothing has moved them
+  fn offsets(pose: &Pose) -> [f32; 6] {
+    let moved = pose
+      .deforms
+      .first()
+      .map_or(&[][..], |deform| &deform.offsets);
+    if moved.is_empty() {
+      return [0.0; 6];
+    }
+    <[f32; 6]>::try_from(moved).expect("an x and a y for each of the flag's three positions")
+  }
+
+  fn close_all(actual: [f32; 6], expected: [f32; 6]) {
+    for (index, (got, want)) in actual.iter().zip(expected).enumerate() {
+      assert!(
+        (got - want).abs() < 1e-5,
+        "offset {index}: expected {expected:?}, got {actual:?}"
+      );
+    }
+  }
+
+  const KEY: [f32; 6] = [2.0, -4.0, 6.0, 8.0, -10.0, 12.0];
+  const NEXT: [f32; 6] = [4.0, 0.0, 6.0, -8.0, 10.0, 0.0];
+
+  #[test]
+  fn a_deform_key_moves_its_vertices_by_alpha() {
+    let data = banner();
+    let wave = deform(vec![
+      (0.25, KEY.to_vec(), Curve::Linear),
+      (0.75, NEXT.to_vec(), Curve::Linear),
+    ]);
+    let at = |pose: &mut Pose, time: f32, alpha: f32| {
+      let (blend, direction) = (MixBlend::Replace, MixDirection::In);
+      apply(&wave, &data, pose, time, alpha, blend, direction);
+      offsets(pose)
+    };
+    // On the setup shape, at full strength: the key's own offsets
+    close_all(at(&mut Pose::setup(&data), 0.25, 1.0), KEY);
+    // Replace moves each offset toward the key's by the alpha: from none,
+    // half of it; and from what a lower layer left, part of the way
+    close_all(at(&mut Pose::setup(&data), 0.25, 0.5), KEY.map(|k| k * 0.5));
+    let mut pose = Pose::setup(&data);
+    let under = [1.0, 1.0, -2.0, 0.0, 30.0, 8.0];
+    pose
+      .deform_mut(0)
+      .expect("the banner")
+      .extend_from_slice(&under);
+    let quarter: [f32; 6] = std::array::from_fn(|i| under[i] + (KEY[i] - under[i]) * 0.25);
+    close_all(at(&mut pose, 0.25, 0.25), quarter);
+    // No alpha leaves them as they were, and makes no list in a pose
+    // nothing has moved
+    close_all(at(&mut pose, 0.25, 0.0), quarter);
+    let mut pose = Pose::setup(&data);
+    close_all(at(&mut pose, 0.25, 0.0), [0.0; 6]);
+    assert!(pose.deforms.is_empty());
+    // Between two keys the offsets go from one key's to the next's
+    let between = |t: f32| -> [f32; 6] { std::array::from_fn(|i| KEY[i] + (NEXT[i] - KEY[i]) * t) };
+    close_all(at(&mut Pose::setup(&data), 0.5, 1.0), between(0.5));
+    close_all(at(&mut Pose::setup(&data), 0.375, 1.0), between(0.25));
+    // After the last key its offsets hold; before the first nothing moves
+    close_all(at(&mut Pose::setup(&data), 0.9, 1.0), NEXT);
+    let mut pose = Pose::setup(&data);
+    close_all(at(&mut pose, 0.1, 1.0), [0.0; 6]);
+    assert!(pose.deforms.iter().all(|deform| deform.offsets.is_empty()));
+
+    // The first key's curve eases the way to the next: stepped holds the
+    // first key until the next, and a bezier (CSS's "ease") is 0.8024 of
+    // the way at half time
+    let eased = |curve: Curve, time: f32| {
+      let wave = deform(vec![
+        (0.0, KEY.to_vec(), curve),
+        (1.0, NEXT.to_vec(), Curve::Linear),
+      ]);
+      let mut pose = Pose::setup(&data);
+      let (blend, direction) = (MixBlend::Replace, MixDirection::In);
+      apply(&wave, &data, &mut pose, time, 1.0, blend, direction);
+      offsets(&pose)
+    };
+    close_all(eased(Curve::Stepped, 0.99), KEY);
+    close_all(eased(Curve::Stepped, 1.0), NEXT);
+    let ease = Curve::Bezier {
+      cx1: 0.25,
+      cy1: 0.1,
+      cx2: 0.25,
+      cy2: 1.0,
+    };
+    let half = eased(ease, 0.5);
+    for index in 0..6 {
+      let want = KEY[index] + (NEXT[index] - KEY[index]) * 0.8024;
+      assert!(
+        (half[index] - want).abs() < 0.02,
+        "offset {index}: {half:?}"
+      );
+    }
+    assert_ne!(half[0], between(0.5)[0], "not the straight line's value");
+  }
+
+  #[test]
+  fn an_empty_key_is_the_setup_shape() {
+    let data = banner();
+    let wave = deform(vec![
+      (0.0, Vec::new(), Curve::Linear),
+      (0.5, KEY.to_vec(), Curve::Linear),
+      (1.0, Vec::new(), Curve::Linear),
+    ]);
+    let at = |pose: &mut Pose, time: f32, alpha: f32, blend: MixBlend| {
+      apply(&wave, &data, pose, time, alpha, blend, MixDirection::In);
+      offsets(pose)
+    };
+    let fresh = || Pose::setup(&data);
+    // At an empty key nothing is moved; toward and from one the offsets
+    // grow from nothing and shrink to nothing
+    close_all(at(&mut fresh(), 0.0, 1.0, MixBlend::Replace), [0.0; 6]);
+    close_all(
+      at(&mut fresh(), 0.25, 1.0, MixBlend::Replace),
+      KEY.map(|k| k * 0.5),
+    );
+    close_all(at(&mut fresh(), 0.5, 1.0, MixBlend::Replace), KEY);
+    close_all(
+      at(&mut fresh(), 0.875, 1.0, MixBlend::Replace),
+      KEY.map(|k| k * 0.25),
+    );
+    // Held at the last key, an empty one, it leaves a pose nothing moved
+    // with nothing in its list
+    let mut pose = fresh();
+    close_all(at(&mut pose, 1.0, 1.0, MixBlend::Replace), [0.0; 6]);
+    assert!(pose.deforms.iter().all(|deform| deform.offsets.is_empty()));
+
+    // An empty key is offsets of 0, not no key: replace moves what a lower
+    // layer left toward the setup shape by the alpha, and add adds nothing
+    let under = [1.0, 1.0, -2.0, 0.0, 30.0, 8.0];
+    let lower = || {
+      let mut pose = fresh();
+      pose
+        .deform_mut(0)
+        .expect("the banner")
+        .extend_from_slice(&under);
+      pose
+    };
+    close_all(
+      at(&mut lower(), 1.0, 0.25, MixBlend::Replace),
+      under.map(|u| u * 0.75),
+    );
+    close_all(at(&mut lower(), 1.0, 1.0, MixBlend::Replace), [0.0; 6]);
+    close_all(at(&mut lower(), 1.0, 1.0, MixBlend::Add), under);
+    // Keys that are all empty hold no count of positions, so they fit the
+    // flag as they fit any mesh
+    let still = deform(vec![(0.0, Vec::new(), Curve::Linear)]);
+    let mut pose = lower();
+    let (blend, direction) = (MixBlend::Replace, MixDirection::In);
+    apply(&still, &data, &mut pose, 0.5, 0.5, blend, direction);
+    close_all(offsets(&pose), under.map(|u| u * 0.5));
+  }
+
+  #[test]
+  fn an_add_blend_adds_a_deform_key_times_its_alpha() {
+    let data = banner();
+    let wave = deform(vec![(0.0, KEY.to_vec(), Curve::Linear)]);
+    let mut pose = Pose::setup(&data);
+    let under = [1.0, 1.0, -2.0, 0.0, 30.0, 8.0];
+    pose
+      .deform_mut(0)
+      .expect("the banner")
+      .extend_from_slice(&under);
+    let (blend, direction) = (MixBlend::Add, MixDirection::Out);
+    apply(&wave, &data, &mut pose, 0.0, 0.5, blend, direction);
+    close_all(
+      offsets(&pose),
+      std::array::from_fn(|i| under[i] + KEY[i] * 0.5),
+    );
+    // Over the setup shape it adds to nothing
+    let mut pose = Pose::setup(&data);
+    apply(&wave, &data, &mut pose, 0.0, 0.5, blend, direction);
+    close_all(offsets(&pose), KEY.map(|k| k * 0.5));
   }
 }

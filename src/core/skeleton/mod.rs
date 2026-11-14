@@ -11,12 +11,12 @@
 //! entity rides one of its bones; and [`SkeletonEvent`] and
 //! [`SkeletonTrackEvent`] messages tell the game what its animations did.
 //! An entity with a `Renderable::skeleton()` draws its skeleton, its
-//! regions and its meshes skinned to their bones, sorted, lit and
-//! shadowed as a sprite is, and between fixed steps as an interpolated
-//! entity is.
+//! regions and its meshes skinned to their bones and shaped by its
+//! animations' deform keys, sorted, lit and shadowed as a sprite is, and
+//! between fixed steps as an interpolated entity is.
 //!
-//! Not built: deform keys, IK, transform and path constraints,
-//! clipping, and reading another tool's files.
+//! Not built: IK, transform and path constraints, clipping, linked
+//! meshes, and reading another tool's files.
 
 mod animation;
 mod apply;

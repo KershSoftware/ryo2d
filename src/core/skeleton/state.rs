@@ -5,11 +5,13 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use super::animation::{Animation, EMPTY_NAME, EventValues, Timeline};
+use super::animation::{Animation, EMPTY_NAME, EventValues, Timeline, deform_width};
 use super::apply::{
-  CrossedKey, Layer, MAX_LOOPS, MixBlend, MixDirection, apply_layer, events_crossed,
+  CrossedKey, DeformStep, Layer, MAX_LOOPS, Misfit, MixBlend, MixDirection, apply_deform,
+  apply_layer, events_crossed,
 };
-use super::data::{AnimationCatalogue, SkeletonData};
+use super::attachment::Attachment;
+use super::data::{AnimationCatalogue, SkeletonData, SlotId};
 use super::pose::Pose;
 use crate::core::ecs::Component;
 
@@ -444,7 +446,13 @@ impl Kept {
 /// A skeleton's animation state: tracks numbered from 0, each playing a
 /// current entry, mixing from the entries it replaced, with a queue after
 /// it. Higher tracks apply over lower ones. Without one, a skeleton holds
-/// its setup pose
+/// its setup pose.
+///
+/// An animation's deform keys move the mesh their slot shows under their
+/// attachment's name, mixed as its bone keys are. A deform that does not
+/// fit what the slot shows (another attachment, one that is not a mesh, or
+/// a mesh holding another count of positions than its keys, as another
+/// skin's may) is skipped, and the log is told once for that animation
 #[derive(Component, Debug, Clone)]
 pub struct SkeletonAnimation {
   /// Multiplies the time every track advances by (1). A negative or
@@ -462,6 +470,9 @@ pub struct SkeletonAnimation {
   spare: Vec<Buffers>,
   /// Names already warned about (at most [`MAX_WARNED`])
   warned: Vec<Arc<str>>,
+  /// The animations whose deform keys the log has been told do not fit
+  /// what their slot shows (at most [`MAX_WARNED`])
+  warned_deform: Vec<Arc<str>>,
   warned_track: bool,
   warned_kept: bool,
   warned_queue: bool,
@@ -469,6 +480,9 @@ pub struct SkeletonAnimation {
   next_id: u32,
   empty_name: Arc<str>,
   crossed: Vec<CrossedKey>,
+  /// The deform timelines the last pose's entries apply, in the order
+  /// applied, until [`apply_deforms`](Self::apply_deforms) takes them
+  deforms: Vec<DeformStep>,
 }
 
 impl Default for SkeletonAnimation {
@@ -498,6 +512,7 @@ impl SkeletonAnimation {
       told: Told::default(),
       spare: Vec::new(),
       warned: Vec::new(),
+      warned_deform: Vec::new(),
       warned_track: false,
       warned_kept: false,
       warned_queue: false,
@@ -505,6 +520,7 @@ impl SkeletonAnimation {
       next_id: 0,
       empty_name: Arc::from(Self::EMPTY),
       crossed: Vec::new(),
+      deforms: Vec::new(),
     }
   }
 
@@ -733,7 +749,8 @@ impl SkeletonAnimation {
   /// from the lowest up. The first step to see `data` makes the calls kept
   /// until then; a step with new data (a reload) keeps each entry by its
   /// animation's name, and clears a track whose animation is gone, with one
-  /// warning
+  /// warning. The tracks' deform keys are kept for
+  /// [`apply_deforms`](Self::apply_deforms)
   pub(crate) fn advance_and_apply(
     &mut self,
     data: &SkeletonData,
@@ -764,10 +781,7 @@ impl SkeletonAnimation {
         at -= 1;
       }
     }
-    pose.reset(data);
-    for track in &mut self.tracks {
-      apply_track(track, data, pose);
-    }
+    self.apply_tracks(data, pose);
   }
 
   /// Poses without a step: takes up `data` as a step does (the calls kept
@@ -777,13 +791,97 @@ impl SkeletonAnimation {
   /// that calls caused stay for the next step, so an entry that has yet to
   /// start is shown at its first moment (its `start`) and its first step
   /// is still its first: its `Start` and the keys at its time 0 go out
-  /// then, or with a start past 0 the keys after it
+  /// then, or with a start past 0 the keys after it. The tracks' deform
+  /// keys are kept for [`apply_deforms`](Self::apply_deforms)
   pub(crate) fn apply_unadvanced(&mut self, data: &SkeletonData, pose: &mut Pose) {
     self.see(data);
+    self.apply_tracks(data, pose);
+  }
+
+  /// Resets `pose` to the setup pose and applies the tracks from the
+  /// lowest up, keeping the deform timelines they apply
+  fn apply_tracks(&mut self, data: &SkeletonData, pose: &mut Pose) {
     pose.reset(data);
+    self.deforms.clear();
     for track in &mut self.tracks {
-      apply_track(track, data, pose);
+      apply_track(track, data, pose, &mut self.deforms);
     }
+  }
+
+  /// Applies the deform keys of the tracks as they were last posed
+  /// ([`advance_and_apply`](Self::advance_and_apply) or
+  /// [`apply_unadvanced`](Self::apply_unadvanced), with the same `data`
+  /// and `pose`), in the order the tracks applied. It is called once
+  /// `pose`'s slots show what the pose leaves them showing: every track's
+  /// attachment keys applied, and whatever else sets a slot's attachment
+  /// written over them. `worn` finds an attachment by slot and name in the
+  /// skins the skeleton wears.
+  ///
+  /// A deform timeline moves the mesh its slot shows under its attachment
+  /// name when that mesh holds as many positions as its keys. One that
+  /// does not fit what the slot shows is skipped, and the log is told once
+  /// for its animation (for the first [`MAX_WARNED`] animations)
+  pub(crate) fn apply_deforms<'a>(
+    &mut self,
+    data: &SkeletonData,
+    pose: &mut Pose,
+    worn: impl Fn(SlotId, &str) -> Option<&'a Attachment>,
+  ) {
+    for at in 0..self.deforms.len() {
+      let Some(&step) = self.deforms.get(at) else {
+        break;
+      };
+      let Some(animation) = data.animations().get(step.animation) else {
+        continue;
+      };
+      if let Some(misfit) = apply_deform(animation, step, pose, &worn) {
+        self.warn_misfit(data, pose, animation, step.timeline, misfit);
+      }
+    }
+    self.deforms.clear();
+  }
+
+  /// Tells the log that a deform timeline of `animation` does not fit what
+  /// its slot shows, once per skeleton per animation, for the first
+  /// [`MAX_WARNED`] animations
+  fn warn_misfit(
+    &mut self,
+    data: &SkeletonData,
+    pose: &Pose,
+    animation: &Animation,
+    timeline: usize,
+    misfit: Misfit,
+  ) {
+    let told = |warned: &Arc<str>| **warned == *animation.name;
+    if self.warned_deform.iter().any(told) || self.warned_deform.len() >= MAX_WARNED {
+      return;
+    }
+    self.warned_deform.push(animation.name.clone());
+    let Some(Timeline::Deform {
+      slot, attachment, ..
+    }) = animation.timelines.get(timeline)
+    else {
+      return;
+    };
+    let slot_name = data.slots().get(slot.index()).map(|slot| &*slot.name);
+    let why = match misfit {
+      Misfit::OtherName => {
+        let shown = pose.slot_attachments.get(slot.index());
+        format!(
+          "the slot shows {:?}",
+          shown.and_then(Option::as_deref).unwrap_or_default()
+        )
+      }
+      Misfit::NotAMesh => "that attachment is not a mesh".to_owned(),
+      Misfit::Positions { keys, mesh } => {
+        format!("its keys hold {keys} positions and the mesh has {mesh}")
+      }
+    };
+    log::warn!(
+      "skeleton animation {:?} keys a deform of {attachment:?} in slot {:?}, but {why}; the deform is skipped",
+      animation.name,
+      slot_name.unwrap_or_default()
+    );
   }
 
   fn track_ok(&mut self, track: usize) -> bool {
@@ -1383,11 +1481,39 @@ fn applied_alpha(entry: &TrackEntry, position: usize) -> f32 {
   entry.alpha() * mix
 }
 
+/// Whether `newer`, a timeline of the entry replacing another's, keys
+/// every property `older` keys, and so replaces what `older` sets wherever
+/// both apply. A deform timeline's property is its slot's attachment by
+/// name, and it covers only one whose keys are as long as its own (or
+/// where either's are all empty, which fit any mesh): keys of another
+/// length are for a mesh the other cannot move, and replace nothing of it
+fn covers(newer: &Timeline, older: &Timeline) -> bool {
+  let same = newer.target() == older.target()
+    && older
+      .properties()
+      .iter()
+      .all(|property| newer.properties().contains(property));
+  same
+    && match (newer, older) {
+      (Timeline::Deform { frames: newer, .. }, Timeline::Deform { frames: older, .. }) => {
+        let (newer, older) = (deform_width(newer), deform_width(older));
+        newer == older || newer == 0 || older == 0
+      }
+      _ => true,
+    }
+}
+
 /// Applies one track: the entries it is mixing from, oldest first, then
 /// the current one. Each entry mixing out takes, per timeline, the alpha
 /// that makes its weight in the result fall from its own to 0 in step with
-/// the mix (the module notes give the rule)
-fn apply_track(track: &mut Track, data: &SkeletonData, pose: &mut Pose) {
+/// the mix (the module notes give the rule). The deform timelines the
+/// entries apply are pushed onto `deforms`
+fn apply_track(
+  track: &mut Track,
+  data: &SkeletonData,
+  pose: &mut Pose,
+  deforms: &mut Vec<DeformStep>,
+) {
   let count = track.chain.len();
   if count == 0 {
     return;
@@ -1429,13 +1555,8 @@ fn apply_track(track: &mut Track, data: &SkeletonData, pose: &mut Pose) {
       if let (Some(mine), theirs) = (animation_of(entry, data), animation_of(next, data)) {
         for timeline in &mine.timelines {
           let found = theirs.filter(|_| blends(timeline)).and_then(|theirs| {
-            theirs.timelines.iter().position(|other| {
-              other.target() == timeline.target()
-                && timeline
-                  .properties()
-                  .iter()
-                  .all(|property| other.properties().contains(property))
-            })
+            let mut covering = theirs.timelines.iter();
+            covering.position(|other| covers(other, timeline))
           });
           entry.cover.push(found);
         }
@@ -1487,7 +1608,7 @@ fn apply_track(track: &mut Track, data: &SkeletonData, pose: &mut Pose) {
   for position in 0..count {
     let current = position + 1 == count;
     let entry = &mut track.chain[position];
-    let Some(animation) = animation_of(entry, data) else {
+    let (Some(place), Some(animation)) = (entry.animation, animation_of(entry, data)) else {
       entry.applied = true;
       continue;
     };
@@ -1497,13 +1618,14 @@ fn apply_track(track: &mut Track, data: &SkeletonData, pose: &mut Pose) {
       MixDirection::Out
     };
     let layer = Layer {
+      animation: place,
       time: entry.animation_time(),
       alpha: applied_alpha(entry, position),
       fades: if current { &[] } else { &entry.fades },
       blend: entry.mix_blend,
       direction,
     };
-    apply_layer(animation, data, pose, layer, &mut entry.turns);
+    apply_layer(animation, data, pose, layer, &mut entry.turns, deforms);
     entry.applied = true;
   }
 }
@@ -1542,7 +1664,8 @@ mod tests {
   use super::*;
   use crate::core::ecs::Vec2;
   use crate::core::skeleton::{
-    Animation, BoneId, BoneSetup, Curve, EventData, SlotId, SlotSetup, Timeline,
+    Animation, BoneId, BoneSetup, Curve, EventData, SkeletonDataBuilder, SlotId, SlotSetup,
+    Timeline,
   };
   use crate::testing::capture_log;
 
@@ -1692,7 +1815,11 @@ mod tests {
 
   impl Rig {
     fn new() -> Self {
-      let data = data();
+      Self::of(data())
+    }
+
+    /// A rig of other data than [`data`]
+    fn of(data: SkeletonData) -> Self {
       let pose = Pose::setup(&data);
       Self {
         data,
@@ -1717,7 +1844,16 @@ mod tests {
         &mut fired.events,
         &mut fired.track,
       );
+      self.deform();
       fired
+    }
+
+    /// The posed tracks' deform keys, on the default skin's meshes: what a
+    /// skeleton does once its slots show what the pose leaves them showing
+    fn deform(&mut self) {
+      let skin = self.data.default_skin();
+      let worn = |slot, name: &str| skin.attachment(slot, name);
+      self.state.apply_deforms(&self.data, &mut self.pose, worn);
     }
 
     fn set(&mut self, track: usize, name: &str, looping: bool) -> TrackEntryId {
@@ -4056,5 +4192,482 @@ mod tests {
     rig.set(2, "thirty", true);
     let current = rig.state.current(2).and_then(|id| rig.state.entry(id));
     assert_eq!(rig.state.animation(2), current.map(TrackEntry::animation));
+  }
+
+  const WAVE: [f32; 6] = [2.0, -4.0, 6.0, 8.0, -10.0, 12.0];
+  const RIPPLE: [f32; 6] = [10.0, 10.0, 0.0, 0.0, -20.0, 4.0];
+
+  /// A deform of `attachment` in the banner's slot, keyed at `time`
+  fn deform(attachment: &str, time: f32, offsets: &[f32]) -> Timeline {
+    Timeline::Deform {
+      slot: SlotId(0),
+      attachment: Arc::from(attachment),
+      frames: vec![(time, offsets.to_vec(), Curve::Linear)],
+    }
+  }
+
+  /// A key that sets the banner slot's attachment from time 0
+  fn show(attachment: Option<&str>) -> Timeline {
+    Timeline::Attachment {
+      slot: SlotId(0),
+      frames: vec![(0.0, attachment.map(Arc::from))],
+    }
+  }
+
+  /// A mesh of `corners` unweighted vertices of region 0: as many positions
+  fn mesh(corners: usize) -> Attachment {
+    use crate::core::skeleton::{MeshAttachment, MeshVertices};
+    let at: Vec<Vec2> = (0..corners)
+      .map(|corner| Vec2::new(corner as f32, (corner * corner) as f32))
+      .collect();
+    let triangles = (1..corners as u16 - 1)
+      .flat_map(|corner| [0, corner, corner + 1])
+      .collect();
+    Attachment::Mesh(MeshAttachment::new(
+      0,
+      MeshVertices::Unweighted(at.clone()),
+      at,
+      triangles,
+    ))
+  }
+
+  /// A root bone and a slot "banner" that shows "flag", which is `flag` in
+  /// the default skin; the slot can also show "pennant" (a mesh of four
+  /// positions) and "badge" (a region). The animations are named for what
+  /// they do; the default mix is 0.2 s, and `more` adds to them
+  fn banner_with(
+    flag: Attachment,
+    more: impl FnOnce(SkeletonDataBuilder) -> SkeletonDataBuilder,
+  ) -> SkeletonData {
+    use crate::core::skeleton::{Region, RegionAttachment};
+    let skin = SkeletonData::DEFAULT_SKIN;
+    let builder = SkeletonData::builder()
+      .bone("root", None, BoneSetup::default())
+      .slot(
+        "banner",
+        "root",
+        SlotSetup {
+          attachment: Some(Arc::from("flag")),
+          ..SlotSetup::default()
+        },
+      )
+      .region(Region {
+        name: Arc::from("cloth"),
+        image: crate::core::asset::Handle::detached(),
+        x: 0,
+        y: 0,
+        width: 4,
+        height: 4,
+      })
+      .attachment(skin, "banner", "flag", flag)
+      .attachment(skin, "banner", "pennant", mesh(4))
+      .attachment(
+        skin,
+        "banner",
+        "badge",
+        Attachment::Region(RegionAttachment::new(0, 4.0, 4.0)),
+      )
+      // Deforms of the flag, of three positions
+      .animation(clip("wave", 1.0, vec![deform("flag", 0.0, &WAVE)]))
+      .animation(clip("ripple", 1.0, vec![deform("flag", 0.0, &RIPPLE)]))
+      .animation(clip("late", 1.0, vec![deform("flag", 0.5, &RIPPLE)]))
+      // One of two positions, which the flag is not
+      .animation(clip("stale", 1.0, vec![deform("flag", 0.0, &[1.0; 4])]))
+      // One of the pennant's four
+      .animation(clip("furl", 1.0, vec![deform("pennant", 0.0, &[3.0; 8])]))
+      // No deform
+      .animation(clip("still", 1.0, vec![rotate(0.0)]))
+      // What the slot shows
+      .animation(clip("to_pennant", 1.0, vec![show(Some("pennant"))]))
+      .animation(clip("to_badge", 1.0, vec![show(Some("badge"))]))
+      .animation(clip("to_nothing", 1.0, vec![show(None)]))
+      .animation(clip("to_no_such", 1.0, vec![show(Some("no such"))]))
+      .default_mix(0.2);
+    more(builder).build().expect("a valid skeleton")
+  }
+
+  /// [`banner_with`] a flag of three positions
+  fn banner() -> SkeletonData {
+    banner_with(mesh(3), |builder| builder)
+  }
+
+  /// The banner slot's offsets in the rig's pose, all 0 while its list is
+  /// empty: `count` of them
+  fn moved<const N: usize>(rig: &Rig) -> [f32; N] {
+    let list = rig
+      .pose
+      .deforms
+      .first()
+      .map_or(&[][..], |deform| &deform.offsets);
+    if list.is_empty() {
+      return [0.0; N];
+    }
+    <[f32; N]>::try_from(list).expect("an x and a y for each position")
+  }
+
+  /// The banner slot's list of offsets as it is, empty for none
+  fn list(rig: &Rig) -> &[f32] {
+    rig
+      .pose
+      .deforms
+      .first()
+      .map_or(&[][..], |deform| &deform.offsets)
+  }
+
+  fn close_all<const N: usize>(actual: [f32; N], expected: [f32; N]) {
+    for (index, (got, want)) in actual.iter().zip(expected).enumerate() {
+      assert!(
+        (got - want).abs() < 1e-4,
+        "offset {index}: expected {expected:?}, got {actual:?}"
+      );
+    }
+  }
+
+  /// `a` times `x` plus `b` times `y`
+  fn weighed(a: [f32; 6], x: f32, b: [f32; 6], y: f32) -> [f32; 6] {
+    std::array::from_fn(|index| a[index] * x + b[index] * y)
+  }
+
+  #[test]
+  fn an_add_deform_adds_to_the_layer_below() {
+    // Track 0 shapes the flag; track 1 adds its own key's offsets to that,
+    // times its alpha
+    let mut rig = Rig::of(banner());
+    rig.set(0, "wave", true);
+    let ripple = rig.set(1, "ripple", true);
+    rig.entry(ripple).mix_blend = MixBlend::Add;
+    rig.step(0.1);
+    close_all(moved(&rig), weighed(WAVE, 1.0, RIPPLE, 1.0));
+    rig.entry(ripple).alpha = 0.25;
+    rig.step(0.1);
+    close_all(moved(&rig), weighed(WAVE, 1.0, RIPPLE, 0.25));
+    // Where a replacing layer of that alpha moves a quarter of the way
+    // from the layer below to its own key
+    rig.entry(ripple).mix_blend = MixBlend::Replace;
+    rig.step(0.1);
+    close_all(moved(&rig), weighed(WAVE, 0.75, RIPPLE, 0.25));
+    // With nothing below, an add adds to the setup shape
+    rig.state.clear(0);
+    rig.entry(ripple).mix_blend = MixBlend::Add;
+    rig.step(0.1);
+    close_all(moved(&rig), weighed(WAVE, 0.0, RIPPLE, 0.25));
+  }
+
+  #[test]
+  fn a_crossfade_blends_two_deforms_without_a_dip() {
+    // Both animations key the flag's deform, so the mix is a plain blend
+    // of the two keys, with none of the setup shape in it: at 0%, 25%,
+    // 50%, 75% and 100% of the 0.2 s mix (a dip toward the setup shape
+    // would leave less of the outgoing key than its share)
+    let mut rig = Rig::of(banner());
+    rig.set(0, "wave", true);
+    rig.step(0.05);
+    close_all(moved(&rig), WAVE);
+    rig.set(0, "ripple", true);
+    rig.step(0.0);
+    close_all(moved(&rig), WAVE);
+    for (step, mix) in [
+      (0.05, 0.25),
+      (0.05, 0.5),
+      (0.05, 0.75),
+      (0.05, 1.0),
+      (0.05, 1.0),
+    ] {
+      rig.step(step);
+      close_all(moved(&rig), weighed(WAVE, 1.0 - mix, RIPPLE, mix));
+    }
+    // On a layer at half alpha each key weighs half its share of the mix,
+    // over what track 0 leaves: here the setup shape
+    let mut rig = Rig::of(banner());
+    rig.set(0, "still", true);
+    let from = rig.set(1, "wave", true);
+    rig.entry(from).alpha = 0.5;
+    rig.step(0.1);
+    close_all(moved(&rig), weighed(WAVE, 0.5, RIPPLE, 0.0));
+    let to = rig.set(1, "ripple", true);
+    rig.entry(to).alpha = 0.5;
+    rig.step(0.1);
+    close_all(moved(&rig), weighed(WAVE, 0.25, RIPPLE, 0.25));
+    // Three in a chain that all key it: the weights are the products of
+    // the mixes, as a bone's are
+    let mut rig = Rig::of(banner());
+    rig.set(0, "wave", true);
+    rig.step(0.1);
+    let second = rig.set(0, "ripple", true);
+    rig.entry(second).mix_duration = 0.4;
+    rig.step(0.1);
+    close_all(moved(&rig), weighed(WAVE, 0.75, RIPPLE, 0.25));
+    let third = rig.set(0, "wave", true);
+    rig.entry(third).mix_duration = 0.4;
+    rig.step(0.1);
+    close_all(moved(&rig), weighed(WAVE, 0.375 + 0.25, RIPPLE, 0.375));
+    // Before the incoming deform's first key nothing replaces the outgoing
+    // one, which fades toward the setup shape; from that key on the two
+    // blend
+    let mut rig = Rig::of(banner());
+    rig.set(0, "wave", true);
+    rig.step(0.1);
+    let late = rig.set(0, "late", true);
+    rig.entry(late).mix_duration = 0.8;
+    rig.step(0.2);
+    close_all(moved(&rig), weighed(WAVE, 0.75, RIPPLE, 0.0));
+    rig.step(0.4);
+    close_all(moved(&rig), weighed(WAVE, 0.25, RIPPLE, 0.75));
+  }
+
+  #[test]
+  fn a_crossfade_from_a_deform_to_none_returns_to_setup_with_no_jump() {
+    // The incoming animation keys no deform, so the outgoing one's weight
+    // falls with the mix and the shape returns to the setup shape: all of
+    // the key at 0% of the 0.2 s mix, none at 100%, and no jump at either
+    // end or when the outgoing entry ends
+    let mut rig = Rig::of(banner());
+    rig.set(0, "wave", true);
+    rig.step(0.05);
+    rig.set(0, "still", true);
+    rig.step(0.0);
+    close_all(moved(&rig), WAVE);
+    for hundredth in 1..=20 {
+      rig.step(0.01);
+      let left = 1.0 - hundredth as f32 / 20.0;
+      close_all(moved(&rig), weighed(WAVE, left, RIPPLE, 0.0));
+    }
+    // The mix is over and the deform's entry gone: nothing is left to move
+    // the flag, and its list holds nothing
+    rig.step(0.01);
+    assert_eq!(rig.state.tracks[0].chain.len(), 1);
+    assert!(list(&rig).is_empty(), "{:?}", list(&rig));
+    // The other way, the deform fades in from the setup shape
+    rig.set(0, "wave", true);
+    rig.step(0.05);
+    close_all(moved(&rig), weighed(WAVE, 0.25, RIPPLE, 0.0));
+    // And an empty animation fades it out the same way
+    rig.step(0.15);
+    rig.state.set_empty(0, 0.2);
+    rig.step(0.1);
+    close_all(moved(&rig), weighed(WAVE, 0.5, RIPPLE, 0.0));
+  }
+
+  /// How many warnings of a deform that does not fit name `animation`
+  fn misfits(log: &crate::testing::LogCapture, animation: &str) -> usize {
+    log.containing_all(&[&format!("{animation:?}"), "the deform is skipped"])
+  }
+
+  #[test]
+  fn a_deform_that_does_not_fit_is_skipped_with_one_warning() {
+    let log = capture_log();
+    // The slot shows another name: an attachment key of a higher track
+    // changes it after the deform's own track has applied, and the deform
+    // is judged by what the slot shows in the end
+    let mut rig = Rig::of(banner());
+    rig.set(0, "wave", true);
+    rig.step(0.1);
+    close_all(moved::<6>(&rig), WAVE);
+    assert_eq!(log.count(log::Level::Warn), 0, "{:?}", log.warnings());
+    rig.set(1, "to_pennant", true);
+    // Step after step and loop after loop, one warning for the animation,
+    // and no more room taken to remember it
+    rig.step(0.1);
+    let remembered = |rig: &Rig| {
+      let names = &rig.state.warned_deform;
+      (names.as_ptr(), names.capacity(), names.len())
+    };
+    let room = remembered(&rig);
+    for _ in 0..30 {
+      rig.step(0.1);
+      assert!(list(&rig).is_empty(), "{:?}", list(&rig));
+    }
+    assert_eq!(remembered(&rig), room);
+    assert_eq!(room.2, 1);
+    assert_eq!(misfits(&log, "wave"), 1, "{:?}", log.warnings());
+    let told = log.warnings().join("\n");
+    for part in ["\"flag\"", "slot \"banner\"", "shows \"pennant\""] {
+      assert!(told.contains(part), "{part} in {told}");
+    }
+    // Shown again and hidden again, it applies and is skipped, with
+    // nothing more said
+    for _ in 0..3 {
+      rig.state.clear(1);
+      rig.step(0.1);
+      close_all(moved::<6>(&rig), WAVE);
+      rig.set(1, "to_pennant", true);
+      rig.step(0.1);
+      assert!(list(&rig).is_empty());
+    }
+    assert_eq!(misfits(&log, "wave"), 1, "{:?}", log.warnings());
+    // Another animation of the same skeleton is told of once too, and a
+    // deform of the name the slot does show moves its mesh
+    rig.set(0, "ripple", true);
+    rig.set(2, "furl", true);
+    for _ in 0..5 {
+      rig.step(0.1);
+    }
+    close_all(moved::<8>(&rig), [3.0; 8]);
+    assert_eq!(misfits(&log, "ripple"), 1, "{:?}", log.warnings());
+    assert_eq!(misfits(&log, "furl"), 0, "{:?}", log.warnings());
+    // Another skeleton is told of its own
+    let mut other = Rig::of(banner());
+    other.set(0, "wave", true);
+    other.set(1, "to_pennant", true);
+    other.step(0.1);
+    assert_eq!(misfits(&log, "wave"), 2, "{:?}", log.warnings());
+
+    // The slot shows a region: by a key, another name; and under the
+    // deform's own name, in data where "flag" is a region
+    let log = capture_log();
+    let mut rig = Rig::of(banner());
+    rig.set(0, "wave", true);
+    rig.set(1, "to_badge", true);
+    for _ in 0..5 {
+      rig.step(0.1);
+      assert!(list(&rig).is_empty());
+    }
+    assert_eq!(misfits(&log, "wave"), 1, "{:?}", log.warnings());
+    use crate::core::skeleton::RegionAttachment;
+    let region = Attachment::Region(RegionAttachment::new(0, 4.0, 4.0));
+    let mut rig = Rig::of(banner_with(region, |builder| builder));
+    rig.set(0, "wave", true);
+    for _ in 0..5 {
+      rig.step(0.1);
+      assert!(list(&rig).is_empty());
+    }
+    assert_eq!(misfits(&log, "wave"), 2, "{:?}", log.warnings());
+    assert_eq!(log.containing("is not a mesh"), 1, "{:?}", log.warnings());
+
+    // A mesh of another count of positions than the keys: a flag of four
+    // under keys for three, and keys for two under a flag of three
+    let log = capture_log();
+    let mut rig = Rig::of(banner_with(mesh(4), |builder| builder));
+    rig.set(0, "wave", true);
+    for _ in 0..5 {
+      rig.step(0.1);
+      assert!(list(&rig).is_empty());
+    }
+    assert_eq!(misfits(&log, "wave"), 1, "{:?}", log.warnings());
+    let told = log.warnings().join("\n");
+    assert!(told.contains("3 positions"), "{told}");
+    assert!(told.contains("the mesh has 4"), "{told}");
+    let mut rig = Rig::of(banner());
+    rig.set(0, "stale", true);
+    rig.step(0.1);
+    assert!(list(&rig).is_empty());
+    assert_eq!(misfits(&log, "stale"), 1, "{:?}", log.warnings());
+
+    // A slot that shows nothing has nothing to move, and nothing is said:
+    // one a key hides, and one showing a name no skin has
+    let log = capture_log();
+    for hidden in ["to_nothing", "to_no_such"] {
+      let mut rig = Rig::of(banner());
+      rig.set(0, "wave", true);
+      rig.set(1, hidden, true);
+      rig.step(0.1);
+      assert!(list(&rig).is_empty(), "{hidden}");
+    }
+    let mut rig = Rig::of(banner());
+    rig.set(0, "wave", true);
+    let mut fired = Fired::default();
+    let (data, pose) = (&rig.data, &mut rig.pose);
+    rig
+      .state
+      .advance_and_apply(data, pose, 0.1, &mut fired.events, &mut fired.track);
+    rig.state.apply_deforms(data, pose, |_, _| None);
+    assert!(list(&rig).is_empty());
+    // Nor is a deform with no weight told of, fit or not: a layer at no
+    // alpha moves nothing
+    let mut rig = Rig::of(banner());
+    let stale = rig.set(0, "stale", true);
+    rig.entry(stale).alpha = 0.0;
+    rig.step(0.1);
+    assert!(list(&rig).is_empty());
+    assert_eq!(log.count(log::Level::Warn), 0, "{:?}", log.warnings());
+  }
+
+  #[test]
+  fn deforms_that_do_not_fit_warn_up_to_a_bound() {
+    // A skeleton with more animations whose deforms miss than the state
+    // remembers: the log is told of the first 64, and the list grows no
+    // further however long they play
+    let log = capture_log();
+    let many = |mut builder: SkeletonDataBuilder| {
+      for number in 0..80 {
+        let name = format!("miss {number}");
+        builder = builder.animation(clip(&name, 1.0, vec![deform("pennant", 0.0, &[1.0; 8])]));
+      }
+      builder
+    };
+    let mut rig = Rig::of(banner_with(mesh(3), many));
+    for round in 0..3 {
+      for number in 0..80 {
+        rig.set(0, &format!("miss {number}"), true);
+        rig.step(0.3);
+      }
+      assert_eq!(rig.state.warned_deform.len(), MAX_WARNED, "round {round}");
+      assert_eq!(log.containing("the deform is skipped"), MAX_WARNED);
+    }
+  }
+
+  #[test]
+  fn a_deform_of_another_length_replaces_nothing_of_the_one_it_mixes_from() {
+    // "stale" keys the flag's deform too, but for two positions where the
+    // flag has three, so it is skipped. It replaces nothing of the
+    // outgoing deform, which therefore fades with the mix as under an
+    // animation that keys no deform: it is not held at full strength to
+    // the mix's end
+    let log = capture_log();
+    let mut rig = Rig::of(banner());
+    rig.set(0, "wave", true);
+    rig.step(0.1);
+    rig.set(0, "stale", true);
+    for (step, left) in [
+      (0.0, 1.0),
+      (0.05, 0.75),
+      (0.05, 0.5),
+      (0.05, 0.25),
+      (0.05, 0.0),
+    ] {
+      rig.step(step);
+      close_all(moved(&rig), weighed(WAVE, left, RIPPLE, 0.0));
+    }
+    assert_eq!(misfits(&log, "stale"), 1, "{:?}", log.warnings());
+    // Keys that are all empty fit any mesh, and replace as any deform of
+    // the flag does: the outgoing key keeps its share, with no dip
+    let still = |builder: SkeletonDataBuilder| {
+      builder.animation(clip("flat", 1.0, vec![deform("flag", 0.0, &[])]))
+    };
+    let mut rig = Rig::of(banner_with(mesh(3), still));
+    rig.set(0, "still", true);
+    let wave = rig.set(1, "wave", true);
+    rig.entry(wave).alpha = 0.5;
+    rig.step(0.1);
+    let flat = rig.set(1, "flat", true);
+    rig.entry(flat).alpha = 0.5;
+    rig.step(0.1);
+    close_all(moved(&rig), weighed(WAVE, 0.25, RIPPLE, 0.0));
+  }
+
+  #[test]
+  fn the_deform_steps_of_a_pose_keep_their_room() {
+    // A steady step keeps the list of the deform timelines it applies, and
+    // a pose made twice applies them once
+    let mut rig = Rig::of(banner());
+    rig.set(0, "wave", true);
+    rig.set(1, "ripple", true);
+    rig.step(0.1);
+    let room = (rig.state.deforms.as_ptr(), rig.state.deforms.capacity());
+    for _ in 0..20 {
+      rig.step(0.1);
+      assert_eq!(
+        (rig.state.deforms.as_ptr(), rig.state.deforms.capacity()),
+        room
+      );
+      assert!(rig.state.deforms.is_empty(), "taken as they are applied");
+    }
+    // Posed without their deforms taken, the tracks' deform keys are the
+    // last pose's alone
+    pose_unadvanced(&mut rig);
+    pose_unadvanced(&mut rig);
+    assert_eq!(rig.state.deforms.len(), 2);
+    rig.deform();
+    close_all(moved(&rig), RIPPLE);
   }
 }

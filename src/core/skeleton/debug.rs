@@ -382,8 +382,23 @@ mod tests {
         (outer, vec![a, b, c, d, a]),
       ]
     );
-    // A mesh with no hull shows its triangles alone
+    // A deform key's offsets move the outlines as they move the mesh: the
+    // tip's upper corner 2 px up
     let mut skeleton = world.get_mut::<Skeleton>(entity).expect("the skeleton");
+    let offsets = skeleton.pose.deform_mut(0).expect("the slot");
+    offsets.extend_from_slice(&[0.0, 0.0, 0.0, -2.0, 0.0, 0.0, 0.0, 0.0]);
+    let raised = corner(8.0, -2.0);
+    assert_eq!(
+      outlines(&mut world),
+      [
+        (inner, vec![a, raised, c, a]),
+        (inner, vec![a, c, d, a]),
+        (outer, vec![a, raised, c, d, a]),
+      ]
+    );
+    let mut skeleton = world.get_mut::<Skeleton>(entity).expect("the skeleton");
+    skeleton.pose.deforms[0].offsets.clear();
+    // A mesh with no hull shows its triangles alone
     skeleton.set_skin("bare");
     assert_eq!(
       outlines(&mut world),

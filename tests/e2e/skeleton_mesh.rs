@@ -1,8 +1,9 @@
 //! A skeleton's meshes drawn through the world batch: skinned to their
 //! bones, exactly as a region of the same image draws, in the draw order,
 //! sorted, lit, lifted, mirrored, shadowed, culled and drawn between steps,
-//! read back as display bytes. The rigs and the frame helpers are the
-//! skeleton pixel tests' own (`skeleton.rs`).
+//! and moved by their animations' deform keys, read back as display bytes.
+//! The rigs and the frame helpers are the skeleton pixel tests' own
+//! (`skeleton.rs`).
 //!
 //! Tests skip when no GPU is available.
 
@@ -1319,4 +1320,214 @@ fn a_mesh_whose_image_is_missing_draws_what_its_region_draws() {
   for (x, y, pixel) in as_region.enumerate_pixels() {
     assert_eq!(as_mesh.get_pixel(x, y).0, pixel.0, "pixel ({x}, {y})");
   }
+}
+
+/// A red flag 16 x 8 px on a pole turned `turned`, reaching from the pole
+/// along its x axis: a mesh of two triangles whose corners are, in order,
+/// its top left, top right, bottom left and bottom right. "stretch" holds
+/// its two right corners 8 px further along the pole's x axis, and "slant"
+/// holds them 8 px further along its y axis
+fn flagged(world: &mut World, turned: f32) -> Handle<SkeletonData> {
+  let flag = part("flag", RED, (16, 8))
+    .at(8.0, 0.0)
+    .turned(turned)
+    .in_triangles();
+  rig_with(world, &[flag], Images::Each, |builder| {
+    let held = |name: &str, (x, y): (f32, f32)| SkeletonClip {
+      name: Arc::from(name),
+      duration: 1.0,
+      timelines: vec![SkeletonTimeline::Deform {
+        slot: SlotId(0),
+        attachment: Arc::from("flag"),
+        frames: vec![(
+          0.0,
+          vec![0.0, 0.0, x, y, 0.0, 0.0, x, y],
+          SkeletonCurve::Linear,
+        )],
+      }],
+    };
+    builder
+      .animation(held("stretch", (8.0, 0.0)))
+      .animation(held("slant", (0.0, 8.0)))
+  })
+}
+
+#[test]
+fn a_deform_key_moves_a_mesh_s_pixels() {
+  let Some(mut engine) = engine() else {
+    return;
+  };
+  // Over a white floor, two flags: one on a pole at (16, 32), reaching
+  // right, with a black drop shadow 12 px below it; and one on a pole at
+  // (52, 8) turned a quarter turn, reaching down the screen
+  let world = engine.world_mut();
+  white_floor(world);
+  let shadow = DropShadow::new()
+    .offset(0.0, 12.0)
+    .color(Color::new(0, 0, 0, 255));
+  let flat = flagged(world, 0.0);
+  let hung = flagged(world, FRAC_PI_2);
+  let flat = stand(
+    world,
+    flat,
+    (16.0, 32.0),
+    Renderable::skeleton().with_drop_shadow(shadow),
+  );
+  let hung = stand(world, hung, (52.0, 8.0), Renderable::skeleton());
+  for flag in [flat, hung] {
+    world.entity_mut(flag).insert(SkeletonAnimation::new());
+  }
+  let play = |engine: &mut HeadlessEngine, flag: Entity, name: &str, alpha: f32| {
+    let mut state = engine
+      .world_mut()
+      .get_mut::<SkeletonAnimation>(flag)
+      .unwrap();
+    let entry = state.set_animation(0, name, true).expect("an animation");
+    state.entry_mut(entry).expect("a live entry").alpha = alpha;
+  };
+  // Every pixel: the flags red where `flags` says, the flat one's shadow
+  // black where `cast` says, and the floor
+  type Area<'a> = &'a dyn Fn(u32, u32) -> bool;
+  let check = |drawn: &image::RgbaImage, flags: Area, cast: Area, what: &str| {
+    let want = |x: u32, y: u32| {
+      if x == SIZE - 1 {
+        None
+      } else if flags(x, y) {
+        Some(RED)
+      } else if cast(x, y) {
+        Some(BLACK)
+      } else {
+        Some(WHITE)
+      }
+    };
+    assert_pixels(drawn, want, what);
+  };
+  // The flat flag `long` px long with its shadow, and the hung one `tall`
+  let boxes = |engine: &mut HeadlessEngine, long: u32, tall: u32, what: &str| {
+    let drawn = settled(engine);
+    let flags = |x, y| inside(x, y, (16, 28, long, 8)) || inside(x, y, (48, 8, 8, tall));
+    check(
+      &drawn,
+      &flags,
+      &|x, y| inside(x, y, (16, 40, long, 8)),
+      what,
+    );
+  };
+  boxes(&mut engine, 16, 16, "the setup shapes");
+
+  // The key moves the right corners 8 px along the pole's x axis: the flag
+  // is half as long again, its drop shadow with it. The offsets are in
+  // the pole's space, so the hung flag grows down the screen
+  play(&mut engine, flat, "stretch", 1.0);
+  play(&mut engine, hung, "stretch", 1.0);
+  boxes(&mut engine, 24, 24, "stretched");
+  // At half alpha the corners go half as far
+  play(&mut engine, flat, "stretch", 0.5);
+  boxes(&mut engine, 20, 24, "half stretched");
+  // The right corners 8 px down: the flag slants evenly from its pole, and
+  // so does its shadow, drawn under it
+  play(&mut engine, flat, "slant", 1.0);
+  let slanted = |x: u32, y: u32, top: f32| {
+    let edge = top + 8.0 * (x as f32 + 0.5 - 16.0) / 16.0;
+    let centre = y as f32 + 0.5;
+    (16..32).contains(&x) && centre > edge && centre < edge + 8.0
+  };
+  let drawn = settled(&mut engine);
+  let flags = |x, y| slanted(x, y, 28.0) || inside(x, y, (48, 8, 8, 24));
+  check(&drawn, &flags, &|x, y| slanted(x, y, 40.0), "slanted");
+  // With nothing playing, the setup shapes again
+  for flag in [flat, hung] {
+    let mut state = engine
+      .world_mut()
+      .get_mut::<SkeletonAnimation>(flag)
+      .unwrap();
+    state.clear(0);
+  }
+  boxes(&mut engine, 16, 16, "the setup shapes again");
+}
+
+/// A rig with no bone that moves, whose two white 4 px squares slide right
+/// 20 px a step by deform keys alone: a mesh of two triangles on the root,
+/// and 8 px below it a mesh whose every corner is weighted to the root
+fn deform_slider(world: &mut World) -> Handle<SkeletonData> {
+  let root = BoneId(0);
+  let corner = |x: f32, y: f32| vec![SkeletonInfluence::new(root, x, 8.0 + y, 1.0)];
+  let corners = [
+    corner(-2.0, -2.0),
+    corner(2.0, -2.0),
+    corner(-2.0, 2.0),
+    corner(2.0, 2.0),
+  ];
+  let parts = [
+    part("flag", WHITE, (4, 4)).in_triangles(),
+    part("cuff", WHITE, (4, 4)).under("flag", 0.0, 0.0).meshed(
+      MeshVertices::Weighted(WeightedVertices::new(corners)),
+      vec![Vec2::ZERO, Vec2::X, Vec2::Y, Vec2::ONE],
+      vec![0, 1, 2, 1, 3, 2],
+    ),
+  ];
+  rig_with(world, &parts, Images::Each, |builder| {
+    let slide = |slot: u8, attachment: &str| SkeletonTimeline::Deform {
+      slot: SlotId(slot),
+      attachment: Arc::from(attachment),
+      frames: vec![
+        (0.0, Vec::new(), SkeletonCurve::Linear),
+        (10.0, [12_000.0, 0.0].repeat(4), SkeletonCurve::Linear),
+      ],
+    };
+    builder.animation(SkeletonClip {
+      name: Arc::from("slide"),
+      duration: 10.0,
+      timelines: vec![slide(0, "flag"), slide(1, "cuff")],
+    })
+  })
+}
+
+#[test]
+fn a_deform_is_interpolated_between_steps() {
+  let Some(mut engine) = engine() else {
+    return;
+  };
+  // Two skeletons whose bones stand still while deform keys slide their
+  // meshes 20 px a step, an unweighted one over a weighted one. One is
+  // interpolated, as a skeleton's entity is; the other has had
+  // `Interpolated` taken off it and draws at the step rate
+  let world = engine.world_mut();
+  let data = deform_slider(world);
+  let smooth = sliding(world, &data, (4.0, 8.0));
+  let plain = sliding(world, &data, (4.0, 40.0));
+  world.entity_mut(plain).remove::<Interpolated>();
+  engine.step_frames(2).unwrap();
+  let corners = ryo2d::testing::skeleton_mesh(engine.world(), smooth, "flag");
+  let now = corners[0].x + 2.0;
+  assert!(near(now, 44.0), "two steps of 20 px from x 4: {now}");
+  assert_eq!(bone(&engine, smooth, "flag").translation.x, 4.0);
+  let rows = [(0.0, "the mesh"), (8.0, "the weighted mesh")];
+  // Both meshes of the interpolated one are at `at`, and neither at
+  // `not`; both of the plain one are where the last step's keys put them
+  let check = |drawn: &image::RgbaImage, at: f32, not: f32, what: &str| {
+    for (row, part) in rows {
+      let seen = square(drawn, at, 8.0 + row);
+      assert_eq!(seen, Some(true), "{what}: {part}");
+      let seen = square(drawn, not, 8.0 + row);
+      assert_eq!(seen, Some(false), "{what}: {part} elsewhere");
+      let seen = square(drawn, now, 40.0 + row);
+      assert_eq!(seen, Some(true), "{what}: {part}, plain");
+      let seen = square(drawn, at.min(now - 10.0), 40.0 + row);
+      assert_eq!(seen, Some(false), "{what}: {part}, plain, elsewhere");
+    }
+  };
+
+  // A frame of whole steps draws the interpolated one in the shape the
+  // step before left it
+  check(&frame(&engine), now - 20.0, now, "a whole step");
+  // Half a step later no step has run: its offsets are half way between
+  // the last two steps'
+  part_step(&mut engine, 5);
+  check(&frame(&engine), now - 10.0, now - 20.0, "half a step on");
+  // A teleport: the entity skips interpolation and its meshes' shapes
+  // skip with it, drawn as the last step left them in that same frame
+  engine.world_mut().skip_interpolation(smooth);
+  part_step(&mut engine, 2);
+  check(&frame(&engine), now, now - 10.0, "after a teleport");
 }

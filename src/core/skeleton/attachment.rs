@@ -114,8 +114,10 @@ impl MeshAttachment {
     self.vertices.vertex_count()
   }
 
-  /// How many positions the mesh holds, which a deform key must match: a
-  /// vertex each when unweighted, an influence each when weighted
+  /// How many positions the mesh holds: a vertex each when unweighted, an
+  /// influence each when weighted. A key of a deform timeline
+  /// ([`Timeline::Deform`](super::Timeline::Deform)) holds an x and a y
+  /// for each, in their order, and moves the mesh only if it does
   pub fn positions(&self) -> usize {
     self.vertices.positions()
   }

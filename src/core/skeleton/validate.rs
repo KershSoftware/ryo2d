@@ -347,7 +347,7 @@ pub(super) fn build(builder: SkeletonDataBuilder) -> Result<SkeletonData, Skelet
     if animation.duration < 0.0 {
       return Err(error(item(), "its duration is negative"));
     }
-    let mut keyed: HashSet<(Target, &'static str)> = HashSet::new();
+    let mut keyed: HashSet<(Target<'_>, &'static str)> = HashSet::new();
     for (number, timeline) in animation.timelines.iter().enumerate() {
       let item = || {
         format!(
@@ -547,12 +547,12 @@ struct Counts<'a> {
 /// collects them); it has keys, at finite times from 0 to the animation's
 /// duration, in order (strictly, but event keys may share a time); and its
 /// values and curves are good
-fn timeline_ok(
+fn timeline_ok<'a>(
   item: impl Fn() -> String,
-  timeline: &Timeline,
+  timeline: &'a Timeline,
   duration: f32,
   counts: Counts<'_>,
-  keyed: &mut HashSet<(Target, &'static str)>,
+  keyed: &mut HashSet<(Target<'a>, &'static str)>,
 ) -> Result<(), SkeletonError> {
   let target = timeline.target();
   match target {
@@ -566,7 +566,7 @@ fn timeline_ok(
         ),
       ));
     }
-    Target::Slot(slot) if slot.index() >= counts.slots.len() => {
+    Target::Slot(slot) | Target::Attachment(slot, _) if slot.index() >= counts.slots.len() => {
       return Err(error(
         item(),
         format!(
@@ -583,6 +583,9 @@ fn timeline_ok(
       let whose = match target {
         Target::Bone(bone) => format!("bone {:?}'s", &*counts.bones[bone.index()].name),
         Target::Slot(slot) => format!("slot {:?}'s", &*counts.slots[slot.index()].name),
+        Target::Attachment(slot, name) => {
+          format!("slot {:?}'s {name:?}", &*counts.slots[slot.index()].name)
+        }
         Target::Skeleton => "the skeleton's".to_owned(),
       };
       return Err(error(
@@ -660,6 +663,38 @@ fn timeline_ok(
       }
     }
     Timeline::Attachment { .. } => {}
+    Timeline::Deform { frames, .. } => {
+      // The first key that holds offsets sets the length of the rest
+      let mut first: Option<(usize, usize)> = None;
+      for (frame, (_, offsets, key_curve)) in frames.iter().enumerate() {
+        let length = offsets.len();
+        if !length.is_multiple_of(2) {
+          return Err(error(
+            item(),
+            format!(
+              "key {frame} holds {length} values; a key holds an x and a y for each position"
+            ),
+          ));
+        }
+        match first {
+          Some((key, held)) if length != 0 && length != held => {
+            return Err(error(
+              item(),
+              format!(
+                "key {frame} holds {length} values where key {key} holds {held}; every key is empty or as long as the others"
+              ),
+            ));
+          }
+          None if length != 0 => first = Some((frame, length)),
+          _ => {}
+        }
+        if let Some(index) = offsets.iter().position(|value| !value.is_finite()) {
+          let name = format!("key {frame}'s value {index}");
+          finite(&item, &[(&name, offsets[index])])?;
+        }
+        curve(&item, frame, key_curve)?;
+      }
+    }
     Timeline::DrawOrder { frames } => {
       for (frame, (_, order)) in frames.iter().enumerate() {
         let Some(order) = order else { continue };
@@ -1508,6 +1543,128 @@ mod tests {
       r#"animation "wave" timeline 1 (event)"#,
       "another timeline already keys the skeleton's event",
     );
+  }
+
+  // Deform timelines
+
+  const WAVE_DEFORM: &str = r#"animation "wave" timeline 0 (deform)"#;
+
+  /// A deform timeline of `attachment` in slot `slot`, keyed linearly
+  fn deform(slot: u8, attachment: &str, keys: &[(f32, &[f32])]) -> Timeline {
+    Timeline::Deform {
+      slot: SlotId(slot),
+      attachment: Arc::from(attachment),
+      frames: keys
+        .iter()
+        .map(|(time, offsets)| (*time, offsets.to_vec(), Curve::Linear))
+        .collect(),
+    }
+  }
+
+  #[test]
+  fn two_deform_timelines_for_one_slot_and_name_fail() {
+    let flag = |slot: u8, name: &str| deform(slot, name, &[(0.0, &[1.0, 2.0])]);
+    fails(
+      rig().animation(wave(vec![flag(1, "flag"), flag(1, "flag")])),
+      r#"animation "wave" timeline 1 (deform)"#,
+      "another timeline already keys slot \"hat\"'s \"flag\" deform",
+    );
+    // What a deform keys is its slot's attachment by name. Another name in
+    // the slot is another property, and so is the same name in another
+    // slot; and none of them is the slot's attachment or colour, which
+    // timelines of their own key beside it
+    let beside = vec![
+      flag(1, "flag"),
+      flag(1, "pennant"),
+      flag(0, "flag"),
+      Timeline::Attachment {
+        slot: SlotId(1),
+        frames: vec![(0.0, Some(Arc::from("flag")))],
+      },
+      Timeline::Color {
+        slot: SlotId(1),
+        frames: vec![(0.0, crate::core::ui::Color::WHITE, Curve::Linear)],
+      },
+    ];
+    let data = rig().animation(wave(beside)).build();
+    assert!(data.is_ok(), "{data:?}");
+  }
+
+  #[test]
+  fn deform_keys_of_different_lengths_fail() {
+    // Every key is empty (no offset: the setup shape) or as long as the
+    // others, wherever the empty ones come
+    let wavy: &[(f32, &[f32])] = &[
+      (0.0, &[]),
+      (0.25, &[1.0, 2.0, 3.0, 4.0]),
+      (0.5, &[]),
+      (1.0, &[4.0, 3.0, 2.0, 1.0]),
+    ];
+    let still: &[(f32, &[f32])] = &[(0.0, &[]), (1.0, &[])];
+    for keys in [wavy, still] {
+      let data = rig().animation(wave(vec![deform(1, "flag", keys)])).build();
+      assert!(data.is_ok(), "{data:?}");
+    }
+    let uneven: &[(f32, &[f32])] = &[
+      (0.0, &[]),
+      (0.25, &[1.0, 2.0, 3.0, 4.0]),
+      (0.5, &[]),
+      (1.0, &[1.0, 2.0]),
+    ];
+    fails(
+      rig().animation(wave(vec![deform(1, "flag", uneven)])),
+      WAVE_DEFORM,
+      "key 3 holds 2 values where key 1 holds 4",
+    );
+  }
+
+  #[test]
+  fn a_deform_key_of_an_odd_count_fails() {
+    // A key holds an x and a y for each position: three numbers are no
+    // whole count of them, whatever mesh the slot shows
+    fails(
+      rig().animation(wave(vec![deform(1, "flag", &[(0.0, &[1.0, 2.0, 3.0])])])),
+      WAVE_DEFORM,
+      "key 0 holds 3 values",
+    );
+  }
+
+  #[test]
+  fn a_deform_timeline_is_checked_as_every_timeline_is() {
+    let key: &[f32] = &[1.0, 2.0];
+    let failing = |timeline: Timeline, reason: &str| {
+      fails(rig().animation(wave(vec![timeline])), WAVE_DEFORM, reason);
+    };
+    // Its slot exists
+    failing(deform(2, "flag", &[(0.0, key)]), "slot 2 is out of range");
+    // It has keys, from 0 to the animation's end, in time order
+    failing(deform(1, "flag", &[]), "no keys");
+    failing(deform(1, "flag", &[(-0.5, key)]), "before 0");
+    failing(deform(1, "flag", &[(0.5, key), (0.25, key)]), "time order");
+    failing(deform(1, "flag", &[(0.5, key), (0.5, key)]), "time order");
+    failing(
+      deform(1, "flag", &[(0.0, key), (1.5, key)]),
+      "past the animation's duration",
+    );
+    failing(deform(1, "flag", &[(f32::NAN, key)]), "key 0's time is NaN");
+    // Its values are finite
+    for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+      failing(
+        deform(1, "flag", &[(0.0, key), (0.5, &[3.0, bad])]),
+        &format!("key 1's value 1 is {bad}"),
+      );
+    }
+    // And its curves are good
+    let mut curved = deform(1, "flag", &[(0.0, key), (1.0, key)]);
+    if let Timeline::Deform { frames, .. } = &mut curved {
+      frames[0].2 = Curve::Bezier {
+        cx1: 0.25,
+        cy1: 0.0,
+        cx2: 1.5,
+        cy2: 1.0,
+      };
+    }
+    failing(curved, "within 0 to 1");
   }
 
   // Durations and mixes
