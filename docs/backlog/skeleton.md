@@ -183,6 +183,15 @@ So the extract of a crowd of regions is now 1 to 7% over what it was before mesh
 - No session that day was quiet: the sets were read at loads from 2.9 to 7. The crowd's extract in the build before meshes itself read 153.5 µs at noon and 159 to 164 in the afternoon.
 - So the shadow case's 4 to 7% is the open figure: a comparison on a quiet machine would settle whether it is inside the 5%, and the two benches build from `main` and from this tree as they stand.
 
+**Placing a sprite.** The comparison above covers the update and the entity drawer. `Batch2D::prepare` places every sprite a frame draws, and there the shader a sprite draws with was asked through a function the compiler kept out of line: a call for each sprite, where before meshes the answer for a sprite sharing the last one's key was a compare in the loop. It is a compare there again (`sprite_shader` is always inlined, and only a new key calls out, to `ensure_sprite_shader`). Measured on a whole frame of 10,000 sprites (`cargo bench --bench foundation`, "headless frame, 10k sprites", criterion's median), the three builds run alternately, three each, in two sets at loads of 5.0 to 7.0 and 4.3 to 6.2 (flagged). The median of each build's three runs, in microseconds:
+
+| | Before meshes | With the call | With the compare |
+|---|---|---|---|
+| First set | 1,105.5 | 1,091.4 (-1.3%) | 1,097.8 (-0.7%) |
+| Second set | 1,132.5 | 1,129.2 (-0.3%) | 1,116.4 (-1.4%) |
+
+The three do not differ by more than the build before meshes spreads over its own three runs (1.6% in the first set, 6.8% in the second): ten thousand calls of a few instructions each do not show in a frame of 1.1 ms. The change is made for the shape of the loop every sprite passes through, not for a figure.
+
 ### Reading the figures
 
 - **Update:** 2.5 µs a skeleton (500 / 200), half of the 5 µs target; one skeleton alone is 3.0 µs, of which 0.2 is the probes. A socket with a child on each skeleton adds 8.6 µs to the 200 (1.7%).

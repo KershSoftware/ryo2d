@@ -996,7 +996,12 @@ impl Batch2D {
 /// [`BatchShader::Sprite`] for a game shader the GPU has not accepted yet
 /// (or rejected), which draws plain until it has. `ensured` is the last key
 /// asked for and what it came to, reused while drawables share it (a map
-/// lookup each otherwise)
+/// lookup each otherwise).
+///
+/// Always inlined: every sprite placed asks, nearly every one shares the
+/// last one's key, and that answer is a compare where it is asked, not a
+/// call. Only a new key calls out ([`ensure_sprite_shader`])
+#[inline(always)]
 fn sprite_shader(
   pipelines: &mut Pipelines,
   device: &wgpu::Device,
@@ -1004,11 +1009,22 @@ fn sprite_shader(
   ensured: &mut Option<(PipelineKey, BatchShader)>,
   key: PipelineKey,
 ) -> BatchShader {
-  if let Some((last, shader)) = *ensured
-    && last == key
-  {
-    return shader;
+  match *ensured {
+    Some((last, shader)) if last == key => shader,
+    _ => ensure_sprite_shader(pipelines, device, textures, ensured, key),
   }
+}
+
+/// [`sprite_shader`] for a key other than the last one asked for: makes its
+/// pipeline if it has none, and remembers the key and what it came to
+#[inline(never)]
+fn ensure_sprite_shader(
+  pipelines: &mut Pipelines,
+  device: &wgpu::Device,
+  textures: &SpriteGpuRenderer,
+  ensured: &mut Option<(PipelineKey, BatchShader)>,
+  key: PipelineKey,
+) -> BatchShader {
   let custom = match key.shader {
     BatchShader::Custom(source) => textures.custom_shader(source),
     _ => None,
