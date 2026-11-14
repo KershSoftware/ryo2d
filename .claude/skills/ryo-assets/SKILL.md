@@ -2,7 +2,7 @@
 name: ryo-assets
 description: "Assets - loading images, SVG, shaders, fonts, UI files, themes, audio (clips, sound and music definitions, the mixer), particle effects, skeletons and tile maps (Tiled maps, tilesets and worlds, LDtk projects) through the registry (load_now and load), asset paths, handles and what keeps an asset alive, load states and loading screens, embedded assets with add, hot reload and AssetEvent, custom asset types and loaders, and the debug checker."
 metadata:
-  version: 1.8.0
+  version: 1.9.0
 ---
 
 # Ryo2D Assets
@@ -60,7 +60,7 @@ Asset paths are relative to the project's `assets/` folder (an example's own `as
 | `Music` | `music.ron`: an intro and a loop, or one clip with a loop region (`ryo-audio`) | |
 | `Mixer` | `mixer.ron`: the buses, effects, sends, snapshots and ducking; the engine loads `audio/mixer.mixer.ron` (`MIXER_PATH`) at start if the game has one (`ryo-audio`) | |
 | `ParticleEffect` | `particles.ron`: how a kind of particle is born, moves, looks and ends (`ryo-particles`), its image and sub-effects loaded with it | |
-| `SkeletonData` | `skeleton.ron`: a skeleton's bones, slots, attachments, skins, animations and events (`ryo-skeleton`), its images loaded with it; show it with a `Skeleton` | |
+| `SkeletonData` | `skeleton.ron`: a skeleton's bones, slots, attachments (regions, meshes, points, bounding boxes), skins, animations (with deform keys for meshes) and events (`ryo-skeleton`), its images loaded with it; show it with a `Skeleton` | |
 | `TileMap` | `tmx`, `tmj`: a Tiled map of any grid (orthogonal, isometric, staggered, hexagonal or oblique), of a fixed size or infinite (its chunks in every layer format), its tilesets, images, templates and the Tiled project loaded or read with it (`ryo-tilemap`); spawn it with a `MapRoot` | |
 | `Tileset` | `tsx`, `tsj`: a Tiled tileset, its images loaded with it | |
 | `LdtkProject` | `ldtk`: an LDtk project, its `.ldtkl` level files and tileset images loaded with it | |

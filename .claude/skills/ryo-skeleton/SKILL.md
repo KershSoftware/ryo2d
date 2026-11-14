@@ -1,13 +1,13 @@
 ---
 name: ryo-skeleton
-description: Skeletal animation - SkeletonData assets read from hot-reloading .skeleton.ron files or built in code (bones, slots, region, point and bounding-box attachments, skins, animations, events), Skeleton entities the engine poses and draws as it draws sprites, SkeletonAnimation tracks (crossfades, layers, additive, queues, start offsets), SkeletonEvent and SkeletonTrackEvent messages and the event audio recipe, BoneSocket children on bones, bone overrides for aiming, skins, the debug:skeletons overlay, limits and testing.
+description: Skeletal animation - SkeletonData assets read from hot-reloading .skeleton.ron files or built in code (bones, slots, region, mesh, point and bounding-box attachments, skins, animations, events), meshes that bend (weighted over bones, moved by deform keys), Skeleton entities the engine poses and draws as it draws sprites, SkeletonAnimation tracks (crossfades, layers, additive, queues, start offsets), SkeletonEvent and SkeletonTrackEvent messages and the event audio recipe, BoneSocket children on bones, bone overrides for aiming, skins, the debug:skeletons overlay, limits and testing.
 metadata:
-  version: 1.0.0
+  version: 1.1.0
 ---
 
 # Ryo2D Skeletons
 
-You help users animate characters and creatures made of parts on bones (cutout animation): a rig in a `.skeleton.ron` file or built in code, played, crossfaded and layered on an entity, with events, items on bones, aiming and skins.
+You help users animate characters and creatures made of parts on bones (cutout animation), with meshes for parts that bend: a rig in a `.skeleton.ron` file or built in code, played, crossfaded and layered on an entity, with events, items on bones, aiming and skins.
 
 **For complete API signatures, see the `ryo-api` skill.** Sprite-sheet animation (`Animator`) is in `ryo-animation`.
 
@@ -76,11 +76,12 @@ Coordinates are the engine's: y down, positive rotation clockwise. Lengths are t
 - **Slots** are places on bones where one attachment at a time shows. They are listed in draw order, back to front. A slot has its bone, a colour (multiplied into its attachment's), the name of its setup attachment and a blend (`SlotBlend`: `Normal`, `Additive`, `Multiply`, `Screen`).
 - **Attachments** are what a slot can show, each under a name:
   - a **region** (`RegionAttachment`): a quad of an image, centred on its `x`, `y` from the bone, with a rotation, scale, size and colour;
+  - a **mesh** (`MeshAttachment`): triangles between vertices, textured from a region, for a part that bends (Meshes, below);
   - a **point** (`PointAttachment`): a place and a direction on the bone, drawn as nothing (a muzzle, a sole);
   - a **bounding box** (`BoundingBoxAttachment`): a polygon on the bone, drawn as nothing, for hit tests.
 - **Regions** (`SkeletonRegion`) are named pixel rectangles of images: the parts of an atlas.
 - **Skins** (`SkeletonSkin`) say which attachment each name means in each slot. Every skeleton has the skin `"default"` (`SkeletonData::DEFAULT_SKIN`); other skins add or replace attachments over it.
-- **Animations** (`SkeletonClip`) have a duration and timelines of keys (`SkeletonTimeline`): a bone's rotation, translation, scale and shear (both axes together, or one axis at a time), a slot's attachment and colour, the draw order, and events. Each value key eases to the next by its curve (`SkeletonCurve`): `Linear`, `Stepped` or `Bezier`.
+- **Animations** (`SkeletonClip`) have a duration and timelines of keys (`SkeletonTimeline`): a bone's rotation, translation, scale and shear (both axes together, or one axis at a time), a slot's attachment and colour, a mesh's shape (deform keys), the draw order, and events. Each value key eases to the next by its curve (`SkeletonCurve`): `Linear`, `Stepped` or `Bezier`.
 - **Events** (`SkeletonEventData`) are named moments an animation keys, with an `int`, a `float`, a `string` and an optional sound for the game to play.
 - **Mixes** are the seconds a crossfade takes: a default, and one per pair of animations, each way on its own.
 
@@ -168,6 +169,25 @@ Every field with a default may be left out. The whole format, each default in it
       "gear": {
         "muzzle": Point(x: 3, y: 4, rotation: 90),
         "hit": BoundingBox(vertices: [(0, 0), (10, 0), (10, 10)]),
+        // Hull is how many of the first vertices outline the mesh (0 for none).
+        // UVs run 0 to 1 across the region; triangles index the vertices
+        "cape": Mesh(
+          region: "torso",
+          uvs: [(0, 0), (1, 0), (1, 1), (0, 1)],
+          triangles: [0, 1, 2, 0, 2, 3],
+          hull: 4,                                          // 0
+          // A vertex is weighted over bones, each (bone, x, y, weight): x and y are
+          // where it sits in that bone's space, and a vertex's weights are scaled to
+          // sum to 1. Or unweighted: positions in the slot's bone
+          vertices: Weighted([
+            [("torso", -20, 0, 1)],
+            [("torso", 20, 0, 1)],
+            [("arm", 20, 0, 0.75), ("torso", 20, 60, 0.25)],
+            [("arm", -20, 0, 1)],
+          ]),
+          color: "#ffffff"),                                // white
+        "flag": Mesh(region: "torso", uvs: [(0, 0), (1, 0), (1, 1)], triangles: [0, 1, 2],
+                     vertices: Unweighted([(0, 0), (64, 0), (64, 40)])),
       },
     },
     "red": { "gear": { "gear": Region(region: "gear") } },
@@ -205,6 +225,12 @@ Every field with a default may be left out. The whole format, each default in it
       slots: { "gear": (
         attachment: [(0.0, "gear"), (0.5, None)],           // None hides the slot
         color: [(0.0, "#ffffff"), (1.0, "#ff000000", Stepped)],
+        // The shape of a mesh the slot shows, by its attachment's name. A key
+        // holds an offset from the setup shape, x then y, for each position
+        // of the mesh: a vertex each when unweighted (in the slot's bone), an
+        // influence each when weighted (in that influence's bone). [] is no
+        // offset, the setup shape
+        deform: { "flag": [(0.0, []), (0.5, [0, -6, 0, -6, 0, 6], Bezier(0.25, 0, 0.75, 1)), (1.0, [])] },
       ) },
       // Every slot, back to front, or None for the setup order
       draw_order: [(0.25, ["gear", "torso"]), (0.75, None)],
@@ -230,11 +256,12 @@ Every field with a default may be left out. The whole format, each default in it
   - every number finite, and durations and mixes not negative;
   - each region's rectangle inside its image, and not empty;
   - a bounding box of at least three vertices;
+  - a mesh that holds together (Meshes, below), and a deform that fits the data (Deform keys, below);
   - each timeline with at least one key, its times from 0 to the animation's duration and rising (event keys may share a time);
   - one timeline for each property of a bone or slot (`translate` and `translate_x` on one bone clash; `translate_x` with `translate_y` is fine);
   - a draw-order key listing every slot exactly once;
   - no animation named `<empty>`.
-- Not checked: a slot's setup attachment and an attachment key are names looked up in the skins at run time, so a name no skin has shows nothing, with no warning.
+- Not checked: a slot's setup attachment and an attachment key are names looked up in the skins at run time, so a name no skin has shows nothing, with no warning. Nor is it checked that a deform's attachment is a mesh, or that its keys are as long as the mesh's positions: that is found as the deform plays (Deform keys, below).
 - **The web** has no asset folder and no hot reload: embed the files with a `MemorySource` (`ryo-assets`, section 5; the skeleton demo's `embedded.rs` is one).
 
 ### Placing a part on its bone
@@ -246,6 +273,315 @@ A region attachment's `x` and `y` are where the image's centre is from the bone'
 3. `(x, y)` is the image's centre less `p`, turned by `-a`.
 
 A leg 93 x 164 whose hip is at (31, 18) and ankle at (64, 158): `a` is 76.7, so `rotation: -76.7`; the centre (46.5, 82) less the hip is (15.5, 64), which turned by -76.7 degrees is `x: 65.8, y: -0.4`. `scale_y: -1` flips a part across its bone, and turns its `rotation` and `y` the other way. The skeleton demo's `assets/README.md` records the method and `assets/hero.skeleton.ron` is a whole rig placed this way. The `debug:skeletons` overlay shows each bone and each part's outline while a saved file reloads.
+
+## Meshes
+
+A region is one rectangle on one bone: it can turn and scale, and nothing more. A **mesh** is a sheet cut into triangles. Its corners are **vertices**: each has a place in the image (its **UV**) and a place on the rig, and the engine draws the part of the image between each triangle's three vertices. Move a vertex and the picture stretches with it. A cape bends along its length, a flag ripples, a cheek puffs, where a region could only swing as a whole.
+
+**Use a mesh for a part that must bend or change shape; keep a region for a part that stays a rectangle** (a limb that turns on a joint, a head, a weapon). A mesh bends only where it has vertices, so give it a few rows across the bend. **Each mesh is a draw of its own** (two with a drop shadow), where all the regions of one image in a row are one draw: a character is made of a few meshes, not thirty (Limits, below).
+
+A mesh is held in one of two ways, and a deform key can move either.
+
+- **Unweighted:** each vertex is a place in the space of the slot's bone (`x` and `y`, in pixels along the bone's axes). The whole mesh rides that one bone, and its shape changes only by deform keys.
+- **Weighted:** each vertex is held by several bones at once. Each pull on it is an **influence**: a bone, the place the vertex sits in *that bone's* space, and a **weight**, how much that bone counts. The vertex is drawn at the sum of where each bone puts it, times its weight. Bones that swing apart stretch the vertices between them, so a cape follows its bones with no deform key at all. The slot's own bone plays no part.
+
+### An unweighted mesh in a file
+
+A mesh is an attachment like a region, written in a skin. Every vertex is written twice, in the same order: in `uvs`, where it is in the image, and in `vertices`, where it is on the rig.
+
+```ron
+(
+  images: { "banner": "rigs/banner.png" },
+  regions: { "flag": (image: "banner", rect: (0, 0, 96, 64)) },
+  bones: [
+    (name: "root"),
+    (name: "pole", parent: "root", length: 80),
+  ],
+  slots: [(name: "flag", bone: "pole", attachment: "flag")],
+  skins: {
+    "default": {
+      "flag": {
+        "flag": Mesh(
+          region: "flag",
+          // The outline first, round from the top-left corner, then any vertices
+          // inside it (none here). 0, 0 is the region's top-left, 1, 1 its bottom-right
+          uvs: [(0, 0), (0.5, 0), (1, 0), (1, 1), (0.5, 1), (0, 1)],
+          // Indices into the vertices, three to a triangle, wound either way
+          triangles: [0, 1, 4, 0, 4, 5, 1, 2, 3, 1, 3, 4],
+          // The first six vertices go round the outline: for the overlay
+          hull: 6,
+          // Places in the pole's space, in pixels, in the order of the UVs
+          vertices: Unweighted([(0, 0), (48, 0), (96, 0), (96, 64), (48, 64), (0, 64)]),
+        ),
+      },
+    },
+  },
+)
+```
+
+| Field | What it is |
+|-------|-----------|
+| `region` | The region whose image the mesh draws (required) |
+| `uvs` | One `(u, v)` for each vertex: 0 to 1 across the region. A UV outside 0 to 1 draws nothing there; it does not read a neighbouring region of the atlas |
+| `triangles` | Vertex numbers, three to a triangle. Winding does not matter: a mirrored skeleton draws the same triangles |
+| `hull` | How many of the first vertices go round the mesh's outline, in order (3 or more), or 0 for none (the default). Only the overlay uses it |
+| `vertices` | `Unweighted([(x, y), ..])` or `Weighted([..])`, one entry for each vertex (required) |
+| `color` | Multiplied into the slot's colour (`"#rrggbb"`, as elsewhere; white when left out) |
+
+Positions are in pixels, and no angle occurs, so nothing is converted. A mesh shows like any attachment: a slot's `attachment` or an attachment key names it, and a skin may hold it.
+
+### A weighted mesh
+
+A weighted vertex is a list of influences, each `(bone, x, y, weight)`, and `x` and `y` are where the vertex is *in that bone's space in the setup pose*. A vertex held by two bones is written twice, once in each bone's space, because the two spaces differ. Here the cape's top is held by the torso, its bottom by a `cape` bone that hangs 30 below the torso's origin, and its middle row half by each. The cape is in a skin of its own, so a hero without it simply wears the other skin.
+
+```ron
+(
+  images: { "parts": "rigs/hero.png" },
+  regions: { "cape": (image: "parts", rect: (0, 0, 48, 96)) },
+  bones: [
+    (name: "root"),
+    (name: "torso", parent: "root", y: -60, length: 30),
+    // 30 below the torso's origin, in the torso's space
+    (name: "cape", parent: "torso", y: 30, length: 30),
+  ],
+  slots: [(name: "cape", bone: "torso", attachment: "cape")],
+  skins: {
+    "default": {},
+    "cape": {
+      "cape": {
+        "cape": Mesh(
+          region: "cape",
+          // Round the outline: top-left, top-right, middle-right, bottom-right,
+          // bottom-left, middle-left
+          uvs: [(0, 0), (1, 0), (1, 0.5), (1, 1), (0, 1), (0, 0.5)],
+          triangles: [0, 1, 2, 0, 2, 5, 5, 2, 3, 5, 3, 4],
+          hull: 6,
+          // For each vertex, its influences: (bone, x, y, weight)
+          vertices: Weighted([
+            [("torso", -24, 0, 1)],
+            [("torso", 24, 0, 1)],
+            // The same place twice: 30 down in the torso's space, level with the cape bone's origin
+            [("torso", 24, 30, 0.5), ("cape", 24, 0, 0.5)],
+            [("cape", 24, 30, 1)],
+            [("cape", -24, 30, 1)],
+            [("torso", -24, 30, 0.5), ("cape", -24, 0, 0.5)],
+          ]),
+        ),
+      },
+    },
+  },
+  animations: {
+    "sway": (
+      duration: 1.0,
+      bones: { "cape": (rotate: [(0.0, -10.0), (0.5, 10.0), (1.0, -10.0)]) },
+    ),
+  },
+)
+```
+
+- **A vertex's weights are scaled to sum to 1** as the file loads, so `("torso", .., 1), ("cape", .., 1)` is the same as 0.5 and 0.5, and 3 and 1 mean 0.75 and 0.25. A weight is not negative, and a vertex needs at least one influence with weight above 0.
+- Tune weights where a part bends: a row held by one bone follows that bone rigidly; a row shared by two stretches between them. Turn the second bone far enough and the rows between can fold over.
+- `skeleton.set_skin("cape")` puts the cape on (Skins and attachments). The skin has the mesh and the default skin does not, so until it is worn the slot shows nothing, and nothing is said: a skin cannot hide an attachment, but a character without a cape can leave the cape's skin off.
+
+### Building a mesh in code
+
+`MeshAttachment::new(region, vertices, uvs, triangles)` has no hull and a white colour; set `hull` and `color` as fields. `region` is an index into the regions added. A mesh goes into a skin with `attachment`, as a region does (`SkeletonAttachment::Mesh`).
+
+```rust
+fn flag(image: Handle<Image>) -> Option<SkeletonData> {
+  let builder = SkeletonData::builder()
+    .bone("root", None, BoneSetup::default())
+    .bone("pole", Some("root"), BoneSetup { length: 80.0, ..Default::default() })
+    .slot("flag", "pole", SlotSetup { attachment: Some("flag".into()), ..Default::default() })
+    .region(SkeletonRegion { name: "flag".into(), image, x: 0, y: 0, width: 96, height: 64 });
+  let mesh = MeshAttachment {
+    hull: 6,
+    ..MeshAttachment::new(
+      0, // the region, by its place in the order added
+      MeshVertices::Unweighted(
+        [(0.0, 0.0), (48.0, 0.0), (96.0, 0.0), (96.0, 64.0), (48.0, 64.0), (0.0, 64.0)]
+          .map(Vec2::from)
+          .to_vec(),
+      ),
+      [(0.0, 0.0), (0.5, 0.0), (1.0, 0.0), (1.0, 1.0), (0.5, 1.0), (0.0, 1.0)]
+        .map(Vec2::from)
+        .to_vec(),
+      vec![0, 1, 4, 0, 4, 5, 1, 2, 3, 1, 3, 4],
+    )
+  };
+  let flag = builder.slot_id("flag")?;
+  // A deform key: (time, offsets, curve). Twelve offsets, an x and a y for each of the six vertices
+  let wave = SkeletonClip {
+    name: "wave".into(),
+    duration: 1.0,
+    timelines: vec![SkeletonTimeline::Deform {
+      slot: flag,
+      attachment: "flag".into(),
+      frames: vec![
+        (0.0, vec![], SkeletonCurve::Linear), // empty: the setup shape
+        (0.5, vec![0.0, 0.0, 0.0, -6.0, 0.0, 0.0, 0.0, 0.0, 0.0, 6.0, 0.0, 0.0], SkeletonCurve::Linear),
+        (1.0, vec![], SkeletonCurve::Linear),
+      ],
+    }],
+  };
+  match builder
+    .attachment(SkeletonData::DEFAULT_SKIN, "flag", "flag", SkeletonAttachment::Mesh(mesh))
+    .animation(wave)
+    .build()
+  {
+    Ok(data) => Some(data),
+    Err(error) => {
+      warn!("the flag: {error}");
+      None
+    }
+  }
+}
+```
+
+A weighted mesh holds `MeshVertices::Weighted(WeightedVertices::new(vertices))`, one `Vec` of `SkeletonInfluence::new(bone, x, y, weight)` for each vertex, and scales the weights as the file does:
+
+```rust
+fn cape_mesh(torso: BoneId, cape: BoneId) -> MeshAttachment {
+  let pull = SkeletonInfluence::new;
+  let vertices = WeightedVertices::new([
+    vec![pull(torso, -24.0, 0.0, 1.0)],
+    vec![pull(torso, 24.0, 0.0, 1.0)],
+    vec![pull(torso, 24.0, 30.0, 0.5), pull(cape, 24.0, 0.0, 0.5)],
+    vec![pull(cape, 24.0, 30.0, 1.0)],
+    vec![pull(cape, -24.0, 30.0, 1.0)],
+    vec![pull(torso, -24.0, 30.0, 0.5), pull(cape, -24.0, 0.0, 0.5)],
+  ]);
+  MeshAttachment {
+    hull: 6,
+    ..MeshAttachment::new(
+      0,
+      MeshVertices::Weighted(vertices),
+      [(0.0, 0.0), (1.0, 0.0), (1.0, 0.5), (1.0, 1.0), (0.0, 1.0), (0.0, 0.5)]
+        .map(Vec2::from)
+        .to_vec(),
+      vec![0, 1, 2, 0, 2, 5, 5, 2, 3, 5, 3, 4],
+    )
+  }
+}
+```
+
+Reading built data: `MeshAttachment::vertex_count()` and `positions()` (below), `MeshVertices::Unweighted(Vec<Vec2>)` and `Weighted(WeightedVertices)`; `WeightedVertices` has `vertex_count()`, `influences(vertex)` and `positions()`. `skin.attachment(slot, name)` returns a `SkeletonAttachment::Mesh` to match.
+
+### Deform keys
+
+A **deform key** moves a mesh's vertices in an animation. A key is a list of numbers: an offset from the mesh's setup shape, an x then a y, for each of the mesh's **positions**. A position is a vertex when the mesh is unweighted, and an *influence* when it is weighted (the influences of vertex 0 first, then vertex 1's, and so on, in the order of the file). `MeshAttachment::positions()` counts them: the six-vertex flag above has six positions and its keys hold twelve numbers; the cape has eight influences, so its keys hold sixteen.
+
+Add this to the flag file above (before its final `)`) and the flag ripples: the pole's edge and the fly stay, the middle column goes up and down.
+
+```ron
+  animations: {
+    "wave": (
+      duration: 1.0,
+      // A slot's block holds its deforms, by the name of the attachment they move
+      slots: { "flag": (deform: { "flag": [
+        (0.0, []),
+        // (time, offsets) or (time, offsets, curve): an x and a y for each of the six vertices
+        (0.5, [0, 0, 0, -6, 0, 0, 0, 0, 0, 6, 0, 0], Bezier(0.25, 0, 0.75, 1)),
+        (1.0, []),
+      ] }) },
+    ),
+  },
+```
+
+And this in place of the cape file's `animations`: the bones swing and the hem flares as well. Its eight keys' pairs, in order, are the influences of the torso (top left), the torso (top right), the torso and the cape (middle right), the cape (bottom right), the cape (bottom left), and the torso and the cape (middle left).
+
+```ron
+  animations: {
+    "sway": (
+      duration: 1.0,
+      bones: { "cape": (rotate: [(0.0, -10.0), (0.5, 10.0), (1.0, -10.0)]) },
+      slots: { "cape": (deform: { "cape": [
+        (0.0, []),
+        (0.5, [0, 0, 0, 0, 0, 0, 0, 0, 6, 0, -6, 0, 0, 0, 0, 0]),
+        (1.0, []),
+      ] }) },
+    ),
+  },
+```
+
+- **An offset is in the space its position is written in**: the slot's bone for an unweighted vertex, the influence's own bone for a weighted one. So a keyed shape turns and scales with its bones, and a weighted vertex moves by each influence's offset times that influence's weight.
+- **`[]` is the setup shape**, not a missing key. A key is whole (an x and a y for every position) or empty, never part of a mesh, and every key of a timeline is as long as the others or empty. Between two keys the offsets ease by the first key's curve; before the first key the deform does nothing, and after the last its offsets hold. Key a loop's last frame as its first so the shape does not jump.
+- **A deform is keyed by the slot and the attachment's name**, not by the mesh. It moves whichever mesh of that name the skins worn show in the slot, while the slot shows that name. An animation may deform two names of one slot; the slot shows one at a time.
+- **Moving the shape does not move the bones.** Animate bones and deforms in one animation as the cape does, or either alone. Both are drawn between fixed steps, as bones are, so a deform is smooth at any frame rate.
+- A skeleton's meshes are its own: skeletons that share data share no shape, each playing its own deform.
+
+**How deforms mix.** A deform key blends as a bone key does, in the order the tracks apply:
+
+- A higher track's entry **replaces** what the tracks below left by its `alpha` (`entry.alpha` 0.5 moves the shape half way to its key), or, with `mix_blend` set to `SkeletonMixBlend::Add`, **adds** its key times its alpha.
+- A **crossfade** between two animations that both deform the same slot and name is a plain blend of their shapes, with no dip toward the setup shape in the middle. A crossfade to an animation that deforms nothing there, or to the empty animation, returns the mesh to its setup shape in step with the mix, and the other way the deform grows in from it. Neither jumps when the mix ends.
+- Keys of another length cover nothing: if the incoming animation's deform holds a different count of positions than the outgoing one's, the outgoing deform fades with the mix as it would under an animation with no deform.
+- When the slot's attachment changes (an attachment key, `set_attachment`, a skin), the mesh now shown takes its own shape at once, and is not drawn from the offsets of the one before.
+
+**What skips a deform, and what is said.** A deform changes a mesh only while the engine finds the mesh it was keyed for. In order:
+
+| What happens | Said? |
+|--------------|-------|
+| The slot shows another attachment than the deform's name (a higher track's attachment key, `set_attachment`, a crossfade to an animation that shows another one), or shows nothing, or a name no worn skin has | Silent. It is ordinary play: a character without its cape hides the slot, and its animations go on keying the cape |
+| The deform names an attachment some skin has in the slot but the slot never shows | The file loads, and nothing is said |
+| The slot shows the deform's name, but the attachment found under it is not a mesh (a skin has a region there), or is a mesh holding another count of positions than the keys | One warning in the log for each skeleton and animation, naming the animation, the attachment, the slot and the reason; the deform is skipped and the mesh keeps its setup shape. Not repeated each step, loop or skin change. A skeleton remembers up to 64 animations it has warned of |
+| A deform whose keys are all empty | Fits any mesh |
+
+**What fails to load**, with the animation and timeline named (`animation "wave" timeline 0 (deform)`):
+
+- a deform naming an attachment that **no skin has in its slot** (the default skin or any other): such a deform could never apply, and a misspelt name would otherwise do nothing and say nothing;
+- a key with an odd count of values (a number left out of an x, y pair);
+- keys of different lengths in one timeline (a key may also be empty);
+- two deforms of one slot and name in one animation (two names of one slot are fine);
+- a number that is not finite, a key time outside 0 to the duration or not rising, or a bad curve, as for any timeline.
+
+A file saved with a deform of a mesh it no longer has in any skin fails the same way: the reload is refused, naming the deform, and the skeletons keep playing the data they had. A reload that changes a mesh's count of positions while its deform plays draws the setup shape, reads nothing out of range, and says so once.
+
+### Errors you will meet
+
+A mistake in a mesh fails the load naming `skin "default" slot "flag" attachment "flag"`; a mistake in a deform names `animation "wave" timeline 0 (deform)`. A mistake in the text itself (a misspelt field, a name written twice in a map) is a RON error at its line and column. The first problem found is reported.
+
+| The problem says | What it means |
+|------------------|---------------|
+| `it has 5 UVs for 6 vertices` | `uvs` and `vertices` are the same length: a UV for every vertex |
+| `it has no triangles; it needs at least one` | `triangles` is empty |
+| `it has 11 triangle indices; they come in threes` | `triangles` is a list of vertex numbers, three to a triangle |
+| `triangle index 9 is out of range; there are 6 vertices` | a triangle names a vertex the mesh does not have (they are counted from 0) |
+| `it has a hull of 2 vertices; it is 0 or 3 to 6` | `hull` is 0 (none), or at least 3 and no more than the vertices |
+| `it has 65536 vertices; at most 65535` | a mesh holds at most 65,535 vertices |
+| ``region "flg" is not in `regions` `` | the mesh's `region` is not one the file declares |
+| ``bone "cap" is not in `bones` `` | an influence names a bone the file does not have |
+| `vertex 3 has an influence with weight -1 that is negative` | weights are not negative |
+| `vertex 3's weights sum to 0; they need to sum above 0` | a vertex has no influence, or only weight 0: it would have nowhere to be |
+| ``Unexpected field named `hul` in `Mesh` ..`` | a misspelt field fails, naming the ones it knows |
+| `no skin has an attachment "flg" in slot "flag"; a deform moves the attachment its slot shows under that name` | the deform's name is in no skin under that slot (check the spelling, and the slot) |
+| `key 1 holds 11 values; a key holds an x and a y for each position` | a key has an odd count: a number is missing from an x, y pair |
+| `key 2 holds 2 values where key 1 holds 12; every key is empty or as long as the others` | the keys of one deform disagree on the mesh's size |
+| `another timeline already keys slot "flag"'s "flag" deform` | an animation has two deforms of one slot and name |
+
+In code, a mesh whose `region` is past the regions added fails `build` with `its region 3 is out of range; there are 1 regions` and an influence of a bone that is not there with `vertex 2 has an influence of bone 9, which is not a bone; there are 2`.
+
+### Drawing a mesh
+
+A mesh draws in its slot's place in the draw order, as a region of the same image would: among the regions before and after it, under a draw-order key too. **The same pixels as a region.** A mesh of two triangles that cover a region's rectangle draws what the region does:
+
+- colour: the slot's times the mesh's times the renderable's `tint`, and `alpha`; the slot's blend, else the renderable's;
+- `lighting`, `filter`, `emission`, `flip_x` and `flip_y`, a mirrored entity or bone;
+- `z_order`, `YSort`, a `Floor` and its lift, `RenderLayers`, and interpolation between steps (a weighted vertex follows the bones that hold it);
+- the **drop shadow**, in the mesh's own shape and not its box (it is darker where parts overlap, as for regions);
+- **the entity's built-in effects**: a hit flash (`SpriteEffect::flash`), a colour shift, silhouette, grayscale, invert, pixelate, wave and dissolve change the regions and the meshes beside them alike. **A game's own sprite shader** (on the renderable or in a `Material`) reaches meshes too, with the same `in.uv` over the mesh's region.
+
+A mesh is drawn only if a camera sees its box, worked out from where the skinning put its vertices, so a mesh carried into view by a bone shows even when its entity is off screen. A mesh whose image is not loaded draws what a region of it does (the checker in a debug build, nothing in a release build). A vertex skinned to a place that is not a finite number draws no mesh, and nothing panics.
+
+**Limits of drawing a mesh.**
+
+- **An effect that grows the sprite's quad leaves the meshes plain.** An outline, a glow or a directional outline draws round the part's rectangle, and a mesh has its own shape: the regions take the effect, the meshes draw without it, and the log says so once in a run, naming the first such entity.
+- **Pixel-art snapping does not apply to a mesh's vertices.** On a pixel-art target a region's rectangle is snapped to whole pixels and a mesh's triangles are drawn where the bones put them, so the two agree only where both stand on whole pixels.
+- **Each mesh is a draw of its own**, and a drop shadow makes it two. A mesh cannot join the draw before or after it, so a skeleton of one run of regions with one mesh among them is three draws. Keep a character's meshes to those that must bend, and its other parts regions on one atlas.
+- **The first frames of a game's sprite shader** may draw a mesh plain: the shader is checked for meshes separately from quads, so the meshes can come a few frames after the regions have turned.
+- A mesh has at most 65,535 vertices (its triangle indices are 16 bits).
+- Not built: linked meshes (a mesh that borrows another's vertices) and clipping attachments.
+
+**What a mesh costs.** The engine skins a mesh on the CPU in the frame, from the bones as that frame draws them, and keeps its scratch between frames: a steady frame allocates nothing of the engine's own with meshes drawn and deforms playing. Measured on an Apple M5 Pro that was busy with other work, so rounded: a weighted mesh of 60 vertices between two runs of regions adds about 1.6 microseconds to a frame's render step, and a deform playing on it about 0.55 microseconds to a skeleton's fixed step. 200 skeletons of 25 regions each, with that mesh and a deform on every one, took about 600 microseconds a fixed step and about 285 microseconds of a frame's drawing. The wgpu graphics layer on Metal allocates about four times a mesh a frame for the extra pipeline changes; that is wgpu's, and costs nothing that shows.
 
 ## Building in code
 
@@ -310,7 +646,7 @@ fn hero(parts: Handle<Image>) -> Option<SkeletonData> {
 let handle: Handle<SkeletonData> = ctx.assets().add(data);
 ```
 
-Other builder calls: `skin(name)` declares a skin, `mix(from, to, seconds)` sets a pair's mix. The timelines are `Rotate`, `Translate`, `Scale`, `Shear` (`Vec2` keys), `TranslateX`, `TranslateY`, `ScaleX`, `ScaleY`, `ShearX`, `ShearY` (`f32` keys), `Attachment { slot, frames: Vec<(f32, Option<Arc<str>>)> }`, `Color { slot, frames }`, `DrawOrder { frames: Vec<(f32, Option<Vec<SlotId>>)> }` and `Event`. Built data is immutable: `bones()`, `slots()`, `regions()`, `skins()`, `skin(name)`, `animations()`, `animation(name)`, `events()`, `bone(name)`, `slot(name)`, `mix(from, to)` and `default_mix()` read it.
+Other builder calls: `skin(name)` declares a skin, `mix(from, to, seconds)` sets a pair's mix. The timelines are `Rotate`, `Translate`, `Scale`, `Shear` (`Vec2` keys), `TranslateX`, `TranslateY`, `ScaleX`, `ScaleY`, `ShearX`, `ShearY` (`f32` keys), `Attachment { slot, frames: Vec<(f32, Option<Arc<str>>)> }`, `Color { slot, frames }`, `Deform { slot, attachment: Arc<str>, frames: Vec<(f32, Vec<f32>, SkeletonCurve)> }` (Meshes, above), `DrawOrder { frames: Vec<(f32, Option<Vec<SlotId>>)> }` and `Event`. Meshes are `SkeletonAttachment::Mesh` (Meshes, above). Built data is immutable: `bones()`, `slots()`, `regions()`, `skins()`, `skin(name)`, `animations()`, `animation(name)`, `events()`, `bone(name)`, `slot(name)`, `mix(from, to)` and `default_mix()` read it.
 
 ## Playing animations
 
@@ -766,16 +1102,16 @@ EngineBuilder::new().add_systems(Phase::FixedUpdate, sword_hits.after(FixedSet::
 
 ## Drawing
 
-An entity with a `Skeleton` and `Renderable::skeleton()` draws the regions its slots show, back to front in its draw order, where its bones put them. **It takes its place among the entities exactly as a sprite does**:
+An entity with a `Skeleton` and `Renderable::skeleton()` draws the regions and meshes its slots show, back to front in its draw order, where its bones put them (a mesh is drawn as a region is; Meshes, above). **It takes its place among the entities exactly as a sprite does**:
 
 | On the entity | Effect |
 |---------------|--------|
 | `Renderable`'s `z_order`, `visible`, `lighting`, `filter` | The whole skeleton's, as for a sprite |
-| `alpha`, `tint` | Each region's colour is its slot's times its attachment's times the tint; its alpha those three's times `alpha` |
+| `alpha`, `tint` | Each part's colour is its slot's times its attachment's times the tint; its alpha those three's times `alpha` |
 | `blend` | For slots that blend `Normal`; a slot with a blend of its own keeps it |
 | `emission` | Every region's |
 | `flip_x`, `flip_y` | Mirror the skeleton about its entity's origin, its bones, points, boxes and sockets with it. It lands the other way round at once |
-| `shader` (or the entity's `Material`) | Applied to each region on its own (below) |
+| `shader` (or the entity's `Material`) | Applied to each region and mesh on its own (below) |
 | `YSort` | Sorts it among y-sorted sprites and tile layers by where it stands (below) |
 | `Floor` | Draws it lifted on its storey, as a sprite is (`ryo-tilemap`) |
 | `RenderLayers` | Which cameras draw it |
@@ -785,10 +1121,10 @@ An entity with a `Skeleton` and `Renderable::skeleton()` draws the regions its s
 
 - **A skeleton's entity is interpolated.** `Skeleton` adds `Interpolated` to its entity, so the entity, its bones and its sockets are drawn between fixed steps and move as one. Remove `Interpolated` for a skeleton drawn at the step rate (below): bones are drawn between steps only when the entity is. `ctx.skip_interpolation(entity)` after a teleport lands the bones and sockets with the entity; without it a skeleton moved a long way in one step is drawn sliding there for that step, as any interpolated entity is.
 - **Y-sorting.** A y-sorted skeleton's sort key is its entity's own y plus `YSort::sort_offset`: where it stands. Put the rig's origin at its feet. `YSort::foot_offset` measures down a sprite's image and plays no part. The key does not move with the pose or a flip.
-- **Shadows.** A blob or contact shadow is a sprite's, under where the entity stands, and suits a character. **A drop shadow is cast part by part, so where parts overlap it is darker than a sprite's even one**: a half-black shadow on a white floor leaves 187 of 255 under one part and 136 where two overlap. A drop shadow's `scale` shrinks the parts' shadows toward where the skeleton stands. A part faded by its slot casts as much less.
-- **A sprite shader applies part by part.** A built-in effect or a game's own shader is run for each region: a flash whitens every part, a dissolve dissolves each, and **an outline or a glow outlines each part, not the figure**. A game shader's `in.uv` runs over the part's own rectangle of its image.
+- **Shadows.** A blob or contact shadow is a sprite's, under where the entity stands, and suits a character. **A drop shadow is cast part by part, so where parts overlap it is darker than a sprite's even one**: a half-black shadow on a white floor leaves 187 of 255 under one part and 136 where two overlap. A drop shadow's `scale` shrinks the parts' shadows toward where the skeleton stands; a mesh casts its own shape. A part faded by its slot casts as much less.
+- **A sprite shader applies part by part.** A built-in effect or a game's own shader is run for each region and mesh: a flash whitens every part, a dissolve dissolves each, and **an outline or a glow outlines each region, not the figure, and leaves the meshes plain** (Meshes, Limits of drawing a mesh). A game shader's `in.uv` runs over the part's own rectangle of its image.
 - **A negative scale mirrors**, on a skeleton as on a sprite: a `Transform` scaled by -1 on one axis (on the entity or above it) draws what is under it mirrored, and both axes negative is a half turn. A scale that changes sign in a step is drawn through between steps (it closes to nothing and opens the other way); `flip_x` lands at once, which is what a character turning round wants.
-- **Use one atlas.** A skeleton whose regions share an image and blend is one draw item, whatever its slot count; each change of image or blend along the draw order starts another. A game shader on the entity makes each region an item of its own.
+- **Use one atlas.** A skeleton whose regions share an image and blend is one draw item, whatever its slot count; each change of image or blend along the draw order starts another, and so does each mesh, which is an item of its own. A game shader on the entity makes each region an item of its own.
 - A skeleton's parts are culled together, for each camera, by the box round them. Off screen it keeps animating, so nothing pops when it comes back into view.
 - A skeleton moved while no step runs (a paused clock) is drawn where its entity is drawn in that frame, as a sprite is: its bones follow the entity with no step to pose them. After a teleport, `ctx.skip_interpolation(entity)` draws it at its new place at once, as for any interpolated entity.
 
@@ -812,11 +1148,11 @@ ctx.world.entity_mut(hero).remove::<Interpolated>();
 
 ## debug:skeletons
 
-In a development build, the console command `debug:skeletons` (`ryo-console`) draws over every posed skeleton: each bone as an amber line its length along it, with a white ring at its origin; the blue outline of each region drawn; each bounding box its slots show, in green; and each point as a magenta cross with a line the way it faces. It is drawn where the frame draws the skeleton (between steps, lifted, flipped), so the lines lie on the art. Use it to place parts and to see a hit box switch on. A bone with a `length` of 0 shows as its ring alone. A game built with `ryo2d build` has no console and no overlay.
+In a development build, the console command `debug:skeletons` (`ryo-console`) draws over every posed skeleton: each bone as an amber line its length along it, with a white ring at its origin; the blue outline of each region drawn; each mesh as its triangles (a darker blue) with its hull over them in the regions' blue, where the skinning and the deform have put them; each bounding box its slots show, in green; and each point as a magenta cross with a line the way it faces. It is drawn where the frame draws the skeleton (between steps, lifted, flipped), so the lines lie on the art. Use it to place parts, to see how a mesh's vertices sit and bend, and to see a hit box switch on. A mesh with no `hull` shows its triangles alone. A bone with a `length` of 0 shows as its ring alone. A game built with `ryo2d build` has no console and no overlay, and there is no switch for it in a scene.
 
 ## Limits
 
-- **Not built:** mesh attachments and deform keys; IK, transform and path constraints; clipping attachments; reading another tool's files (Spine, DragonBones). A rig is written as `.skeleton.ron` or built in code.
+- **Not built:** IK, transform and path constraints; clipping attachments; linked meshes; reading another tool's files (Spine, DragonBones). A rig is written as `.skeleton.ron` or built in code.
 - **Size:** at most 255 bones and 255 slots a skeleton, and tracks 0 to 63 (a higher track warns once per skeleton and does nothing).
 - **Game time only:** there is no unscaled mode. A menu's skeleton stands still while the game clock is paused.
 - **One step behind** in a scene's `update` (above), and a collider on a socket one physics step late.
@@ -824,7 +1160,8 @@ In a development build, the console command `debug:skeletons` (`ryo-console`) dr
 - **A queue of 64:** `add_animation` on a track with 64 entries queued is refused, with one warning per skeleton.
 - **Sockets:** a skew is dropped; a socket's sprite is wholly in front of or behind the skeleton; an ordinary child of the skeleton's entity (not a socket, nor below one) does not jump with `skip_interpolation`.
 - **Mixing:** a crossfade dips a little where the incoming animation keys a property in another form (a `translate_x` over a combined `translate`), and, in a chain of three or more entries, past an entry that does not key the property. With `time_scale` at 0 no mix advances, so a track given 17 animations meanwhile jumps as its oldest entry ends.
-- **Drawing:** a drop shadow is darker where parts overlap; blob and contact shadows stand under the entity and do not follow the pose (while an animation jumps, set a blob shadow's height from a bone, as the demo's `lift_shadow` does); sprite shaders, outlines and glows apply part by part; `YSort::foot_offset` is not used; there is no culling of single parts, and a skeleton off screen still builds its quads.
+- **Drawing:** a drop shadow is darker where parts overlap; blob and contact shadows stand under the entity and do not follow the pose (while an animation jumps, set a blob shadow's height from a bone, as the demo's `lift_shadow` does); sprite shaders apply part by part, and outlines and glows outline each region and leave meshes plain; `YSort::foot_offset` is not used; there is no culling of single parts, and a skeleton off screen still builds its quads.
+- **Meshes:** an effect that grows the quad (outline, glow, directional outline) leaves them plain, with one warning a run; pixel-art snapping does not apply to their vertices; each is a draw of its own (two with a drop shadow); a game's sprite shader may draw them plain for its first few frames; at most 65,535 vertices a mesh (Meshes, Limits of drawing a mesh).
 - **Skins** cannot hide an attachment.
 - **Event audio** is the game's to play, and `balance` has nowhere to go in `PlayOptions`.
 - **Before the data has loaded:** at most 256 animation calls are kept (one more is ignored and returns `None`, with one warning), and at most 255 attachments and 255 overrides; a `mix_duration` set to 0 on a kept entry counts as unset and takes the data's mix.
@@ -837,6 +1174,7 @@ In a development build, the console command `debug:skeletons` (`ryo-console`) dr
 - **Inherit modes act inside the skeleton:** the entity's turn, scale and flip apply to every bone, an `OnlyTranslation` or `NoRotationOrReflection` one too.
 - **Where it differs from Spine's runtimes**, for a reader who knows them:
   - a crossfade on a higher track does not dip toward the tracks below, and `hold_previous` holds the previous entry's time;
+  - a deform is keyed by its slot and the attachment's name, not by a skin, and a key holds an offset for every position of the mesh or none;
   - a queued entry's `delay <= 0` does not take the mix off, so the mix starts at the previous entry's end;
   - an entry queued on an empty track waits out its delay before it starts;
   - `Complete` comes only from the playing entry, never from one mixing out;
@@ -918,7 +1256,7 @@ fn the_arm_swings_and_says_so() {
 
 ## Tips
 
-- Start from the skeleton demo (`examples/demos/skeleton`): a page each for a character's crossfades, layers, events with sounds and dust, a sword on a socket with a hit box, skins, aiming and a crowd, over one hand-written rig.
+- Start from the skeleton demo (`examples/demos/skeleton`): a page each for a character's crossfades, layers, events with sounds and dust, a sword on a socket with a hit box, skins, aiming and a crowd, over one hand-written rig, and a Meshes page: the hero's cape (a weighted mesh in a `cape` skin, its bones keyed in idle, walk and run) and a banner (an unweighted mesh rippled by a looping deform), with Gait, Cape and Ripple speed settings and a hit flash on Space. Its `assets/README.md` lays out the cape's and banner's data.
 - Give every pair of animations that follow each other a mix, or a `default` of 0.1 to 0.2 s: a mix of 0 cuts.
 - Name bones, slots and attachments for what they are (`arm_near`, `sole_far`, `hit`): the game refers to all of them by name.
 - Put points where things happen (soles, a muzzle, a hand) and read them with `point`, rather than working places out from bones.

@@ -310,7 +310,7 @@ Stage 2 builds on the merged core. These are the planner's calls. The owner may 
 
 ### Drawing
 
-- **Order:** a mesh draws in the skeleton's draw order, between its regions, as part of the entity's place in the entity ordering. The draw list gains a triangles item of the entity kind.
+- **Order:** a mesh draws in the skeleton's draw order, between its regions, as part of the entity's place in the entity ordering. The draw list gains a mesh item of the entity kind.
 - **Look:** a mesh must look exactly like a region quad of the same image.
   - It draws through the sprite shader's own fragment stages. A mesh carries one sprite instance (the rectangle of the image, the tint, the effect parameters, the emission) beside its vertices, each of which is only a position and a UV.
   - Its colour is slot × attachment × the entity's tint and alpha.

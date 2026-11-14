@@ -2,7 +2,7 @@
 name: ryo-engine-dev
 description: Working on the Ryo2D engine - the frame's phases, module map, resources, public API, crates, the dev_tools build condition, logging in engine code, profiling scopes and testing (the build without tools included).
 metadata:
-  version: 2.9.0
+  version: 2.10.0
 ---
 
 # Ryo2D Engine Developer
@@ -131,7 +131,7 @@ Engine::frame
 | `physics/` | Rapier integration, `RigidBody`, `Collider`, `Physics`, the character controller, one-way colliders, triggers, tile colliders |
 | `gameplay/` | On top of physics: `MoveIntent` and bindings, the platformer and top-down presets, knockback, trigger behaviours (`Pickup`, `KillZone`, `Checkpoint`, `Respawn`) |
 | `tilemap/` | Tile maps: the data model, the Tiled and LDtk readers (registry loaders), `MapRoot` and the landing on the map builder thread, `MapsView` (`ctx.maps()`) with edits and Wang terrain, map collision and occluders kept in step with the tiles, worlds, hot reload, padded tilesets; drawn by `render/tiles.rs`; `src/core/tilemap/AGENTS.md` |
-| `skeleton/` | Skeletal animation: `SkeletonData` and its builder and validation, the animation state (tracks, mixing, queues, events), `Skeleton` with its skins, attachments and bone overrides, `BoneSocket`, the fixed step and the frame's pose pass, scene holds (`SkeletonStore`), the region quads the entity drawer pushes as runs, the `debug:skeletons` overlay; the `.skeleton.ron` loader is `asset/loaders/skeleton.rs`; `src/core/skeleton/AGENTS.md` |
+| `skeleton/` | Skeletal animation: `SkeletonData` and its builder and validation, the animation state (tracks, mixing, queues, events), `Skeleton` with its skins, attachments and bone overrides, `BoneSocket`, the fixed step and the frame's pose pass, scene holds (`SkeletonStore`), the region quads the entity drawer pushes as runs and the meshes it skins (CPU skinning, deform offsets) and pushes as items of their own, the `debug:skeletons` overlay; the `.skeleton.ron` loader is `asset/loaders/skeleton.rs`; `src/core/skeleton/AGENTS.md` |
 | `particles/`, `trail/`, `navigation/`, `state_machine/` | Feature modules |
 | `text/` | Fonts (`Fonts`), `TextStyle`, rich text and markup, layout (Parley), glyph rasterization (swash, fdsm), effects, reveal, `Text2d` and `CpuText` for the dev windows; GPU-free |
 | `ui/` | `UiContext` and absolute drawing (`immediate/`); ids (`id.rs`), `UiMemory` (records, widget state, focus memory), layout over Taffy (`layout/`, the only Taffy code), the subtree and its resolution (`tree.rs`), containers, widgets (`widgets/`), popups and modals, the pointer and wheel resolve (`interact.rs`), focus and navigation (`nav.rs`), the theme (`theme/`), node trees (`nodes/`) and their cache (`nodes/cache.rs`, the records and the dirty set; `tape.rs`, what a build pushed and its replay; `fragment.rs`, the unchanged subtrees kept and copied), UI files (`file/`), virtual lists (`widgets/list.rs`, `nodes/list.rs`), the `debug:ui` and `debug:ui-rebuilds` overlays (`debug.rs`) |
