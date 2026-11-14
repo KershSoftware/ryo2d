@@ -14,7 +14,7 @@
 //! lit and shadowed as a sprite is, and between fixed steps as an
 //! interpolated entity is.
 //!
-//! Not built: meshes and deform keys, IK, transform and path constraints,
+//! Not built: deform keys, IK, transform and path constraints,
 //! clipping, and reading another tool's files.
 
 mod animation;
@@ -37,7 +37,10 @@ mod validate;
 
 pub use animation::{Animation, EventValues, Frame, Timeline};
 pub use apply::MixBlend;
-pub use attachment::{Attachment, BoundingBoxAttachment, PointAttachment, RegionAttachment};
+pub use attachment::{
+  Attachment, BoundingBoxAttachment, Influence, MeshAttachment, MeshVertices, PointAttachment,
+  RegionAttachment, WeightedVertices,
+};
 pub use builder::{BoneSetup, SkeletonDataBuilder, SlotSetup};
 pub use component::{BoneOverride, Skeleton, Space};
 pub use curve::Curve;

@@ -5,7 +5,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use super::animation::{EMPTY_NAME, Target, Timeline};
-use super::attachment::Attachment;
+use super::attachment::{Attachment, MeshAttachment, MeshVertices};
 use super::builder::SkeletonDataBuilder;
 use super::curve::Curve;
 use super::data::{
@@ -286,6 +286,19 @@ pub(super) fn build(builder: SkeletonDataBuilder) -> Result<SkeletonData, Skelet
           ],
         )?;
       }
+      Attachment::Mesh(mesh) => {
+        if mesh.region >= regions.len() {
+          return Err(error(
+            item(),
+            format!(
+              "its region {} is out of range; there are {} regions",
+              mesh.region,
+              regions.len()
+            ),
+          ));
+        }
+        mesh_ok(item, mesh, bones.len())?;
+      }
       Attachment::Point(point) => {
         finite(
           item,
@@ -402,6 +415,106 @@ pub(super) fn build(builder: SkeletonDataBuilder) -> Result<SkeletonData, Skelet
     index,
     catalogue,
   })
+}
+
+/// The most vertices a mesh has: its triangle indices are `u16`
+const MAX_MESH_VERTICES: usize = 65_535;
+
+/// Checks a mesh against `bone_count` bones: its counts, indices, hull and
+/// values, and its weights
+fn mesh_ok(
+  item: impl Fn() -> String,
+  mesh: &MeshAttachment,
+  bone_count: usize,
+) -> Result<(), SkeletonError> {
+  let vertices = mesh.vertex_count();
+  if vertices > MAX_MESH_VERTICES {
+    return Err(error(
+      item(),
+      format!("it has {vertices} vertices; at most {MAX_MESH_VERTICES}"),
+    ));
+  }
+  if mesh.uvs.len() != vertices {
+    return Err(error(
+      item(),
+      format!("it has {} UVs for {vertices} vertices", mesh.uvs.len()),
+    ));
+  }
+  if mesh.triangles.is_empty() {
+    return Err(error(item(), "it has no triangles; it needs at least one"));
+  }
+  if !mesh.triangles.len().is_multiple_of(3) {
+    return Err(error(
+      item(),
+      format!(
+        "it has {} triangle indices; they come in threes",
+        mesh.triangles.len()
+      ),
+    ));
+  }
+  if let Some(&index) = mesh.triangles.iter().find(|&&i| usize::from(i) >= vertices) {
+    return Err(error(
+      item(),
+      format!("triangle index {index} is out of range; there are {vertices} vertices"),
+    ));
+  }
+  let hull = usize::from(mesh.hull);
+  if hull != 0 && !(3..=vertices).contains(&hull) {
+    return Err(error(
+      item(),
+      format!("it has a hull of {hull} vertices; it is 0 or 3 to {vertices}"),
+    ));
+  }
+  for &uv in &mesh.uvs {
+    finite_vec(&item, "a UV", uv)?;
+  }
+  match &mesh.vertices {
+    MeshVertices::Unweighted(positions) => {
+      for &position in positions {
+        finite_vec(&item, "a vertex", position)?;
+      }
+    }
+    MeshVertices::Weighted(weighted) => {
+      for vertex in 0..vertices {
+        let influences = weighted.influences(vertex);
+        for influence in influences {
+          finite(
+            &item,
+            &[
+              ("an influence", influence.x),
+              ("an influence", influence.y),
+              ("an influence", influence.weight),
+            ],
+          )?;
+          if influence.bone.index() >= bone_count {
+            return Err(error(
+              item(),
+              format!(
+                "vertex {vertex} has an influence of bone {}, which is not a bone; there are {bone_count}",
+                influence.bone.0
+              ),
+            ));
+          }
+          if influence.weight < 0.0 {
+            return Err(error(
+              item(),
+              format!(
+                "vertex {vertex} has an influence with weight {} that is negative",
+                influence.weight
+              ),
+            ));
+          }
+        }
+        if influences.iter().map(|i| i.weight).sum::<f32>() <= 0.0 {
+          return Err(error(
+            item(),
+            format!("vertex {vertex}'s weights sum to 0; they need to sum above 0"),
+          ));
+        }
+      }
+    }
+  }
+  Ok(())
 }
 
 fn mix_duration(item: impl Fn() -> String, duration: f32) -> Result<(), SkeletonError> {
@@ -592,7 +705,8 @@ mod tests {
 
   use super::super::animation::{Animation, EventValues, Timeline};
   use super::super::attachment::{
-    Attachment, BoundingBoxAttachment, PointAttachment, RegionAttachment,
+    Attachment, BoundingBoxAttachment, Influence, MeshAttachment, MeshVertices, PointAttachment,
+    RegionAttachment, WeightedVertices,
   };
   use super::super::builder::{BoneSetup, SkeletonDataBuilder, SlotSetup};
   use super::super::curve::Curve;
@@ -909,6 +1023,229 @@ mod tests {
       ),
       r#"skin "red" slot "hat" attachment "cap""#,
       "region 1 is out of range",
+    );
+  }
+
+  // Meshes
+
+  const CAPE: &str = r#"skin "default" slot "hat" attachment "cape""#;
+
+  /// A square of four unweighted vertices on region 0, with every part
+  /// valid; each test spoils one
+  fn square() -> MeshAttachment {
+    MeshAttachment {
+      hull: 4,
+      ..MeshAttachment::new(
+        0,
+        MeshVertices::Unweighted(vec![
+          Vec2::new(0.0, 0.0),
+          Vec2::new(8.0, 0.0),
+          Vec2::new(8.0, 8.0),
+          Vec2::new(0.0, 8.0),
+        ]),
+        vec![
+          Vec2::new(0.0, 0.0),
+          Vec2::new(1.0, 0.0),
+          Vec2::new(1.0, 1.0),
+          Vec2::new(0.0, 1.0),
+        ],
+        vec![0, 1, 2, 0, 2, 3],
+      )
+    }
+  }
+
+  fn weighted(vertices: Vec<Vec<Influence>>) -> MeshAttachment {
+    MeshAttachment {
+      vertices: MeshVertices::Weighted(WeightedVertices::new(vertices)),
+      ..square()
+    }
+  }
+
+  fn influence(bone: u8, weight: f32) -> Influence {
+    Influence::new(BoneId(bone), 1.0, 2.0, weight)
+  }
+
+  /// `rig` with a region and `mesh` as the hat's "cape"
+  fn with_mesh(mesh: MeshAttachment) -> SkeletonDataBuilder {
+    rig()
+      .region(region("torso", 8, 8))
+      .attachment("default", "hat", "cape", Attachment::Mesh(mesh))
+  }
+
+  #[test]
+  fn a_valid_mesh_builds_weighted_and_unweighted() {
+    let two = |bone| vec![influence(bone, 3.0), influence(1, 1.0)];
+    let data = with_mesh(weighted(vec![two(0), two(1), two(0), two(1)]))
+      .attachment("default", "hand", "flag", Attachment::Mesh(square()))
+      .build()
+      .expect("builds");
+    let skin = &data.skins()[0];
+    let Some(Attachment::Mesh(cape)) = skin.attachment(SlotId(1), "cape") else {
+      panic!("no cape");
+    };
+    assert_eq!((cape.vertex_count(), cape.positions()), (4, 8));
+    let MeshVertices::Weighted(vertices) = &cape.vertices else {
+      panic!("not weighted");
+    };
+    let sum: f32 = vertices.influences(0).iter().map(|i| i.weight).sum();
+    assert!((sum - 1.0).abs() < 1e-6, "weights are normalised: {sum}");
+    assert_eq!(vertices.influences(0)[0].weight, 0.75);
+    let Some(Attachment::Mesh(flag)) = skin.attachment(SlotId(0), "flag") else {
+      panic!("no flag");
+    };
+    assert_eq!((flag.vertex_count(), flag.positions()), (4, 4));
+  }
+
+  #[test]
+  fn a_mesh_region_outside_the_regions_fails() {
+    fails(
+      with_mesh(MeshAttachment {
+        region: 1,
+        ..square()
+      }),
+      CAPE,
+      "region 1 is out of range",
+    );
+  }
+
+  #[test]
+  fn a_mesh_with_a_uv_count_other_than_its_vertices_fails() {
+    let mut mesh = square();
+    mesh.uvs.pop();
+    fails(with_mesh(mesh), CAPE, "3 UVs for 4 vertices");
+  }
+
+  #[test]
+  fn a_mesh_with_no_triangles_fails() {
+    fails(
+      with_mesh(MeshAttachment {
+        triangles: Vec::new(),
+        ..square()
+      }),
+      CAPE,
+      "it needs at least one",
+    );
+  }
+
+  #[test]
+  fn a_mesh_with_triangle_indices_not_in_threes_fails() {
+    fails(
+      with_mesh(MeshAttachment {
+        triangles: vec![0, 1, 2, 3],
+        ..square()
+      }),
+      CAPE,
+      "4 triangle indices; they come in threes",
+    );
+  }
+
+  #[test]
+  fn a_mesh_triangle_index_past_the_vertices_fails() {
+    fails(
+      with_mesh(MeshAttachment {
+        triangles: vec![0, 1, 4],
+        ..square()
+      }),
+      CAPE,
+      "triangle index 4 is out of range; there are 4 vertices",
+    );
+  }
+
+  #[test]
+  fn a_mesh_hull_of_one_or_two_or_past_the_vertices_fails() {
+    for hull in [1, 2, 5] {
+      fails(
+        with_mesh(MeshAttachment { hull, ..square() }),
+        CAPE,
+        &format!("hull of {hull} vertices; it is 0 or 3 to 4"),
+      );
+    }
+    for hull in [0, 3, 4] {
+      with_mesh(MeshAttachment { hull, ..square() })
+        .build()
+        .expect("a good hull builds");
+    }
+  }
+
+  #[test]
+  fn a_mesh_of_more_than_65535_vertices_fails() {
+    let count = 65_536;
+    let mesh = MeshAttachment::new(
+      0,
+      MeshVertices::Unweighted(vec![Vec2::ZERO; count]),
+      vec![Vec2::ZERO; count],
+      vec![0, 1, 2],
+    );
+    fails(with_mesh(mesh), CAPE, "65536 vertices; at most 65535");
+    let mesh = MeshAttachment::new(
+      0,
+      MeshVertices::Unweighted(vec![Vec2::ZERO; count - 1]),
+      vec![Vec2::ZERO; count - 1],
+      vec![0, 1, 65_534],
+    );
+    with_mesh(mesh).build().expect("65535 vertices build");
+  }
+
+  #[test]
+  fn a_non_finite_mesh_value_fails() {
+    let mut mesh = square();
+    mesh.uvs[2].y = f32::NAN;
+    fails(with_mesh(mesh), CAPE, "a UV is NaN, not a finite number");
+    let mut mesh = square();
+    mesh.vertices = MeshVertices::Unweighted(vec![Vec2::new(f32::INFINITY, 0.0); 4]);
+    fails(
+      with_mesh(mesh),
+      CAPE,
+      "a vertex is inf, not a finite number",
+    );
+    let mut bad = influence(0, 1.0);
+    bad.y = f32::NEG_INFINITY;
+    fails(
+      with_mesh(weighted(vec![vec![bad]; 4])),
+      CAPE,
+      "an influence is -inf, not a finite number",
+    );
+    let mut bad = influence(0, 1.0);
+    bad.weight = f32::INFINITY;
+    fails(
+      with_mesh(weighted(vec![vec![bad]; 4])),
+      CAPE,
+      "an influence is inf, not a finite number",
+    );
+  }
+
+  #[test]
+  fn a_mesh_influence_of_an_unknown_bone_fails() {
+    fails(
+      with_mesh(weighted(vec![vec![influence(2, 1.0)]; 4])),
+      CAPE,
+      "influence of bone 2, which is not a bone; there are 2",
+    );
+  }
+
+  #[test]
+  fn a_mesh_influence_with_a_negative_weight_fails() {
+    let vertex = vec![influence(0, 2.0), influence(1, -1.0)];
+    fails(
+      with_mesh(weighted(vec![vertex; 4])),
+      CAPE,
+      "weight -1 that is negative",
+    );
+  }
+
+  #[test]
+  fn a_mesh_vertex_whose_weights_sum_to_zero_fails() {
+    let good = vec![influence(0, 1.0)];
+    let zero = vec![influence(0, 0.0), influence(1, 0.0)];
+    fails(
+      with_mesh(weighted(vec![good.clone(), good.clone(), zero, good])),
+      CAPE,
+      "vertex 2's weights sum to 0",
+    );
+    fails(
+      with_mesh(weighted(vec![Vec::new(); 4])),
+      CAPE,
+      "vertex 0's weights sum to 0",
     );
   }
 

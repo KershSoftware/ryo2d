@@ -14,8 +14,9 @@ use crate::core::ecs::Vec2;
 use crate::core::graphics::Image;
 use crate::core::skeleton::{
   Animation, Attachment, BoneSetup, BoundingBoxAttachment, Curve, EventAudio, EventData,
-  EventValues, Frame, Inherit, PointAttachment, Region, RegionAttachment, SkeletonData,
-  SkeletonError, SlotBlend, SlotId, SlotSetup, Timeline,
+  EventValues, Frame, Influence, Inherit, MeshAttachment, MeshVertices, PointAttachment, Region,
+  RegionAttachment, SkeletonData, SkeletonError, SlotBlend, SlotId, SlotSetup, Timeline,
+  WeightedVertices,
 };
 use crate::core::ui::Color;
 
@@ -66,6 +67,25 @@ use crate::core::ui::Color;
 ///       "gear": {
 ///         "muzzle": Point(x: 3, y: 4, rotation: 90),
 ///         "hit": BoundingBox(vertices: [(0, 0), (10, 0), (10, 10)]),
+///         // Hull is how many of the first vertices outline the mesh (0 for none).
+///         // UVs run 0 to 1 across the region; triangles index the vertices
+///         "cape": Mesh(
+///           region: "torso",
+///           uvs: [(0, 0), (1, 0), (1, 1), (0, 1)],
+///           triangles: [0, 1, 2, 0, 2, 3],
+///           hull: 4,                                          // 0
+///           // A vertex is weighted over bones, each (bone, x, y, weight): x and y are
+///           // where it sits in that bone's space, and a vertex's weights are scaled to
+///           // sum to 1. Or unweighted: positions in the slot's bone
+///           vertices: Weighted([
+///             [("torso", -20, 0, 1)],
+///             [("torso", 20, 0, 1)],
+///             [("arm", 20, 0, 0.75), ("torso", 20, 60, 0.25)],
+///             [("arm", -20, 0, 1)],
+///           ]),
+///           color: "#ffffff"),                                // white
+///         "flag": Mesh(region: "torso", uvs: [(0, 0), (1, 0), (1, 1)], triangles: [0, 1, 2],
+///                      vertices: Unweighted([(0, 0), (64, 0), (64, 40)])),
 ///       },
 ///     },
 ///     "red": { "gear": { "gear": Region(region: "gear") } },
@@ -120,9 +140,11 @@ use crate::core::ui::Color;
 /// ```
 ///
 /// A region attachment's `width` and `height` are its region's size when left
-/// out. A draw-order key lists the slots by name. A bone or slot of an
-/// animation, a region's image, an attachment's region and an event key's
-/// event are names the file declares. Unknown fields are refused, so a
+/// out. A mesh's `hull` is 0 when left out, its positions are in pixels (no
+/// angles occur) and a vertex's weights are normalised as it loads. A
+/// draw-order key lists the slots by name. A bone or slot of an animation, a
+/// region's image, an attachment's region, a mesh influence's bone and an
+/// event key's event are names the file declares. Unknown fields are refused, so a
 /// misspelt one fails rather than doing nothing, and so is a name written
 /// twice in one map.
 ///
@@ -426,6 +448,14 @@ struct SlotFile {
   blend: BlendFile,
 }
 
+/// A mesh's vertices: positions in the slot's bone, or each vertex's
+/// influences as (bone, x, y, weight)
+#[derive(Deserialize)]
+enum MeshVerticesFile {
+  Unweighted(Vec<Vec2>),
+  Weighted(Vec<Vec<(String, f32, f32, f32)>>),
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 enum AttachmentFile {
@@ -445,6 +475,16 @@ enum AttachmentFile {
     width: Option<f32>,
     #[serde(default)]
     height: Option<f32>,
+    #[serde(default = "white")]
+    color: ColorFile,
+  },
+  Mesh {
+    region: String,
+    uvs: Vec<Vec2>,
+    triangles: Vec<u16>,
+    #[serde(default)]
+    hull: u16,
+    vertices: MeshVerticesFile,
     #[serde(default = "white")]
     color: ColorFile,
   },
@@ -775,6 +815,43 @@ impl SkeletonFile {
           color: color.0,
         })
       }
+      AttachmentFile::Mesh {
+        region,
+        uvs,
+        triangles,
+        hull,
+        vertices,
+        color,
+      } => {
+        let index = builder
+          .region_index(region)
+          .ok_or_else(|| problem(item, format!("region {region:?} is not in `regions`")))?;
+        let vertices = match vertices {
+          MeshVerticesFile::Unweighted(positions) => MeshVertices::Unweighted(positions.clone()),
+          MeshVerticesFile::Weighted(vertices) => {
+            let mut weighted = Vec::with_capacity(vertices.len());
+            for vertex in vertices {
+              let mut influences = Vec::with_capacity(vertex.len());
+              for (bone, x, y, weight) in vertex {
+                let bone = builder
+                  .bone_id(bone)
+                  .ok_or_else(|| problem(item, format!("bone {bone:?} is not in `bones`")))?;
+                influences.push(Influence::new(bone, *x, *y, *weight));
+              }
+              weighted.push(influences);
+            }
+            MeshVertices::Weighted(WeightedVertices::new(weighted))
+          }
+        };
+        Attachment::Mesh(MeshAttachment {
+          region: index,
+          uvs: uvs.clone(),
+          triangles: triangles.clone(),
+          hull: *hull,
+          vertices,
+          color: color.0,
+        })
+      }
       AttachmentFile::Point { x, y, rotation } => Attachment::Point(PointAttachment {
         x: *x,
         y: *y,
@@ -938,8 +1015,8 @@ mod tests {
   use crate::core::graphics::Image;
   use crate::core::skeleton::{
     Animation, Attachment, BoneId, BoneSetup, BoundingBoxAttachment, Curve, EventAudio, EventData,
-    EventValues, Inherit, PointAttachment, Region, RegionAttachment, SkeletonData, SlotBlend,
-    SlotId, SlotSetup, Timeline,
+    EventValues, Influence, Inherit, MeshAttachment, MeshVertices, PointAttachment, Region,
+    RegionAttachment, SkeletonData, SlotBlend, SlotId, SlotSetup, Timeline, WeightedVertices,
   };
   use crate::core::ui::Color;
 
@@ -1184,7 +1261,26 @@ mod tests {
         "gear": {
           "muzzle": Point(x: 3, y: 4, rotation: 90),
           "hit": BoundingBox(vertices: [(0, 0), (10, 0), (10, 10)]),
+          "cape": Mesh(
+            region: "torso",
+            uvs: [(0, 0), (1, 0), (1, 1), (0, 1)],
+            triangles: [0, 1, 2, 0, 2, 3],
+            hull: 4,
+            vertices: Weighted([
+              [("torso", -20, 0, 1)],
+              [("torso", 20, 0, 1)],
+              [("arm", 20, 0, 0.75), ("torso", 20, 60, 0.25)],
+              [("arm", -20, 0, 1)],
+            ]),
+            color: "#80808080",
+          ),
         },
+        "glow": { "flag": Mesh(
+          region: "head",
+          uvs: [(0, 0), (1, 0), (1, 1), (0, 1)],
+          triangles: [0, 1, 2, 0, 2, 3],
+          vertices: Unweighted([(0, 0), (64, 0), (64, 40), (0, 40)]),
+        ) },
       },
       "red": { "gear": { "gear": Region(region: "gear") } },
       "blue": {},
@@ -1238,6 +1334,15 @@ mod tests {
       duration,
       timelines,
     }
+  }
+
+  fn unit_square() -> Vec<Vec2> {
+    vec![
+      Vec2::new(0.0, 0.0),
+      Vec2::new(1.0, 0.0),
+      Vec2::new(1.0, 1.0),
+      Vec2::new(0.0, 1.0),
+    ]
   }
 
   fn deg(value: f32) -> f32 {
@@ -1385,6 +1490,45 @@ mod tests {
             Vec2::new(10.0, 10.0),
           ],
         }),
+      )
+      .attachment(
+        "default",
+        "gear",
+        "cape",
+        Attachment::Mesh(MeshAttachment {
+          hull: 4,
+          color: Color::new(128, 128, 128, 128),
+          ..MeshAttachment::new(
+            1,
+            MeshVertices::Weighted(WeightedVertices::new([
+              vec![Influence::new(BoneId(1), -20.0, 0.0, 1.0)],
+              vec![Influence::new(BoneId(1), 20.0, 0.0, 1.0)],
+              vec![
+                Influence::new(BoneId(3), 20.0, 0.0, 0.75),
+                Influence::new(BoneId(1), 20.0, 60.0, 0.25),
+              ],
+              vec![Influence::new(BoneId(3), -20.0, 0.0, 1.0)],
+            ])),
+            unit_square(),
+            vec![0, 1, 2, 0, 2, 3],
+          )
+        }),
+      )
+      .attachment(
+        "default",
+        "glow",
+        "flag",
+        Attachment::Mesh(MeshAttachment::new(
+          0,
+          MeshVertices::Unweighted(vec![
+            Vec2::new(0.0, 0.0),
+            Vec2::new(64.0, 0.0),
+            Vec2::new(64.0, 40.0),
+            Vec2::new(0.0, 40.0),
+          ]),
+          unit_square(),
+          vec![0, 1, 2, 0, 2, 3],
+        )),
       )
       .attachment(
         "red",
@@ -1550,6 +1694,122 @@ mod tests {
       assert_eq!(data.mix(from, to), expected.mix(from, to), "{from} {to}");
     }
     assert_eq!(data.skins().len(), 3, "default, red and blue");
+  }
+
+  /// A file with a torso and a head bone, a slot "s" on the torso and the
+  /// skin's attachments `attachments`
+  fn mesh_file(attachments: &str) -> String {
+    format!(
+      r#"(
+        images: {{ "parts": "hero.png" }},
+        regions: {{ "r": (image: "parts", rect: (0, 0, 64, 64)) }},
+        bones: [(name: "torso"), (name: "head", parent: "torso")],
+        slots: [(name: "s", bone: "torso")],
+        skins: {{ "default": {{ "s": {{ {attachments} }} }} }},
+      )"#
+    )
+  }
+
+  #[test]
+  fn a_mesh_attachment_loads_weighted_and_unweighted() {
+    let data = loaded(&mesh_file(
+      r##"
+      "cape": Mesh(
+        region: "r",
+        uvs: [(0, 0), (1, 0), (0.5, 1)],
+        triangles: [0, 1, 2],
+        hull: 3,
+        vertices: Weighted([
+          [("torso", -20, 0, 1)],
+          [("torso", 20, 0, 3), ("head", 0, 10, 1)],
+          [("head", 5, 6, 2)],
+        ]),
+        color: "#ff000080",
+      ),
+      "flag": Mesh(
+        region: "r",
+        uvs: [(0, 0), (1, 0), (1, 1)],
+        triangles: [0, 1, 2],
+        vertices: Unweighted([(0, 0), (64, 0), (64, 40)]),
+      ),
+      "##,
+    ));
+    let skin = &data.skins()[0];
+    let Some(Attachment::Mesh(cape)) = skin.attachment(SlotId(0), "cape") else {
+      panic!("no cape");
+    };
+    assert_eq!((cape.region, cape.hull), (0, 3));
+    assert_eq!(cape.uvs[2], Vec2::new(0.5, 1.0));
+    assert_eq!(cape.triangles, [0, 1, 2]);
+    assert_eq!(cape.color, Color::new(255, 0, 0, 128));
+    assert_eq!((cape.vertex_count(), cape.positions()), (3, 4));
+    let MeshVertices::Weighted(vertices) = &cape.vertices else {
+      panic!("not weighted");
+    };
+    assert_eq!(
+      vertices.influences(1),
+      [
+        Influence::new(BoneId(0), 20.0, 0.0, 0.75),
+        Influence::new(BoneId(1), 0.0, 10.0, 0.25),
+      ]
+    );
+    assert_eq!(
+      vertices.influences(2),
+      [Influence::new(BoneId(1), 5.0, 6.0, 1.0)],
+      "weights are normalised"
+    );
+    let Some(Attachment::Mesh(flag)) = skin.attachment(SlotId(0), "flag") else {
+      panic!("no flag");
+    };
+    assert_eq!((flag.hull, flag.color), (0, Color::WHITE));
+    assert_eq!(
+      flag.vertices,
+      MeshVertices::Unweighted(vec![
+        Vec2::new(0.0, 0.0),
+        Vec2::new(64.0, 0.0),
+        Vec2::new(64.0, 40.0)
+      ])
+    );
+  }
+
+  #[test]
+  fn a_mistake_in_a_mesh_names_its_attachment() {
+    let uvs = "uvs: [(0, 0), (1, 0), (1, 1)]";
+    let flat = "Unweighted([(0, 0), (1, 0), (1, 1)])";
+    let item = r#"skin "default" slot "s" attachment "m""#;
+    for (mesh, reason) in [
+      (
+        format!(r#"Mesh(region: "r", {uvs}, triangles: [0, 1, 3], vertices: {flat})"#),
+        "triangle index 3 is out of range",
+      ),
+      (
+        format!(
+          r#"Mesh(region: "r", {uvs}, triangles: [0, 1, 2], vertices: Weighted([[("torso", 0, 0, 1)], [("torso", 0, 0, 0), ("head", 0, 0, 0)], [("head", 0, 0, 1)]]))"#
+        ),
+        "vertex 1's weights sum to 0",
+      ),
+      (
+        format!(
+          r#"Mesh(region: "r", uvs: [(0, 0), (1, 0)], triangles: [0, 1, 2], vertices: {flat})"#
+        ),
+        "2 UVs for 3 vertices",
+      ),
+      (
+        format!(
+          r#"Mesh(region: "r", {uvs}, triangles: [0, 1, 2], vertices: Weighted([[("torso", 0, 0, 1)], [("tail", 0, 0, 1)], [("head", 0, 0, 1)]]))"#
+        ),
+        r#""tail""#,
+      ),
+      (
+        format!(r#"Mesh(region: "q", {uvs}, triangles: [0, 1, 2], vertices: {flat})"#),
+        r#""q""#,
+      ),
+    ] {
+      let error = failure(&mesh_file(&format!(r#""m": {mesh},"#)));
+      assert!(error.contains(PATH), "{error}");
+      assert!(error.contains(item), "{item} in {error}");
+      assert!(error.contains(reason), "{reason} in {error}");
+    }
   }
 
   #[test]
