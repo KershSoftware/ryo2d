@@ -90,5 +90,8 @@ mod particles;
 #[path = "e2e/skeleton.rs"]
 mod skeleton;
 
+#[path = "e2e/skeleton_mesh.rs"]
+mod skeleton_mesh;
+
 #[path = "e2e/dev_tools.rs"]
 mod dev_tools;
