@@ -304,6 +304,7 @@ Stage 2 builds on the merged core. These are the planner's calls. The owner may 
 - **When a deform applies:** only while its slot shows that attachment and the attachment is a mesh with the key's count of positions.
   - A deform whose slot shows another attachment, or none, does nothing, in silence. That is ordinary play: an attachment key, a crossfade between attachments, a game's own attachment in the slot.
   - Under its own name, an attachment that is not a mesh, or a mesh with another count of positions, is skipped: a region under the same name, a skin's mesh of another shape, or data reloaded with a different count. Nothing is drawn wrong, and one warning is given per skeleton per animation.
+  - A deform that names an attachment no skin has under its slot fails to load, with the animation, the slot and the attachment named: it could never apply.
 - **Reset:** the offsets return to zero when the slot's attachment changes.
 - **Interpolation:** deform offsets are blended between steps at draw time, as bones are.
 

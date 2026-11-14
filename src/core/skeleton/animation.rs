@@ -98,7 +98,8 @@ pub enum Timeline {
   /// bone; a weighted mesh has one an influence, in that influence's bone's
   /// space, so a keyed shape turns with the bones it rides. An empty key is
   /// no offset: the setup shape. Every other key of a timeline is one
-  /// length.
+  /// length. `attachment` must be a name some skin has in the slot, or the
+  /// data does not build.
   ///
   /// It moves the mesh only while the slot shows that name and the
   /// attachment found there is a mesh holding as many positions as the

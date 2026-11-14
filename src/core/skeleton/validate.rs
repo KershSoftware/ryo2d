@@ -359,6 +359,7 @@ pub(super) fn build(builder: SkeletonDataBuilder) -> Result<SkeletonData, Skelet
       let counts = Counts {
         bones: &bones,
         slots: &slots,
+        skins: &skins,
         events: events.len(),
       };
       timeline_ok(item, timeline, animation.duration, counts, &mut keyed)?;
@@ -534,16 +535,19 @@ fn mix_duration(item: impl Fn() -> String, duration: f32) -> Result<(), Skeleton
   Ok(())
 }
 
-/// The bones and slots a timeline may refer to, and how many events
+/// The bones and slots a timeline may refer to, the skins (whose
+/// attachments a deform names), and how many events
 #[derive(Clone, Copy)]
 struct Counts<'a> {
   bones: &'a [BoneData],
   slots: &'a [SlotData],
+  skins: &'a [Skin],
   events: usize,
 }
 
-/// Checks one timeline: its bone, slot or events exist; no earlier timeline
-/// of the animation keys the same property of the same target (`keyed`
+/// Checks one timeline: its bone, slot or events exist, and a deform's
+/// attachment is a name some skin has in its slot; no earlier timeline of
+/// the animation keys the same property of the same target (`keyed`
 /// collects them); it has keys, at finite times from 0 to the animation's
 /// duration, in order (strictly, but event keys may share a time); and its
 /// values and curves are good
@@ -573,6 +577,23 @@ fn timeline_ok<'a>(
           "slot {} is out of range; there are {} slots",
           slot.0,
           counts.slots.len()
+        ),
+      ));
+    }
+    // A deform moves what its slot shows under a name, and a slot can only
+    // show what a skin has in it: under a name no skin has there, the
+    // deform could never apply
+    Target::Attachment(slot, name)
+      if !counts
+        .skins
+        .iter()
+        .any(|skin| skin.attachment(slot, name).is_some()) =>
+    {
+      return Err(error(
+        item(),
+        format!(
+          "no skin has an attachment {name:?} in slot {:?}; a deform moves the attachment its slot shows under that name",
+          &*counts.slots[slot.index()].name
         ),
       ));
     }
@@ -1549,6 +1570,16 @@ mod tests {
 
   const WAVE_DEFORM: &str = r#"animation "wave" timeline 0 (deform)"#;
 
+  /// [`rig`] with what the deform tests' timelines name, in the default
+  /// skin: a "flag" and a "pennant" in the hat's slot, and a "flag" in the
+  /// hand's. They are points: a deform's attachment is checked by name
+  fn flagged() -> SkeletonDataBuilder {
+    rig()
+      .attachment("default", "hat", "flag", point(1.0))
+      .attachment("default", "hat", "pennant", point(2.0))
+      .attachment("default", "hand", "flag", point(3.0))
+  }
+
   /// A deform timeline of `attachment` in slot `slot`, keyed linearly
   fn deform(slot: u8, attachment: &str, keys: &[(f32, &[f32])]) -> Timeline {
     Timeline::Deform {
@@ -1565,7 +1596,7 @@ mod tests {
   fn two_deform_timelines_for_one_slot_and_name_fail() {
     let flag = |slot: u8, name: &str| deform(slot, name, &[(0.0, &[1.0, 2.0])]);
     fails(
-      rig().animation(wave(vec![flag(1, "flag"), flag(1, "flag")])),
+      flagged().animation(wave(vec![flag(1, "flag"), flag(1, "flag")])),
       r#"animation "wave" timeline 1 (deform)"#,
       "another timeline already keys slot \"hat\"'s \"flag\" deform",
     );
@@ -1586,7 +1617,7 @@ mod tests {
         frames: vec![(0.0, crate::core::ui::Color::WHITE, Curve::Linear)],
       },
     ];
-    let data = rig().animation(wave(beside)).build();
+    let data = flagged().animation(wave(beside)).build();
     assert!(data.is_ok(), "{data:?}");
   }
 
@@ -1602,7 +1633,9 @@ mod tests {
     ];
     let still: &[(f32, &[f32])] = &[(0.0, &[]), (1.0, &[])];
     for keys in [wavy, still] {
-      let data = rig().animation(wave(vec![deform(1, "flag", keys)])).build();
+      let data = flagged()
+        .animation(wave(vec![deform(1, "flag", keys)]))
+        .build();
       assert!(data.is_ok(), "{data:?}");
     }
     let uneven: &[(f32, &[f32])] = &[
@@ -1612,7 +1645,7 @@ mod tests {
       (1.0, &[1.0, 2.0]),
     ];
     fails(
-      rig().animation(wave(vec![deform(1, "flag", uneven)])),
+      flagged().animation(wave(vec![deform(1, "flag", uneven)])),
       WAVE_DEFORM,
       "key 3 holds 2 values where key 1 holds 4",
     );
@@ -1623,7 +1656,7 @@ mod tests {
     // A key holds an x and a y for each position: three numbers are no
     // whole count of them, whatever mesh the slot shows
     fails(
-      rig().animation(wave(vec![deform(1, "flag", &[(0.0, &[1.0, 2.0, 3.0])])])),
+      flagged().animation(wave(vec![deform(1, "flag", &[(0.0, &[1.0, 2.0, 3.0])])])),
       WAVE_DEFORM,
       "key 0 holds 3 values",
     );
@@ -1633,7 +1666,11 @@ mod tests {
   fn a_deform_timeline_is_checked_as_every_timeline_is() {
     let key: &[f32] = &[1.0, 2.0];
     let failing = |timeline: Timeline, reason: &str| {
-      fails(rig().animation(wave(vec![timeline])), WAVE_DEFORM, reason);
+      fails(
+        flagged().animation(wave(vec![timeline])),
+        WAVE_DEFORM,
+        reason,
+      );
     };
     // Its slot exists
     failing(deform(2, "flag", &[(0.0, key)]), "slot 2 is out of range");
@@ -1665,6 +1702,58 @@ mod tests {
       };
     }
     failing(curved, "within 0 to 1");
+  }
+
+  #[test]
+  fn a_deform_naming_an_attachment_no_skin_has_in_its_slot_fails() {
+    let key: &[f32] = &[1.0, 2.0];
+    let naming = |slot: u8, name: &str| wave(vec![deform(slot, name, &[(0.0, key)])]);
+    // A deform moves what its slot shows under a name. A name no skin has
+    // in that slot can never be shown there, so the deform could never
+    // apply: a misspelt name, which would otherwise do nothing in silence
+    let error = flagged()
+      .animation(naming(1, "flagg"))
+      .build()
+      .expect_err("a name no skin has");
+    assert_eq!(error.item, WAVE_DEFORM);
+    assert_eq!(
+      error.problem,
+      "no skin has an attachment \"flagg\" in slot \"hat\"; a deform moves the attachment its slot shows under that name"
+    );
+    // A name that exists only under another slot: the pennant is the
+    // hat's, not the hand's
+    fails(
+      flagged().animation(naming(0, "pennant")),
+      WAVE_DEFORM,
+      "no skin has an attachment \"pennant\" in slot \"hand\"",
+    );
+    // Keys that are all empty would fit any mesh, and must name one all
+    // the same
+    let empty = wave(vec![deform(1, "flagg", &[(0.0, &[])])]);
+    fails(
+      flagged().animation(empty),
+      WAVE_DEFORM,
+      "no skin has an attachment \"flagg\" in slot \"hat\"",
+    );
+    // And a skeleton whose skins hold nothing
+    fails(
+      rig().animation(naming(1, "flag")),
+      WAVE_DEFORM,
+      "no skin has an attachment \"flag\" in slot \"hat\"",
+    );
+    // A name only a skin other than the default has in the slot is one
+    // the slot can show
+    let dressed = rig()
+      .skin("red")
+      .attachment("red", "hat", "plume", point(1.0))
+      .animation(naming(1, "plume"))
+      .build();
+    assert!(dressed.is_ok(), "{dressed:?}");
+    // Only the name is checked. What is found under it (here a point),
+    // and whether a mesh there holds the keys' count, is the skins' to
+    // decide as the deform plays
+    let named = flagged().animation(naming(1, "flag")).build();
+    assert!(named.is_ok(), "{named:?}");
   }
 
   // Durations and mixes

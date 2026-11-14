@@ -2502,7 +2502,8 @@ fn skipped(log: &ryo2d::testing::LogCapture) -> usize {
 
 /// The banner as a file, with `flag` written as its slot's attachments in
 /// the default skin (the flag as a mesh of four or six corners, as a
-/// region, or nothing); "wave" keys the flag's deform for four positions
+/// region, or nothing, which no longer loads); "wave" keys the flag's
+/// deform for four positions
 fn banner_file(flag: &str) -> String {
   format!(
     r#"(
@@ -2574,22 +2575,73 @@ fn a_reload_that_changes_a_mesh_s_vertex_count_skips_its_deform() {
   save(&mut engine, &files, &data, banner_file(FLAG_OF_FOUR));
   engine.step_frames(3).expect("frames");
   near_all(&flag(&engine), &flag_at(at, &FLAG, &WAVE, 1.0));
-  // The flag made a region, which no deform moves, and then taken out of
-  // the skin, so that the slot shows nothing: nothing panics, and the log
-  // has been told of this skeleton's "wave" already
+  // The flag made a region under the same name, which no deform moves:
+  // the slot shows the region, the deform is skipped and nothing panics.
+  // The log has been told of this skeleton's "wave" already
   save(&mut engine, &files, &data, banner_file(FLAG_AS_A_REGION));
   engine.step_frames(3).expect("frames");
   assert!(flag(&engine).is_empty());
-  save(&mut engine, &files, &data, banner_file(""));
-  engine.step_frames(3).expect("frames");
-  assert!(flag(&engine).is_empty());
-  assert_eq!(skeleton(&engine, banner).attachment("banner"), None);
-  // And back once more
+  assert_eq!(skeleton(&engine, banner).attachment("banner"), Some("flag"));
+  assert_eq!(skipped(&log), 1, "{:?}", log.warnings());
+
+  // A save that takes the flag out of its skin and leaves its deform does
+  // not load: the deform names an attachment no skin has in its slot. The
+  // reload fails, naming the deform, the data stays as it last loaded, and
+  // the skeleton plays on with it
+  let good = version(&engine, &data);
+  let error = save_broken(&mut engine, &files, &data, banner_file(""));
+  for part in [
+    PATH,
+    "animation \"wave\" timeline 0 (deform)",
+    "no skin has an attachment \"flag\" in slot \"banner\"",
+  ] {
+    assert!(error.contains(part), "{part} in {error}");
+  }
+  assert_eq!(version(&engine, &data), good);
+  let before = track_time(&engine, banner, wave);
+  engine.step_frames(6).expect("frames");
+  assert!(track_time(&engine, banner, wave) > before, "it plays on");
+  assert_eq!(animation(&engine, banner).current(0), Some(wave));
+  assert_eq!(
+    skeleton(&engine, banner).attachment("banner"),
+    Some("flag"),
+    "the region of the last good save"
+  );
+  // And a good save lands as ever: four corners, moved by the deform
   save(&mut engine, &files, &data, banner_file(FLAG_OF_FOUR));
   engine.step_frames(3).expect("frames");
   near_all(&flag(&engine), &flag_at(at, &FLAG, &WAVE, 1.0));
   assert_eq!(skipped(&log), 1, "{:?}", log.warnings());
   assert_eq!(animation(&engine, banner).current(0), Some(wave));
+}
+
+/// Saves `text`, which must not load, over the skeleton's file and runs
+/// frames until its reload has failed: the error it failed with
+fn save_broken(
+  engine: &mut HeadlessEngine,
+  files: &MemorySource,
+  data: &Handle<SkeletonData>,
+  text: String,
+) -> String {
+  let mut events = Inbox::<AssetEvent<SkeletonData>>::new(engine);
+  files.insert(PATH, text);
+  engine.world().resource::<AssetServer>().reload(PATH);
+  let start = Instant::now();
+  loop {
+    assert!(
+      start.elapsed() < Duration::from_secs(5),
+      "the reload neither landed nor failed"
+    );
+    std::thread::sleep(Duration::from_millis(1));
+    engine.step().expect("a frame");
+    for event in events.take(engine) {
+      match event {
+        AssetEvent::ReloadFailed { id, error } if id == data.id() => return error.report(),
+        AssetEvent::Modified { id } if id == data.id() => panic!("the broken save loaded"),
+        _ => {}
+      }
+    }
+  }
 }
 
 #[test]

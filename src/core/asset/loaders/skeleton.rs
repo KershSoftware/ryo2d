@@ -148,13 +148,15 @@ use crate::core::ui::Color;
 /// A region attachment's `width` and `height` are its region's size when left
 /// out. A mesh's `hull` is 0 when left out, its positions are in pixels (no
 /// angles occur) and a vertex's weights are normalised as it loads. A
-/// deform's keys are each empty or one length, an x and a y for each
-/// position; that they fit a mesh is found when the animation plays, since
-/// the skins worn decide which mesh a name shows, and a deform that does
-/// not fit is skipped with one warning. A draw-order key lists the slots by
-/// name. A bone or slot of an animation, a
-/// region's image, an attachment's region, a mesh influence's bone and an
-/// event key's event are names the file declares. Unknown fields are refused, so a
+/// deform names an attachment some skin has in its slot, and its keys are
+/// each empty or one length, an x and a y for each position; that they fit
+/// a mesh is found when the animation plays, since the skins worn decide
+/// what a name shows, and a deform that does not fit the attachment of
+/// its name is skipped with one warning. A draw-order key lists the slots
+/// by name. A bone or slot of an animation, a
+/// region's image, an attachment's region, a mesh influence's bone, a
+/// deform's attachment (in its slot, in some skin) and an event key's event
+/// are names the file declares. Unknown fields are refused, so a
 /// misspelt one fails rather than doing nothing, and so is a name written
 /// twice in one map.
 ///
@@ -1815,8 +1817,9 @@ mod tests {
   }
 
   /// A pole with a slot "banner" showing "flag", a mesh of four vertices,
-  /// and a bare slot "spare"; `slots` is the slots block of its one
-  /// animation, "wave"
+  /// which can show "pennant", a region; and a slot "spare" that shows
+  /// nothing and can show a point, "flag". `slots` is the slots block of
+  /// its one animation, "wave"
   fn banner_file(slots: &str) -> String {
     format!(
       r#"(
@@ -1824,10 +1827,14 @@ mod tests {
         regions: {{ "r": (image: "parts", rect: (0, 0, 64, 64)) }},
         bones: [(name: "pole")],
         slots: [(name: "banner", bone: "pole", attachment: "flag"), (name: "spare", bone: "pole")],
-        skins: {{ "default": {{ "banner": {{
-          "flag": Mesh(region: "r", uvs: [(0, 0), (1, 0), (1, 1), (0, 1)], triangles: [0, 1, 2, 0, 2, 3],
-                       vertices: Unweighted([(0, 0), (64, 0), (64, 40), (0, 40)])),
-        }} }} }},
+        skins: {{ "default": {{
+          "banner": {{
+            "flag": Mesh(region: "r", uvs: [(0, 0), (1, 0), (1, 1), (0, 1)], triangles: [0, 1, 2, 0, 2, 3],
+                         vertices: Unweighted([(0, 0), (64, 0), (64, 40), (0, 40)])),
+            "pennant": Region(region: "r"),
+          }},
+          "spare": {{ "flag": Point() }},
+        }} }},
         animations: {{ "wave": (duration: 1.0, slots: {{ {slots} }}) }},
       )"#
     )
@@ -1892,6 +1899,18 @@ mod tests {
           unit_square(),
           vec![0, 1, 2, 0, 2, 3],
         )),
+      )
+      .attachment(
+        "default",
+        "banner",
+        "pennant",
+        Attachment::Region(RegionAttachment::new(0, 64.0, 64.0)),
+      )
+      .attachment(
+        "default",
+        "spare",
+        "flag",
+        Attachment::Point(PointAttachment::default()),
       );
     let (banner, spare) = (
       builder.slot_id("banner").expect("a slot"),
@@ -1939,8 +1958,9 @@ mod tests {
     assert_eq!(data.slots(), expected.slots());
 
     // That a deform's keys fit a mesh is found when it plays, as the skin
-    // worn decides the mesh; what can be checked in the file is, naming
-    // the animation and its timeline
+    // worn decides the mesh (the pennant here is a region, and the spare
+    // slot's flag a point); what can be checked in the file is, naming the
+    // animation and its timeline
     for (slots, item, reason) in [
       (
         r#""banner": (deform: { "flag": [(0.0, [1, 2, 3, 4]), (1.0, [1, 2])] })"#,
@@ -1966,6 +1986,16 @@ mod tests {
         r#""flagpole": (deform: { "flag": [(0.0, [])] })"#,
         r#"animation "wave""#,
         r#""flagpole" is not a slot"#,
+      ),
+      (
+        r#""banner": (deform: { "flagg": [(0.0, [1, 2])] })"#,
+        r#"animation "wave" timeline 0 (deform)"#,
+        r#"no skin has an attachment "flagg" in slot "banner""#,
+      ),
+      (
+        r#""spare": (deform: { "pennant": [(0.0, [])] })"#,
+        r#"animation "wave" timeline 0 (deform)"#,
+        r#"no skin has an attachment "pennant" in slot "spare""#,
       ),
     ] {
       let error = failure(&banner_file(slots));
@@ -2087,6 +2117,11 @@ mod tests {
         r#"(mixes: { pairs: [("x", "y", 0.1)] })"#,
         r#"mix "x" to "y""#,
         "not an animation",
+      ),
+      (
+        r#"(bones: [(name: "a")], slots: [(name: "s", bone: "a")], skins: { "default": { "s": { "flag": Point() } } }, animations: { "w": (duration: 1.0, slots: { "s": (deform: { "flagg": [(0.0, [])] }) }) })"#,
+        r#"animation "w" timeline 0 (deform)"#,
+        r#"no skin has an attachment "flagg" in slot "s""#,
       ),
     ] {
       let error = failure(text);
