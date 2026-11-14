@@ -1010,3 +1010,59 @@ fn a_zero_area_triangle_draws_nothing() {
     panic!("without the triangles of no area and with them: {differs}");
   }
 }
+
+#[test]
+fn each_camera_draws_the_meshes_it_sees_with_their_own_instances() {
+  const WHITE: [u8; 4] = [255, 255, 255, 255];
+  // Two cameras, each on half the window, looking at places far apart. At
+  // each a sprite and then a mesh of one red image: flashed white at the
+  // left one, a green silhouette at the right one. So each camera's own
+  // stretch of the instances holds a sprite's and then a mesh's
+  let scene = Fixture {
+    setup: |ctx| {
+      ctx.look().tonemap = Tonemap::Clamp;
+      let [r, g, b, a] = RED;
+      let red = ctx.assets().add(Image::solid_rect(12, 12, r, g, b, a));
+      let [r, g, b, a] = BLUE;
+      let blue = ctx.assets().add(Image::solid_rect(6, 6, r, g, b, a));
+      let [r, g, b, _] = GREEN;
+      let places = [
+        (-1000.0, SpriteEffect::flash(Color::WHITE, 1.0)),
+        (1000.0, SpriteEffect::silhouette(Color::rgb(r, g, b))),
+      ];
+      for (x, effect) in places {
+        ctx.world.spawn((
+          Transform::from_xy(x - 11.0, 0.0),
+          Renderable::image(blue.clone()),
+        ));
+        ctx.world.spawn((
+          Transform::from_xy(x, 0.0),
+          Renderable::image(red.clone()).with_shader(SpriteShader::BuiltIn(effect)),
+          whole_mesh(12, 12, false, false),
+        ));
+      }
+      ctx.camera().set_position(-1000.0, 0.0);
+      ctx.camera().set_viewport(Viewport::new(0.0, 0.0, 0.5, 1.0));
+      ctx.world.spawn((
+        Transform::from_xy(1000.0, 0.0),
+        Camera2d {
+          viewport: Viewport::new(0.5, 0.0, 0.5, 1.0),
+          order: 1,
+          ..Default::default()
+        },
+      ));
+    },
+  };
+  let Some(mut engine) = engine(EngineBuilder::new().resolution(64, 32).start_scene(scene)) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  let frame = engine.frame().unwrap();
+  let at = |x: u32| frame.get_pixel(x, 16).0;
+  // The main camera's view is the window's, drawn into its half of it at
+  // half the width; the second camera's is its own half
+  assert_eq!(at(10), BLUE, "the left camera's sprite");
+  assert_eq!(at(16), WHITE, "the left camera's mesh, flashed");
+  assert_eq!(at(37), BLUE, "the right camera's sprite");
+  assert_eq!(at(48), GREEN, "the right camera's mesh, a silhouette");
+}
