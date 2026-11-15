@@ -72,11 +72,12 @@ pub(crate) struct StepState {
 /// so each entity's `GlobalTransform` is this step's, and before
 /// particles). Each enabled skeleton whose data has loaded, in entity
 /// order: its animation state advances by the step and poses it, the
-/// game's attachments and bone overrides are put over that, its bones'
-/// world transforms are computed under its entity's (mirrored as its
-/// `Renderable` flips it), its sockets (and what is below them) are placed
-/// on their bones, and its events and track events are written. One whose
-/// data is still loading waits, silently
+/// game's attachments and bone overrides are put over that, its data's
+/// constraints move their bones, its bones' world transforms are computed
+/// under its entity's (mirrored as its `Renderable` flips it), its sockets
+/// (and what is below them) are placed on their bones, and its events and
+/// track events are written. One whose data is still loading waits,
+/// silently
 #[allow(clippy::too_many_arguments)] // a resource, query or writer per input
 pub(crate) fn update_skeletons(
   time: Option<Res<Time>>,
@@ -294,9 +295,10 @@ pub(crate) fn pose_new_skeletons(
 
 /// A skeleton on another's socket was posed where it stood before the
 /// socket moved it, if its turn came first: the bones of each skeleton in
-/// `moved` are computed again where it now stands, and its own sockets
-/// follow. One so moved may move another in turn. A hierarchy has no
-/// cycles, so the list ends; the bound is against one that has
+/// `moved` are computed again where it now stands, its overrides and
+/// constraints applied afresh, and its own sockets follow. One so moved
+/// may move another in turn. A hierarchy has no cycles, so the list ends;
+/// the bound is against one that has
 fn place_moved(
   skeletons: &mut Skeletons,
   placed: &mut Placed,

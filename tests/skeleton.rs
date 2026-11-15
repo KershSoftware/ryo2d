@@ -579,6 +579,88 @@ fn a_socket_child_s_children_follow_in_the_same_step() {
   );
 }
 
+/// An arm of two parts, 40 and 30 long, lying along x from the skeleton's
+/// origin: "arm" and its child "hand", whose tip the constraint "reach"
+/// brings to the bone "goal"
+fn reaching() -> SkeletonData {
+  let part = |x: f32, length: f32| BoneSetup {
+    x,
+    length,
+    ..BoneSetup::default()
+  };
+  SkeletonData::builder()
+    .bone("root", None, BoneSetup::default())
+    .bone("arm", Some("root"), part(0.0, 40.0))
+    .bone("hand", Some("arm"), part(40.0, 30.0))
+    .bone("goal", Some("root"), part(70.0, 0.0))
+    .ik("reach", &["arm", "hand"], "goal", IkSetup::default())
+    .build()
+    .expect("a valid skeleton")
+}
+
+#[test]
+fn a_socket_on_a_constrained_bone_follows_it_in_the_same_step() {
+  let Some(mut engine) = engine() else {
+    return;
+  };
+  let data = engine.assets().add(reaching());
+  let body = spawn(
+    &mut engine,
+    &data,
+    Transform::from_xy(40.0, 30.0).with_rotation(0.3),
+  );
+  // A socket at the tip of the arm's second part, which the constraint
+  // brings to the target
+  let offset = Transform::from_xy(30.0, 0.0);
+  let socket = engine
+    .world_mut()
+    .spawn((
+      BoneSocket::new("hand").with_offset(offset),
+      Watch,
+      ChildOf(body),
+    ))
+    .id();
+  let mut last = None;
+  for step in 0..12 {
+    // The entity moves and turns in this step, and the game puts the
+    // target at another point in the world: 50 from the shoulder, which is
+    // the entity's origin, so within the arm's reach
+    let moved = {
+      let mut transform = engine
+        .world_mut()
+        .get_mut::<Transform>(body)
+        .expect("the skeleton's transform");
+      transform.translation += Vec2::new(3.0, -2.0);
+      transform.rotation += 0.05;
+      *transform
+    };
+    let target = moved.translation + Vec2::from_angle(step as f32 * 0.5) * 50.0;
+    let put = BoneOverride {
+      translation: Some(target),
+      space: BoneSpace::World,
+      ..BoneOverride::default()
+    };
+    skeleton_mut(&mut engine, body).override_bone("goal", put);
+    engine.step().expect("a frame");
+    // Inside the step, before particles: the constraint has brought the
+    // arm to this step's target, and the socket is on the hand, at its tip
+    let seen = in_step(&engine);
+    let hand = seen.bone(body, "hand");
+    let at = seen.global(socket);
+    same(at, hand * offset.to_affine());
+    assert!(
+      at.translation.distance(target) < 0.01,
+      "step {step}: the socket is at {}, the target at {target}",
+      at.translation
+    );
+    assert_ne!(last, Some(hand), "the hand moved");
+    last = Some(hand);
+    // After the frame, propagation having run again, it is exactly there
+    assert_eq!(global(&engine, socket), at);
+    assert_eq!(bone(&engine, body, "hand"), hand);
+  }
+}
+
 #[test]
 fn events_reach_the_game_as_messages_in_time_order() {
   let Some(mut engine) = engine() else {

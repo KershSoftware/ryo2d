@@ -8,7 +8,8 @@ use glam::{Affine2, Mat2, Vec2};
 
 use super::apply::shortest;
 use super::attachment::Attachment;
-use super::data::{BoneId, DataVersion, SkeletonData, SkeletonIndex, SlotId};
+use super::constrain::{Constrained, constrain};
+use super::data::{BoneId, BoneSet, DataVersion, SkeletonData, SkeletonIndex, SlotId};
 use super::pose::{BonePose, Pose};
 use super::scope::SkeletonStore;
 use super::state::{FiredEvent, FiredTrackEvent, SkeletonAnimation};
@@ -122,11 +123,11 @@ struct SetAttachment {
 /// A bone override the game set, with the bone's pose as animation left it
 /// in the last step
 #[derive(Debug, Clone)]
-struct SetOverride {
+pub(super) struct SetOverride {
   bone: Arc<str>,
-  id: Option<BoneId>,
-  value: BoneOverride,
-  animated: Option<BonePose>,
+  pub(super) id: Option<BoneId>,
+  pub(super) value: BoneOverride,
+  pub(super) animated: Option<BonePose>,
 }
 
 /// What a skeleton's step fired: the event keys its animations crossed, in
@@ -138,24 +139,8 @@ pub(crate) struct Fired {
 }
 
 /// Which bones of a new pose took their last world transform from the pose
-/// before it (a skeleton has at most 255 bones)
-#[derive(Debug, Clone, Copy, Default)]
-struct Carried([u64; 4]);
-
-impl Carried {
-  fn set(&mut self, bone: usize) {
-    if let Some(word) = self.0.get_mut(bone / 64) {
-      *word |= 1 << (bone % 64);
-    }
-  }
-
-  fn has(&self, bone: usize) -> bool {
-    self
-      .0
-      .get(bone / 64)
-      .is_some_and(|word| word & (1 << (bone % 64)) != 0)
-  }
-}
+/// before it
+type Carried = BoneSet;
 
 /// Which way a skeleton is mirrored about its entity's origin: the flips of
 /// the [`Renderable`] that draws it
@@ -283,6 +268,9 @@ pub struct Skeleton {
   attachments: Vec<SetAttachment>,
   /// In bone order (parents first), those of bones the data lacks last
   overrides: Vec<SetOverride>,
+  /// What applying the data's constraints keeps from step to step; nothing
+  /// for data without constraints
+  pub(super) constrained: Constrained,
   /// The data's id and version that the pose and the names' places were
   /// made from
   seen: Option<DataVersion>,
@@ -319,6 +307,7 @@ impl Skeleton {
       skins: Vec::new(),
       attachments: Vec::new(),
       overrides: Vec::new(),
+      constrained: Constrained::default(),
       seen: None,
       index: None,
       pose: Pose::default(),
@@ -681,10 +670,11 @@ impl Skeleton {
   /// name's place in it. Then: the animation state advances by `dt` and
   /// poses the skeleton (without one it holds its setup pose), the game's
   /// attachments are put over that, the animations' deform keys move the
-  /// meshes the slots then show, the game's bone overrides are applied, and
-  /// the bones' world transforms are computed where it stands (`stand`:
-  /// under the entity's transform, mirrored as its renderable flips it).
-  /// The event keys crossed and the track events are pushed onto `fired`
+  /// meshes the slots then show, the game's bone overrides are applied,
+  /// the data's constraints move their bones, in order, and the bones'
+  /// world transforms are computed where it stands (`stand`: under the
+  /// entity's transform, mirrored as its renderable flips it). The event
+  /// keys crossed and the track events are pushed onto `fired`
   pub(crate) fn step(
     &mut self,
     data: &SkeletonData,
@@ -746,9 +736,9 @@ impl Skeleton {
   /// The end of a step and of a pose outside one: what the game set is put
   /// over the animation's result, the deform keys of `animation`, which
   /// posed it, move the meshes its slots then show, and the bones are
-  /// placed where it stands. After new data (`carried`), a bone with no
-  /// transform from the pose before takes its current one as its previous
-  /// one
+  /// placed where it stands, the data's constraints applied. After new
+  /// data (`carried`), a bone with no transform from the pose before takes
+  /// its current one as its previous one
   fn finish(
     &mut self,
     data: &SkeletonData,
@@ -780,6 +770,7 @@ impl Skeleton {
         .id
         .and_then(|bone| self.pose.bones.get(bone.index()).copied());
     }
+    self.constrained.keep(&self.pose);
     self.place(data, stand);
     if let Some(carried) = carried {
       // A bone with no transform from the pose before draws where it is
@@ -798,9 +789,12 @@ impl Skeleton {
   /// Computes the bones' world transforms again where it now stands, with
   /// the pose it has: the entity was moved after its skeleton's step (it
   /// sits on another skeleton's socket), or was flipped while no step
-  /// runs. The bone overrides are applied afresh, as a world-space one
-  /// depends on where it stands
+  /// runs. The bone overrides and the constraints are applied afresh, from
+  /// the bones' own values as animation left them: a world-space override
+  /// depends on where it stands, and a constraint on where that puts its
+  /// target. So it gives the pose a step gives there, however often it runs
   pub(crate) fn place_again(&mut self, data: &SkeletonData, stand: Stand) {
+    self.constrained.restore(&mut self.pose);
     for set in &self.overrides {
       if let (Some(bone), Some(animated)) = (set.id, set.animated)
         && let Some(pose) = self.pose.bones.get_mut(bone.index())
@@ -813,16 +807,38 @@ impl Skeleton {
 
   /// Applies the bone overrides and computes the bones' transforms, in one
   /// pass from the roots out: a world-space override is converted through
-  /// its bone's parent, which is placed by then, overrides and all
+  /// its bone's parent, which is placed by then, overrides and all. Data
+  /// with constraints then has them applied, in order, to the bones as
+  /// that pass placed them in the skeleton's space, before the bones are
+  /// put in the world
   fn place(&mut self, data: &SkeletonData, stand: Stand) {
     self.root = stand.root;
     self.flip = stand.flip;
     let root = stand.affine();
-    // Those of bones the data has come first: with none, the plain pass
-    if self.overrides.first().is_none_or(|set| set.id.is_none()) {
-      self.pose.compute_world(data, root);
+    if data.constraints().is_empty() {
+      // Those of bones the data has come first: with none, the plain pass
+      if self.overrides.first().is_none_or(|set| set.id.is_none()) {
+        self.pose.compute_world(data, root);
+        return;
+      }
+      self.place_overridden(data, root);
+      self.pose.apply_root(root);
       return;
     }
+    self.place_overridden(data, root);
+    constrain(
+      &mut self.pose,
+      data,
+      root,
+      &self.overrides,
+      &mut self.constrained,
+    );
+    self.pose.apply_root(root);
+  }
+
+  /// Places every bone in the skeleton's space, parents first, each bone
+  /// the game overrides set just before it is placed
+  fn place_overridden(&mut self, data: &SkeletonData, root: Affine2) {
     let mut next = 0;
     for bone in 0..data.bones().len() {
       if let Some(set) = self.overrides.get(next)
@@ -833,16 +849,16 @@ impl Skeleton {
       }
       self.pose.place_bone(data, bone);
     }
-    self.pose.apply_root(root);
   }
 
-  /// Makes the pose anew for `data` and finds each kept name's place in
-  /// it. A bone the pose before had, by name, keeps its last transform in
-  /// the skeleton's space as its previous one; the rest are marked not
-  /// carried
+  /// Makes the pose anew for `data`, with what applying its constraints
+  /// keeps, and finds each kept name's place in it. A bone the pose before
+  /// had, by name, keeps its last transform in the skeleton's space as its
+  /// previous one; the rest are marked not carried
   fn rebuild(&mut self, data: &SkeletonData) -> Carried {
     let index = data.index().clone();
     let pose = Pose::setup(data);
+    self.constrained = Constrained::new(data);
     let mut previous = vec![Affine2::IDENTITY; data.bones().len()];
     let mut carried = Carried::default();
     if let Some(old) = &self.index {
@@ -999,7 +1015,7 @@ fn skeleton_inserted(mut world: DeferredWorld, context: HookContext) {
 /// through the frame that carries the bone's own direction to the world.
 /// One that cannot be converted (the frame is flat: a zero scale above the
 /// bone) is left out
-fn apply_override(
+pub(super) fn apply_override(
   pose: &mut Pose,
   data: &SkeletonData,
   bone: usize,
@@ -1050,7 +1066,7 @@ fn apply_override(
 }
 
 /// Whether points and directions can be converted back through `linear`
-fn invertible(linear: Mat2) -> bool {
+pub(super) fn invertible(linear: Mat2) -> bool {
   let determinant = linear.determinant();
   determinant.is_finite() && determinant.abs() > FLAT
 }

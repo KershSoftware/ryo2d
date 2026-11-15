@@ -91,13 +91,6 @@ impl IkValues {
 /// Only the bone's rotation and scale are written. Nothing is, when the mix
 /// is 0 or less, when the target is on the bone's origin, or when any value
 /// given, or any that would be written, is not finite
-#[cfg_attr(
-  not(test),
-  expect(
-    dead_code,
-    reason = "a skeleton's step applies its IK constraints; until it does, only tests solve one"
-  )
-)]
 pub(crate) fn one_bone(
   bone: &mut BonePose,
   length: f32,
@@ -176,7 +169,7 @@ pub(crate) fn one_bone(
 /// `1 + (distance / reach - 1) × mix`, and both parts are laid along the
 /// line to the target on `first` as stretched. The tip is then on the
 /// target when `second` lies on `first`'s axis or with `uniform`, and
-/// otherwise on the line, a little short of the target or past it.
+/// otherwise on the line, a little short of the target.
 ///
 /// Exact when `first` scales every direction alike. When its own scale is
 /// uneven or it is sheared, part two's length changes as `second` turns.
@@ -191,13 +184,6 @@ pub(crate) fn one_bone(
 /// any that would be written, is not finite. When `second` sits on
 /// `first`'s origin, `first` is left as it is and `second` points at the
 /// target
-#[cfg_attr(
-  not(test),
-  expect(
-    dead_code,
-    reason = "a skeleton's step applies its IK constraints; until it does, only tests solve one"
-  )
-)]
 pub(crate) fn two_bones(
   first: &mut BonePose,
   second: &mut BonePose,
@@ -363,13 +349,6 @@ pub(crate) fn two_bones(
 ///
 /// `joints` is scratch the caller keeps. It is cleared and filled here,
 /// and a run takes no more room than a run with as many bones took before
-#[cfg_attr(
-  not(test),
-  expect(
-    dead_code,
-    reason = "a skeleton's step applies its IK constraints; until it does, only tests solve one"
-  )
-)]
 pub(crate) fn chain(
   bones: &mut [BonePose],
   length: f32,
@@ -2294,7 +2273,11 @@ mod tests {
     // unscaled, the spread is 30 (a - 1); and with the second bone 40
     // along the first's axis the straight reach is 70 a. So the miss is at
     // most 3 (a - 1) / 7 a of the reach: 7.1% at (1.2, 1) and 21.4% at
-    // (2, 1), and the worst miss found comes close to it
+    // (2, 1), and the worst miss found comes close to it.
+    //
+    // The lower bounds are deliberate: a solve that removes the limit fails
+    // here on purpose, and must restate the limit in the module notes and
+    // the design
     let pinned = [
       ("a scale of (1.2, 1)", uneven(1.2, 1.0, 0.0), 0.05, 0.1),
       ("a scale of (2, 1)", uneven(2.0, 1.0, 0.0), 0.15, 0.3),

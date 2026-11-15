@@ -1,14 +1,16 @@
 //! A skeleton's pose: each bone's local transform, and the world transforms
 //! computed from them with Spine's inherit modes, plus each slot's colour and
-//! attachment, the offsets deform keys give the mesh it shows, and the draw
-//! order.
+//! attachment, the offsets deform keys give the mesh it shows, the draw
+//! order, and each constraint's values.
 
 use std::f32::consts::FRAC_PI_2;
 use std::sync::Arc;
 
 use glam::{Affine2, Mat2, Vec2, Vec4};
 
+use super::constraint::{Constraint, TransformMix};
 use super::data::{BoneData, Inherit, SkeletonData, SlotId};
+use super::ik::IkValues;
 use crate::core::ui::Color;
 
 /// A bone's local transform, relative to its parent: what the setup pose and
@@ -66,6 +68,24 @@ impl BonePose {
   }
 }
 
+/// One constraint's values in a pose, which a step's constraint pass
+/// applies: its setup's, each time the pose is set back to the setup pose
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum ConstraintValues {
+  Ik(IkValues),
+  Transform(TransformMix),
+}
+
+impl ConstraintValues {
+  /// The values a constraint starts each pose with: its setup's
+  pub(crate) fn setup(constraint: &Constraint) -> Self {
+    match constraint {
+      Constraint::Ik(ik) => Self::Ik(IkValues::of(&ik.setup)),
+      Constraint::Transform(transform) => Self::Transform(transform.setup.mix),
+    }
+  }
+}
+
 /// The setup draw order: every slot, in the data's order
 pub(super) fn setup_order(data: &SkeletonData) -> impl Iterator<Item = SlotId> {
   (0..data.slots().len()).filter_map(|index| u8::try_from(index).ok().map(SlotId))
@@ -110,12 +130,15 @@ pub(crate) struct Pose {
   pub(crate) deforms: Vec<SlotDeform>,
   /// Slots, back to front
   pub(crate) draw_order: Vec<SlotId>,
+  /// Each constraint's values, in the data's order: none for a skeleton
+  /// without constraints
+  pub(crate) constraints: Vec<ConstraintValues>,
 }
 
 impl Pose {
   /// The setup pose, with world transforms not yet computed (identity)
   pub(crate) fn setup(data: &SkeletonData) -> Self {
-    let slots = data.slots();
+    let (slots, constraints) = (data.slots(), data.constraints());
     Self {
       bones: data.bones().iter().map(BonePose::setup).collect(),
       skeleton_space: vec![Affine2::IDENTITY; data.bones().len()],
@@ -124,15 +147,16 @@ impl Pose {
       slot_attachments: slots.iter().map(|slot| slot.attachment.clone()).collect(),
       deforms: Vec::new(),
       draw_order: setup_order(data).collect(),
+      constraints: constraints.iter().map(ConstraintValues::setup).collect(),
     }
   }
 
   /// Puts the pose back to the setup pose without allocating: the bones'
   /// local transforms, the slots' colours and attachments, their meshes'
-  /// shapes (no deform offsets; the last step's are left) and the draw
-  /// order (world transforms are left as they are). The pose must be one
-  /// made from `data` ([`Pose::setup`]): the skeleton step makes a new one
-  /// whenever its data changes
+  /// shapes (no deform offsets; the last step's are left), the draw order
+  /// and the constraints' values (world transforms are left as they are).
+  /// The pose must be one made from `data` ([`Pose::setup`]): the skeleton
+  /// step makes a new one whenever its data changes
   pub(crate) fn reset(&mut self, data: &SkeletonData) {
     debug_assert_eq!(
       self.bones.len(),
@@ -142,6 +166,11 @@ impl Pose {
     debug_assert_eq!(
       self.slot_attachments.len(),
       data.slots().len(),
+      "a pose of another skeleton"
+    );
+    debug_assert_eq!(
+      self.constraints.len(),
+      data.constraints().len(),
       "a pose of another skeleton"
     );
     for (pose, bone) in self.bones.iter_mut().zip(data.bones()) {
@@ -158,6 +187,9 @@ impl Pose {
     }
     self.draw_order.clear();
     self.draw_order.extend(setup_order(data));
+    for (values, constraint) in self.constraints.iter_mut().zip(data.constraints()) {
+      *values = ConstraintValues::setup(constraint);
+    }
   }
 
   /// A step begins: the deform offsets the last one left become the

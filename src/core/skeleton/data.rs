@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use super::animation::Animation;
 use super::builder::SkeletonDataBuilder;
+use super::constrain::ConstraintBones;
 use super::constraint::{Constraint, ConstraintId};
 use super::skin::Skin;
 use crate::core::asset::{Asset, AssetId, Handle};
@@ -21,6 +22,25 @@ impl BoneId {
   /// The index as a `usize`, for indexing the bone list
   pub fn index(self) -> usize {
     usize::from(self.0)
+  }
+}
+
+/// A set of a skeleton's bones, by index: a skeleton has at most 255
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct BoneSet([u64; 4]);
+
+impl BoneSet {
+  pub(crate) fn set(&mut self, bone: usize) {
+    if let Some(word) = self.0.get_mut(bone / 64) {
+      *word |= 1 << (bone % 64);
+    }
+  }
+
+  pub(crate) fn has(&self, bone: usize) -> bool {
+    self
+      .0
+      .get(bone / 64)
+      .is_some_and(|word| word & (1 << (bone % 64)) != 0)
   }
 }
 
@@ -168,7 +188,8 @@ pub struct SkeletonData {
 
 /// What a skeleton entity needs of its data when a game asks it for a bone,
 /// a point or a bounding box by name, or names a skin: the names, each
-/// slot's bone, and the skins. Shared, so a skeleton keeps it without
+/// slot's bone, and the skins; and what its step needs to apply the
+/// constraints, worked out once. Shared, so a skeleton keeps it without
 /// borrowing the data, and a reload (new data) is a new index
 #[derive(Debug)]
 pub(crate) struct SkeletonIndex {
@@ -180,6 +201,8 @@ pub(crate) struct SkeletonIndex {
   pub(super) skins: Vec<Skin>,
   /// Each slot's bone, by slot index
   pub(super) slot_bones: Vec<BoneId>,
+  /// The bones each constraint moves, for a step's constraint pass
+  pub(super) constraint_bones: ConstraintBones,
 }
 
 /// What an animation state needs to know of a skeleton's animations when a
