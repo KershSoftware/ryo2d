@@ -153,7 +153,8 @@ impl Constrained {
 /// has changed in this pass, has its override applied afresh, from its
 /// animated values and against the pose as it now stands (`root` takes the
 /// skeleton's space to the world, for a world-space one). A bone a
-/// constraint has changed keeps what the constraint gave it.
+/// constraint has changed keeps what the constraint gave it. An IK
+/// constraint whose mix is not above 0 changes nothing.
 ///
 /// Transform constraints are not applied yet
 pub(crate) fn constrain(
@@ -177,7 +178,11 @@ pub(crate) fn constrain(
     let Some(ConstraintValues::Ik(values)) = pose.constraints.get(at).copied() else {
       continue;
     };
-    if !solve(pose, data, ik, values, state) {
+    // At a mix of 0, or one that is not a number, it is passed over as
+    // under a flat parent: nothing changed, marked or placed again, so its
+    // bones are left to the game's overrides
+    let applies = values.mix > 0.0;
+    if !applies || !solve(pose, data, ik, values, state) {
       continue;
     }
     for bone in &ik.bones {
@@ -845,52 +850,86 @@ mod tests {
     let half_way = 0.5 + (FRAC_PI_2 - 0.5) * 0.5;
     assert!((own(&skeleton, "eye").rotation - half_way).abs() < 0.001);
 
-    // An eye 10 along a hip at the origin, held at 0.3 in the world by the
-    // game. "gaze" points it at a target 20 below it, a quarter turn in
-    // the hip's space; "lean" then turns the hip a quarter turn toward a
-    // target below it, and the eye is placed again. The eye is the
-    // constraint's by then: it keeps the quarter turn of its own, so it
-    // is carried round to point left, from (0, 10), and is not put back
+    // The eye on a hip, held at 0.3 in the world: "gaze" turns it, and
+    // when "lean" then turns the hip the eye is placed again. The eye is
+    // the constraint's by then: it keeps the quarter turn of its own, so
+    // it is carried round to point left, from (0, 10), and is not put back
     // at the game's angle
-    let leaning = |gaze: f32| {
-      let gaze = IkSetup {
-        mix: gaze,
-        ..IkSetup::default()
-      };
-      built(
-        SkeletonData::builder()
-          .bone("hip", None, long(0.0, 10.0))
-          .bone("eye", Some("hip"), long(10.0, 5.0))
-          .bone("look", None, at(10.0, 20.0))
-          .bone("aim", None, at(0.0, 10.0))
-          .ik("gaze", &["eye"], "look", gaze)
-          .ik("lean", &["hip"], "aim", IkSetup::default()),
-      )
+    let skeleton = eye_on_a_hip(1.0).posed(Affine2::IDENTITY, hold_the_eye);
+    assert!((own(&skeleton, "eye").rotation - FRAC_PI_2).abs() < 0.001);
+    near(space(&skeleton, "eye").translation, Vec2::new(0.0, 10.0));
+    near(space(&skeleton, "eye").matrix2.x_axis, Vec2::new(-1.0, 0.0));
+
+    // A constraint at a mix of 0 is passed over, as one under a flat
+    // parent is: it changes nothing and marks nothing, so the eye is left
+    // to the game. When "lean" turns the hip the eye's override is applied
+    // afresh, and the eye points at the game's 0.3 in the world, from
+    // where the hip carries it
+    let skeleton = eye_on_a_hip(0.0).posed(Affine2::IDENTITY, hold_the_eye);
+    let off = shortest(heading(&skeleton, "eye") - 0.3);
+    assert!(off.abs() < 0.001, "off by {off}");
+    near(space(&skeleton, "eye").translation, Vec2::new(0.0, 10.0));
+  }
+
+  /// An eye 10 along a hip at the origin. "gaze", at `gaze` for its mix,
+  /// points the eye at a target 20 below it, a quarter turn in the hip's
+  /// space; "lean", listed after it, turns the hip a quarter turn toward a
+  /// target 10 below it
+  fn eye_on_a_hip(gaze: f32) -> Rig {
+    let gaze = IkSetup {
+      mix: gaze,
+      ..IkSetup::default()
     };
+    built(
+      SkeletonData::builder()
+        .bone("hip", None, long(0.0, 10.0))
+        .bone("eye", Some("hip"), long(10.0, 5.0))
+        .bone("look", None, at(10.0, 20.0))
+        .bone("aim", None, at(0.0, 10.0))
+        .ik("gaze", &["eye"], "look", gaze)
+        .ik("lean", &["hip"], "aim", IkSetup::default()),
+    )
+  }
+
+  /// What a game sets on [`eye_on_a_hip`]: the eye held at 0.3 in the
+  /// world
+  fn hold_the_eye(skeleton: &mut Skeleton) {
     let held = BoneOverride {
       rotation: Some(0.3),
       space: Space::World,
       ..BoneOverride::default()
     };
-    let rig = leaning(1.0);
-    let skeleton = rig.posed(Affine2::IDENTITY, |skeleton| {
-      skeleton.override_bone("eye", held);
-    });
-    assert!((own(&skeleton, "eye").rotation - FRAC_PI_2).abs() < 0.001);
-    near(space(&skeleton, "eye").translation, Vec2::new(0.0, 10.0));
-    near(space(&skeleton, "eye").matrix2.x_axis, Vec2::new(-1.0, 0.0));
+    skeleton.override_bone("eye", held);
+  }
 
-    // Every bone of a constraint that is applied is its own from then on,
-    // whatever the solve wrote: at a mix of 0 "gaze" leaves the eye at the
-    // 0.3 the override made of its own rotation under the hip as animated,
-    // and the hip's quarter turn carries that round
-    let rig = leaning(0.0);
-    let skeleton = rig.posed(Affine2::IDENTITY, |skeleton| {
-      skeleton.override_bone("eye", held);
+  #[test]
+  fn a_world_override_on_an_ik_bone_is_the_game_s_at_a_mix_of_0_and_the_constraint_s_above_it() {
+    // Limit: the eye's treatment changes as the mix of "gaze" leaves 0. At
+    // 0 the constraint is passed over and the eye's override is applied
+    // afresh below the turned hip: the eye points at 0.3 in the world
+    let skeleton = eye_on_a_hip(0.0).posed(Affine2::IDENTITY, hold_the_eye);
+    let off = shortest(heading(&skeleton, "eye") - 0.3);
+    assert!(off.abs() < 0.001, "at 0: off by {off}");
+
+    // At a mix of 0.01 the constraint has the last word: the eye keeps its
+    // own rotation, 0.3 turned a hundredth of the way to the quarter turn,
+    // and the hip's quarter turn carries that round, about 1.6 from where
+    // a mix of 0 leaves it
+    let skeleton = eye_on_a_hip(0.01).posed(Affine2::IDENTITY, hold_the_eye);
+    let kept = 0.3 + (FRAC_PI_2 - 0.3) * 0.01;
+    let off = shortest(heading(&skeleton, "eye") - (kept + FRAC_PI_2));
+    assert!(off.abs() < 0.001, "at 0.01: off by {off}");
+
+    // A mix that is not a number is passed over as 0 is
+    let rig = eye_on_a_hip(0.0);
+    let mut skeleton = rig.posed(Affine2::IDENTITY, hold_the_eye);
+    skeleton.pose.constraints[0] = ConstraintValues::Ik(IkValues {
+      mix: f32::NAN,
+      ..IkValues::of(&IkSetup::default())
     });
-    assert!((own(&skeleton, "eye").rotation - 0.3).abs() < 0.001);
-    let carried = Vec2::from_angle(0.3 + FRAC_PI_2);
-    near(space(&skeleton, "eye").matrix2.x_axis, carried);
+    skeleton.place_again(rig.data(), Affine2::IDENTITY.into());
+    let off = shortest(heading(&skeleton, "eye") - 0.3);
+    assert!(off.abs() < 0.001, "not a number: off by {off}");
   }
 
   #[test]
