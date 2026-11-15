@@ -344,8 +344,9 @@ pub(crate) fn two_bones(
 /// first step in which the tip's distance crosses the target's, and halving
 /// that step. A closing walk's steps are sized from the parts' lengths so
 /// that the tip's distance cannot turn back inside one: it stops at the
-/// first turn, and the shape follows a target coming in without a jump out
-/// to there. The walk goes the way the tip's distance changes at the pose:
+/// first turn (or short of it, for a pose whose steps stay small past
+/// `CHAIN_WALK` of them), and the shape follows a target coming in without
+/// a jump out to there. The walk goes the way the tip's distance changes at the pose:
 /// a pose wound past half a turn, so far that bending it further takes its
 /// tip out, is bent further for a farther target, as far as that helps,
 /// and only then opened, which can make it jump.
@@ -588,7 +589,9 @@ fn reached(sizes: &[Vec2], shape: Shape) -> (Vec2, f32, f32, f32) {
 /// step the distance falls, so a crossing there is the only one. The sure
 /// stretch shrinks as the walk nears a turn, and the walk stops once it is
 /// less than `step / CHAIN_SETTLED`: at the first turn, or where the
-/// distance has all but stopped falling. The places walked are the pose's
+/// distance has all but stopped falling; or after `CHAIN_WALK` steps, short
+/// of the turn (about one pose of sixteen bones in 5,000, which loses 0.026
+/// of the length of its reach inward). The places walked are the pose's
 /// alone, whatever the target, so as the target comes in the curl follows it
 /// without a jump, out to that stop
 fn fall(sizes: &[Vec2], from: Shape, way: f32, step: f32, end: f32, distance: f32) -> f32 {

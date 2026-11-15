@@ -2,7 +2,7 @@
 name: ryo-assets
 description: "Assets - loading images, SVG, shaders, fonts, UI files, themes, audio (clips, sound and music definitions, the mixer), particle effects, skeletons and tile maps (Tiled maps, tilesets and worlds, LDtk projects) through the registry (load_now and load), asset paths, handles and what keeps an asset alive, load states and loading screens, embedded assets with add, hot reload and AssetEvent, custom asset types and loaders, and the debug checker."
 metadata:
-  version: 1.9.0
+  version: 1.10.0
 ---
 
 # Ryo2D Assets
@@ -60,7 +60,7 @@ Asset paths are relative to the project's `assets/` folder (an example's own `as
 | `Music` | `music.ron`: an intro and a loop, or one clip with a loop region (`ryo-audio`) | |
 | `Mixer` | `mixer.ron`: the buses, effects, sends, snapshots and ducking; the engine loads `audio/mixer.mixer.ron` (`MIXER_PATH`) at start if the game has one (`ryo-audio`) | |
 | `ParticleEffect` | `particles.ron`: how a kind of particle is born, moves, looks and ends (`ryo-particles`), its image and sub-effects loaded with it | |
-| `SkeletonData` | `skeleton.ron`: a skeleton's bones, slots, attachments (regions, meshes, points, bounding boxes), skins, animations (with deform keys for meshes) and events (`ryo-skeleton`), its images loaded with it; show it with a `Skeleton` | |
+| `SkeletonData` | `skeleton.ron`: a skeleton's bones, slots, attachments (regions, meshes, points, bounding boxes), skins, animations (with deform keys for meshes), events and constraints (`ryo-skeleton`), its images loaded with it; show it with a `Skeleton` | |
 | `TileMap` | `tmx`, `tmj`: a Tiled map of any grid (orthogonal, isometric, staggered, hexagonal or oblique), of a fixed size or infinite (its chunks in every layer format), its tilesets, images, templates and the Tiled project loaded or read with it (`ryo-tilemap`); spawn it with a `MapRoot` | |
 | `Tileset` | `tsx`, `tsj`: a Tiled tileset, its images loaded with it | |
 | `LdtkProject` | `ldtk`: an LDtk project, its `.ldtkl` level files and tileset images loaded with it | |
@@ -235,7 +235,7 @@ In debug builds with a window the engine watches `assets/`: a saved file reloads
 - The assets that hold a reloaded one are checked again: a UI file importing the saved file, a theme whose skin image changed, a bitmap font whose sheet did, a sound definition whose clip did.
 - **Audio reloads into what is playing:** a saved clip switches its loops and the music playing it where they are, a saved definition retunes its playing loops, and a saved mixer rebuilds the buses with the loops carrying on (`ryo-audio`, Hot reload).
 - **Particle effects reload into what is playing:** a saved `.particles.ron` changes live particles' over-life values, forces, look and collisions at the next step, and its spawn values apply to new particles (`ryo-particles`, Effect files).
-- **Skeletons follow their files:** a saved `.skeleton.ron` reaches every skeleton showing it at their next step, each keeping its animations by name with their times, its skins, attachments, bone overrides and sockets; an animation the save removed clears the track playing it, with one warning. Saving one of its images checks its regions again (`ryo-skeleton`, What the engine does).
+- **Skeletons follow their files:** a saved `.skeleton.ron` reaches every skeleton showing it at their next step, each keeping its animations by name with their times, its skins, attachments, bone and constraint overrides and sockets; an animation the save removed clears the track playing it, with one warning. Saving one of its images checks its regions again (`ryo-skeleton`, What the engine does).
 - **Tile maps follow their files:** a saved map, tileset, template, Tiled project or LDtk project or level file brings every map spawned from it to the save in the frame it lands, keeping the entities, objects and game state the save left alone, and sends `MapEvent::Reloaded` (`ryo-tilemap`, Hot reload).
 - A reload that fails (a typo in a file) keeps the last good value and warns once, naming the file and, where its format gives one, the line and column: ``could not load "shaders/glow.wgsl": 16:3: expected `;`, found "let"``. Fix the file and save again. A shader is compiled as its file loads, so a `.wgsl` file that does not compile fails as any other file does. A removed file keeps its asset as it was.
 - `ctx.assets().server().reload(path)` asks for the same reload by hand (a headless test, a console command).

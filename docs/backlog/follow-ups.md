@@ -51,7 +51,6 @@ Items from 4f on were copied from their execution records. Items from earlier su
     - The banner rig and its fan-mesh helper are written out in `apply.rs`, `state.rs`, `component.rs` and `tests/skeleton.rs` (a shared rig would cut about 120 lines; `state.rs` is near 4,700 lines with its tests inline); `banner_file`'s comment in `tests/skeleton.rs` still lists "nothing" as a form and then says it no longer loads.
   - **The demo.**
     - The cape's overlay hull stands up to 7 px below its scalloped hem (a straight outline against the art's edge); the page's readout rebuilds its strings each frame.
-    - The pelvis is keyed by hand at a fraction of the trunk's turn, in three animations: a transform constraint would do it for every animation once constraints are built.
   - **For the import part.**
     - The deform's identity (the ruling above); linked meshes, a mesh's own timeline attachment and sequence keys are not built.
     - An attachment key, or a slot's setup attachment, naming something no skin has under the slot still loads in silence, though it is as certain a mistake as the deform's name that now fails.
