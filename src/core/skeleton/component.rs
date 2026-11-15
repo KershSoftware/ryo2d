@@ -795,7 +795,15 @@ impl Skeleton {
   /// target. So it gives the pose a step gives there, however often it runs
   pub(crate) fn place_again(&mut self, data: &SkeletonData, stand: Stand) {
     self.constrained.restore(&mut self.pose);
-    for set in &self.overrides {
+    for set in &mut self.overrides {
+      // One set since the last step has no animated values yet: it takes
+      // them from the pose as it stands, so it is applied once, and afresh
+      // below a constraint, as a step would apply it
+      if set.animated.is_none() {
+        set.animated = set
+          .id
+          .and_then(|bone| self.pose.bones.get(bone.index()).copied());
+      }
       if let (Some(bone), Some(animated)) = (set.id, set.animated)
         && let Some(pose) = self.pose.bones.get_mut(bone.index())
       {

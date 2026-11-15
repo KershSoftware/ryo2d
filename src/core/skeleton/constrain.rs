@@ -795,22 +795,67 @@ mod tests {
       let off = shortest(heading(&skeleton, "hand") - half_way);
       assert!(off.abs() < 0.001, "target {goal}: off by {off}");
     }
+  }
 
-    // Limit: an override first set between steps has no animated values
-    // kept until its first step. Placed again before that, it is applied
-    // as the bones are first placed and not afresh below the constraint:
-    // the foot is off by what the shin turned, from lying along x to
-    // (-0.8, 0.6), 2.498 rad. Its first step puts it right
-    let mut skeleton = rig.skeleton();
-    move_goal(&mut skeleton, Vec2::new(0.0, 50.0));
-    rig.step(&mut skeleton, root);
+  #[test]
+  fn an_override_first_set_between_steps_holds_when_its_skeleton_is_placed_again() {
+    // The leg of the test above, stepped once with its target at (0, 50),
+    // and then the foot held at 0.25 in the world before the next step.
+    // Placed again (it rides a socket, or is flipped), the override takes
+    // its animated values from the pose as it stands, so it is applied
+    // afresh below the constraint: the foot points where the game asked,
+    // and not 2.498 off, by what the shin turned
+    let rig = built(limb(
+      BoneSetup::default(),
+      Vec2::new(0.0, 50.0),
+      IkSetup::default(),
+    ));
+    let root = Affine2::from_angle_translation(0.4, Vec2::new(100.0, 50.0));
+    let held = BoneOverride {
+      rotation: Some(0.25),
+      space: Space::World,
+      ..BoneOverride::default()
+    };
+    let mut skeleton = rig.posed(root, |_| {});
     skeleton.override_bone("hand", held);
-    skeleton.place_again(rig.data(), root.into());
-    let off = shortest(heading(&skeleton, "hand") - 0.25);
-    assert!((off - 2.498).abs() < 0.001, "off by {off}");
-    rig.step(&mut skeleton, root);
-    let off = shortest(heading(&skeleton, "hand") - 0.25);
-    assert!(off.abs() < 0.001, "off by {off}");
+    for again in 1..=2 {
+      skeleton.place_again(rig.data(), root.into());
+      let off = shortest(heading(&skeleton, "hand") - 0.25);
+      assert!(
+        off.abs() < 0.001,
+        "placed again {again} times: off by {off}"
+      );
+    }
+  }
+
+  #[test]
+  fn an_override_at_a_part_mix_first_set_between_steps_is_applied_once_however_often_it_is_placed_again()
+   {
+    // An override at half its mix on the limb's hips, which no constraint
+    // changes, set after a step: it is applied once, from what the step
+    // left, however often the skeleton is placed again before its next
+    // step. The hips turn half way to 1, and not three quarters of the way
+    // the second time
+    let rig = built(limb(
+      BoneSetup::default(),
+      Vec2::new(0.0, 50.0),
+      IkSetup::default(),
+    ));
+    let mut skeleton = rig.posed(Affine2::IDENTITY, |_| {});
+    let half = BoneOverride {
+      rotation: Some(1.0),
+      mix: 0.5,
+      ..BoneOverride::default()
+    };
+    skeleton.override_bone("hips", half);
+    for again in 1..=2 {
+      skeleton.place_again(rig.data(), Affine2::IDENTITY.into());
+      let turned = own(&skeleton, "hips").rotation;
+      assert!(
+        (turned - 0.5).abs() < 0.001,
+        "placed again {again} times: {turned}"
+      );
+    }
   }
 
   #[test]
