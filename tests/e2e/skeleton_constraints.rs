@@ -290,3 +290,41 @@ fn a_part_held_level_stays_level_while_its_arm_turns() {
     assert_boxes(&settled(&mut engine), &[(drawn, GREEN)], what);
   }
 }
+
+#[cfg(dev_tools)]
+#[test]
+fn the_overlay_draws_its_marks_at_the_target_and_the_tip() {
+  let Some(mut engine) = engine() else {
+    return;
+  };
+  // An arm 35 px long standing at (32.5, 20.5), on a pixel's centre, and a
+  // target 40 px below its shoulder, out of its reach: the arm stretches
+  // straight down, its tip at (32.5, 55.5), and the overlay crosses the
+  // target at (32.5, 60.5) and runs a line from the tip to it
+  let world = engine.world_mut();
+  let data = arm(world, (UNSEEN, UNSEEN), Vec2::new(35.0, 0.0), |builder| {
+    builder
+  });
+  let hero = stand(world, data, (32.5, 20.5), Renderable::skeleton());
+  reach_for(&mut engine, hero, Vec2::new(32.5, 60.5));
+  let off = settled(&mut engine);
+  // `colors::SKELETON_CONSTRAINT`, which the crate does not export
+  let mark = [0xff, 0x90, 0x00, 0xff];
+  let marked = |frame: &image::RgbaImage, x: u32, y: u32| frame.get_pixel(x, y).0 == mark;
+  assert!(
+    off.pixels().all(|pixel| pixel.0 != mark),
+    "nothing while it is off"
+  );
+
+  assert!(!engine.console_run("debug:skeletons").is_empty());
+  let on = settled(&mut engine);
+  assert!(marked(&on, 32, 60), "the target's cross");
+  assert!(marked(&on, 29, 60) && marked(&on, 35, 60), "its arms");
+  // The bones are drawn over the marks, so a pixel or two of the line shows
+  // under a joint
+  assert!(
+    marked(&on, 32, 56) && marked(&on, 32, 59),
+    "the line from the tip to the target"
+  );
+  assert!(!marked(&on, 32, 40), "none along the arm");
+}

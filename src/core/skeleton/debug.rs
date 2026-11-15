@@ -7,6 +7,7 @@ use glam::Vec2;
 
 use super::attachment::Attachment;
 use super::component::Skeleton;
+use super::constraint::Constraint;
 use super::data::{SkeletonData, SlotId};
 use super::draw::{Carrier, Part, Parts};
 use super::scope::SkeletonStore;
@@ -102,6 +103,39 @@ pub(crate) fn draw(world: &mut World, alpha: f32, pixel: f32, debug: &mut DebugD
         corners.extend_from_slice(hull.unwrap_or_default());
         corners.push(first);
         pen.polyline(&corners, color(colors::SKELETON_REGION));
+      }
+    }
+
+    // Each constraint's target and what it moves, where the bones are drawn
+    let constraint_color = color(colors::SKELETON_CONSTRAINT);
+    let placed = |index: usize| {
+      let space = skeleton.drawn_bone(index, drawn.between)?;
+      Some(drawn.root * space)
+    };
+    for constraint in data.constraints() {
+      let Some(target) = placed(constraint.target().index()) else {
+        continue;
+      };
+      let goal = target.translation;
+      match constraint {
+        Constraint::Ik(ik) => {
+          let last = ik.bones.last().map(|bone| bone.index());
+          let tip = last.and_then(|index| {
+            let length = data.bones().get(index)?.length;
+            Some(placed(index)?.transform_point2(Vec2::new(length, 0.0)))
+          });
+          if let Some(tip) = tip {
+            pen.line(tip, goal, constraint_color);
+            pen.cross(goal, POINT_SIZE * pixel, constraint_color);
+          }
+        }
+        Constraint::Transform(transform) => {
+          for bone in &transform.bones {
+            if let Some(held) = placed(bone.index()) {
+              pen.line(held.translation, goal, constraint_color);
+            }
+          }
+        }
       }
     }
 
@@ -404,6 +438,94 @@ mod tests {
       outlines(&mut world),
       [(inner, vec![a, b, c, a]), (inner, vec![a, c, d, a])]
     );
+  }
+
+  /// A skeleton at (100, 50) with `build`'s constraints over a bone "a"
+  /// 10 long, its child "b" 8 along it and a target "goal" at (0, 20),
+  /// posed in one step
+  fn constrained(
+    build: impl FnOnce(
+      crate::core::skeleton::SkeletonDataBuilder,
+    ) -> crate::core::skeleton::SkeletonDataBuilder,
+  ) -> World {
+    let mut world = asset_world();
+    let long = BoneSetup {
+      length: 10.0,
+      ..BoneSetup::default()
+    };
+    let beside = BoneSetup {
+      x: 8.0,
+      ..BoneSetup::default()
+    };
+    let goal = BoneSetup {
+      y: 20.0,
+      ..BoneSetup::default()
+    };
+    let builder = SkeletonData::builder()
+      .bone("a", None, long)
+      .bone("b", Some("a"), beside)
+      .bone("goal", None, goal);
+    let data = build(builder).build().expect("a valid skeleton");
+    let handle = world.resource_mut::<Assets<SkeletonData>>().add(data);
+    let assets = world.resource::<Assets<SkeletonData>>();
+    let seen = (handle.id(), assets.version(&handle).expect("a version"));
+    let data = assets.get(&handle).expect("the data").clone();
+    let at = Transform::from_xy(100.0, 50.0);
+    let mut skeleton = Skeleton::new(handle);
+    let fired = &mut Fired::default();
+    skeleton.step(&data, seen, None, 1.0 / 60.0, at.to_affine().into(), fired);
+    world.spawn((at, skeleton));
+    world
+  }
+
+  /// The overlay's lines and crosses in the constraints' colour
+  fn marks(world: &mut World, kind: ShapeKind) -> Vec<Vec<Vec2>> {
+    let mut debug = DebugDraw::default();
+    draw(world, 0.0, 1.0, &mut debug);
+    let mark = Color::new(
+      colors::SKELETON_CONSTRAINT[0],
+      colors::SKELETON_CONSTRAINT[1],
+      colors::SKELETON_CONSTRAINT[2],
+      colors::SKELETON_CONSTRAINT[3],
+    );
+    let ours = debug
+      .each()
+      .filter(|(shape, _)| shape.kind == kind && shape.color == mark);
+    ours.map(|(_, points)| points.to_vec()).collect()
+  }
+
+  #[test]
+  fn the_overlay_marks_an_ik_constraint_s_target_and_reach() {
+    use crate::core::skeleton::IkSetup;
+    // "a" is brought to point at the target 20 below the entity, so its
+    // tip, 10 along it, is 10 below: the line runs from there to the
+    // target, which is crossed
+    let mut world = constrained(|b| b.ik("reach", &["a"], "goal", IkSetup::default()));
+    let at = Vec2::new(100.0, 50.0);
+    let lines = marks(&mut world, ShapeKind::Line);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0][0].abs_diff_eq(at + Vec2::new(0.0, 10.0), 1e-3));
+    assert!(lines[0][1].abs_diff_eq(at + Vec2::new(0.0, 20.0), 1e-3));
+    let crosses = marks(&mut world, ShapeKind::Cross);
+    assert_eq!(crosses.len(), 1);
+    assert!(crosses[0][0].abs_diff_eq(at + Vec2::new(0.0, 20.0), 1e-3));
+  }
+
+  #[test]
+  fn the_overlay_links_a_transform_constraint_s_bones_to_its_target() {
+    use crate::core::skeleton::TransformSetup;
+    let mut world = constrained(|b| {
+      b.transform_constraint("copy", &["a", "b"], "goal", TransformSetup::default())
+    });
+    let at = Vec2::new(100.0, 50.0);
+    // From each bone's origin to the target, 20 below the entity
+    let lines = marks(&mut world, ShapeKind::Line);
+    let goal = at + Vec2::new(0.0, 20.0);
+    assert_eq!(
+      lines,
+      [vec![at, goal], vec![at + Vec2::new(8.0, 0.0), goal],]
+    );
+    assert!(marks(&mut world, ShapeKind::Cross).is_empty());
   }
 
   #[test]
