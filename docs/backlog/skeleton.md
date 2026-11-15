@@ -183,6 +183,22 @@ So the extract of a crowd of regions is now 1 to 7% over what it was before mesh
 - No session that day was quiet: the sets were read at loads from 2.9 to 7. The crowd's extract in the build before meshes itself read 153.5 µs at noon and 159 to 164 in the afternoon.
 - So the shadow case's 4 to 7% is the open figure: a comparison on a quiet machine would settle whether it is inside the 5%, and the two benches build from `main` and from this tree as they stand.
 
+**A later sitting**, on the finished tree, by the same method: three sets of three runs each, alternately. Loads 3.2 to 3.5 for the first, 3.0 to 3.7 for the second and 3.5 to 4.1 for the third, all flagged: the machine was in use by other programs throughout, one of them on the GPU. The first set's medians, and each set's difference:
+
+| Bench | Before meshes | With meshes | Difference | Second set | Third set |
+|-------|---------------|-------------|------------|------------|-----------|
+| `skeletons_update` | 503.9 | 516.3 | +2.5% | +6.3% | +6.1% |
+| `skeletons_extract` | 164.9 | 172.3 | +4.5% | +6.7% | +5.0% |
+| `skeletons_extract_shadow` | 191.1 | 198.7 | +4.0% | +6.6% | +8.1% |
+| `skeletons_extract_offscreen` | 160.2 | 164.2 | +2.5% | +4.9% | +3.9% |
+| `skeletons_extract_images` | 285.1 | 291.7 | +2.3% | +2.9% | +2.6% |
+| `skeletons_extract_plain` | 101.4 | 104.4 | +3.0% | +6.9% | +2.9% |
+| `skeletons_extract_sockets` | 167.2 | 171.2 | +2.4% | +3.8% | +4.4% |
+
+Over the six extract cases the sets read 3.1%, 5.3% and 4.5% over on average, 4.3% together, where the three sets above read 3.6%. Thirteen of the eighteen readings are inside the 5%; the five that are not are the crowd, the shadow case and the plain case in the second set, and the crowd (by a hair, 5.03%) and the shadow case in the third. In time that is 3 to 16 µs a frame for 200 skeletons, most in the shadow case as before. The update read 12 to 32 µs over (2.5 to 6.3%), with this tree's own three runs spreading 12% in the second set.
+
+So the finished tree agrees with the sets above: a crowd of regions costs about 4% more to draw than it did before meshes, at the 5% bound and not shown to be inside it, and the shadow case is the dearest. No sitting on a quiet machine has been had. The whole render step is not compared between the two: this tree's bench puts two probe passes round the world pass, which the bench before meshes does not have.
+
 **Placing a sprite.** The comparison above covers the update and the entity drawer. `Batch2D::prepare` places every sprite a frame draws, and there the shader a sprite draws with was asked through a function the compiler kept out of line: a call for each sprite, where before meshes the answer for a sprite sharing the last one's key was a compare in the loop. It is a compare there again (`sprite_shader` is always inlined, and only a new key calls out, to `ensure_sprite_shader`). Measured on a whole frame of 10,000 sprites (`cargo bench --bench foundation`, "headless frame, 10k sprites", criterion's median), the three builds run alternately, three each, in two sets at loads of 5.0 to 7.0 and 4.3 to 6.2 (flagged). The median of each build's three runs, in microseconds:
 
 | | Before meshes | With the call | With the compare |
