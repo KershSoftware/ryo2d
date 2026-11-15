@@ -676,6 +676,45 @@ mod tests {
   }
 
   #[test]
+  fn a_target_flipped_by_its_x_scale_reads_in_the_world_as_turned_half_a_turn() {
+    // A target turned 1.2 with a scale_x of -1.5 has its x axis pointing at
+    // 1.2 + π: its matrix is a target's turned π more and mirrored in y
+    let flipped = placed(50.0, -30.0, 1.2, -1.5, 0.5, -0.2);
+    let turned = placed(50.0, -30.0, 1.2 + PI, 1.5, -0.5, -0.2);
+    let (a, b) = (flipped.to_cols_array(), turned.to_cols_array());
+    assert!(
+      a.iter().zip(b).all(|(a, b)| (a - b).abs() < 1e-5),
+      "{a:?} {b:?}"
+    );
+    let turn = TransformMix {
+      rotate: 1.0,
+      ..TransformMix::default()
+    };
+    for relative in [false, true] {
+      let mut from_flipped = bone();
+      in_the_world(&mut from_flipped, &flipped, &turn, &OFFSET, relative);
+      let mut from_turned = bone();
+      in_the_world(&mut from_turned, &turned, &turn, &OFFSET, relative);
+      let (got, want) = (properties(from_flipped)[2], properties(from_turned)[2]);
+      agree(2, got, want, 1e-4, "a flipped target");
+      assert!(
+        from_flipped.matrix2.determinant() > 0.0,
+        "relative {relative}"
+      );
+    }
+    // Toward it, with the rotation offset mirrored: 1.2 + π - 0.25
+    let mut moved = bone();
+    in_the_world(&mut moved, &flipped, &turn, &OFFSET, false);
+    agree(
+      2,
+      properties(moved)[2],
+      1.2 + PI - 0.25,
+      1e-4,
+      "a flipped target",
+    );
+  }
+
+  #[test]
   fn a_mirrored_bone_stays_mirrored_and_an_unmirrored_one_unmirrored() {
     let mirrored = placed(10.0, 20.0, 0.3, 2.0, -1.25, 0.1);
     let mirrored_target = placed(50.0, -30.0, 1.2, 1.5, -0.5, -0.2);

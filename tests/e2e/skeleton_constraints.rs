@@ -2,8 +2,8 @@
 //! constraint brings its hand to a target is drawn where its step posed
 //! it, and is flipped, y-sorted and drawn between steps as any skeleton
 //! is, and a part a transform constraint holds level stays level while
-//! the arm carrying it turns, read back as display bytes. The rigs and the frame helpers are the
-//! skeleton pixel tests' own (`skeleton.rs`).
+//! the arm carrying it turns, read back as display bytes. The rigs and
+//! the frame helpers are the skeleton pixel tests' own (`skeleton.rs`).
 //!
 //! Tests skip when no GPU is available.
 

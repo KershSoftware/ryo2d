@@ -2015,6 +2015,49 @@ mod tests {
   }
 
   #[test]
+  fn an_own_values_mode_copies_the_target_s_own_values_not_where_a_world_mode_holds_it() {
+    // A post turned 0.4 of its own, which "hold" turns in the world to a
+    // mark's 1.1; then "copy" sets a copier's own rotation to the post's
+    // own. A world mode leaves the post's own values as they were, so the
+    // copier takes 0.4, not the 1.1 the post is held at
+    let turn = TransformMix {
+      rotate: 1.0,
+      ..TransformMix::default()
+    };
+    let rig = built(
+      SkeletonData::builder()
+        .bone(
+          "post",
+          None,
+          BoneSetup {
+            rotation: 0.4,
+            ..long(0.0, 10.0)
+          },
+        )
+        .bone(
+          "mark",
+          None,
+          BoneSetup {
+            rotation: 1.1,
+            ..at(20.0, 0.0)
+          },
+        )
+        .bone("copier", None, at(40.0, 0.0))
+        .transform_constraint("hold", &["post"], "mark", copy_at(false, turn))
+        .transform_constraint("copy", &["copier"], "post", copy_at(true, turn)),
+    );
+    let skeleton = rig.posed(Affine2::IDENTITY, |_| {});
+    near(
+      space(&skeleton, "post").matrix2.x_axis,
+      Vec2::from_angle(1.1),
+    );
+    let post = own(&skeleton, "post").rotation;
+    assert!((post - 0.4).abs() < 1e-6, "{post}");
+    let copier = own(&skeleton, "copier").rotation;
+    assert!((copier - 0.4).abs() < 0.001, "{copier}");
+  }
+
+  #[test]
   fn a_transform_constraint_then_an_ik_constraint_and_the_other_way_round() {
     // On one bone: an eye at the origin that "gaze" points at a target 10
     // below it, a quarter turn, and that "copy" turns to a post's 0.5, in
