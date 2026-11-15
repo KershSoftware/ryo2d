@@ -7,8 +7,9 @@
 //! a `.skeleton.ron` file.
 //!
 //! A [`Skeleton`] component shows one on an entity, posed by the entity's
-//! [`SkeletonAnimation`] in each fixed step, its IK constraints then
-//! bringing their bones to their targets; a [`BoneSocket`] on a child
+//! [`SkeletonAnimation`] in each fixed step, its constraints then bringing
+//! bones to their targets or making them copy a target bone's transform;
+//! a [`BoneSocket`] on a child
 //! entity rides one of its bones; and [`SkeletonEvent`] and
 //! [`SkeletonTrackEvent`] messages tell the game what its animations did.
 //! An entity with a `Renderable::skeleton()` draws its skeleton, its
@@ -16,8 +17,8 @@
 //! animations' deform keys, sorted, lit and shadowed as a sprite is, and
 //! between fixed steps as an interpolated entity is.
 //!
-//! Not built: path constraints, applying transform constraints (they are
-//! data so far), clipping, linked meshes, and reading another tool's files.
+//! Not built: path constraints, clipping, linked meshes, and reading
+//! another tool's files.
 
 mod animation;
 mod apply;
@@ -38,6 +39,7 @@ mod skin;
 mod socket;
 mod state;
 mod system;
+mod transform_constraint;
 mod validate;
 
 pub use animation::{Animation, EventValues, Frame, Timeline};

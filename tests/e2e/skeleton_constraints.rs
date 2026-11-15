@@ -1,7 +1,8 @@
 //! Constrained skeletons drawn through the world batch: an arm whose IK
 //! constraint brings its hand to a target is drawn where its step posed
 //! it, and is flipped, y-sorted and drawn between steps as any skeleton
-//! is, read back as display bytes. The rigs and the frame helpers are the
+//! is, and a part a transform constraint holds level stays level while
+//! the arm carrying it turns, read back as display bytes. The rigs and the frame helpers are the
 //! skeleton pixel tests' own (`skeleton.rs`).
 //!
 //! Tests skip when no GPU is available.
@@ -235,4 +236,57 @@ fn a_constrained_skeleton_flips_sorts_and_draws_between_steps_as_any_other() {
   assert_eq!(square(&drawn, 28.0, 40.0), Some(true), "half way");
   assert_eq!(square(&drawn, 24.0, 40.0), Some(false));
   assert_eq!(square(&drawn, 32.0, 40.0), Some(false));
+}
+
+#[test]
+fn a_part_held_level_stays_level_while_its_arm_turns() {
+  let Some(mut engine) = engine() else {
+    return;
+  };
+  // An arm 20 px long with no art, standing at (32, 24), carries at its
+  // tip a part 12 px wide and 4 px tall. "hold" sets the part's turn in
+  // the skeleton's space to that of "level", a bone that is not turned, so
+  // whichever way the arm points the part is drawn 12 px wide and 4 px
+  // tall, centred where the arm's tip is
+  let world = engine.world_mut();
+  let parts = [
+    Part {
+      colour: UNSEEN,
+      ..part("arm", WHITE, (1, 1))
+    },
+    part("part", GREEN, (12, 4)).under("arm", 20.0, 0.0),
+  ];
+  let hold = TransformSetup {
+    mix: TransformMix {
+      rotate: 1.0,
+      ..TransformMix::default()
+    },
+    ..TransformSetup::default()
+  };
+  let data = rig_with(world, &parts, Images::Each, |builder| {
+    builder
+      .bone("level", None, BoneSetup::default())
+      .transform_constraint("hold", &["part"], "level", hold)
+  });
+  let hero = stand(world, data, (32.0, 24.0), Renderable::skeleton());
+  // The arm pointing right, down and left: its tip at (52, 24), (32, 44)
+  // and (12, 24)
+  let turns = [
+    (0.0, (46, 22, 12, 4), "pointing right"),
+    (
+      std::f32::consts::FRAC_PI_2,
+      (26, 42, 12, 4),
+      "pointing down",
+    ),
+    (std::f32::consts::PI, (6, 22, 12, 4), "pointing left"),
+  ];
+  for (turn, drawn, what) in turns {
+    let turned = BoneOverride {
+      rotation: Some(turn),
+      ..BoneOverride::default()
+    };
+    let mut skeleton = engine.world_mut().get_mut::<Skeleton>(hero).unwrap();
+    skeleton.override_bone("arm", turned);
+    assert_boxes(&settled(&mut engine), &[(drawn, GREEN)], what);
+  }
 }

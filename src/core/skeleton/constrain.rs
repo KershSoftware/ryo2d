@@ -7,56 +7,76 @@
 use glam::{Affine2, Vec2};
 
 use super::component::{SetOverride, apply_override, invertible};
-use super::constraint::{Constraint, IkConstraint};
+use super::constraint::{Constraint, IkConstraint, TransformConstraint, TransformMix};
 use super::data::{BoneData, BoneId, BoneSet, SkeletonData};
 use super::ik::{IkValues, chain, one_bone, two_bones};
 use super::pose::{BonePose, ConstraintValues, Pose};
+use super::transform_constraint::{in_its_own_values, in_the_world};
 
 /// What a constraint pass needs of the data, worked out once as the data
-/// is built: for each constraint the bones to place again after it, and
-/// the bones any IK constraint changes
+/// is built: for each constraint the bones to place again after it, for a
+/// transform constraint its bones in bone order, and the bones any
+/// constraint changes the own values of
 #[derive(Debug, Default)]
 pub(crate) struct ConstraintBones {
   /// Each constraint's bones to place again, one constraint's after
-  /// another's, each in bone order
+  /// another's, each in bone order. A transform constraint's are its
+  /// bones', one bone's after another's
   again: Vec<BoneId>,
   /// Where each constraint's are in `again`: from, and to
   spans: Vec<(usize, usize)>,
-  /// The bones an IK constraint changes, in bone order, each once
+  /// Each transform constraint's bones, one constraint's after another's,
+  /// each in bone order, with where the bones to place again after that
+  /// bone are in `again`
+  parts: Vec<(BoneId, (usize, usize))>,
+  /// Where each constraint's are in `parts` (an IK constraint has none)
+  part_spans: Vec<(usize, usize)>,
+  /// The bones an IK constraint or a local transform constraint changes,
+  /// in bone order, each once
   changed: Vec<BoneId>,
 }
 
 impl ConstraintBones {
   /// The lists for `constraints` over `bones`, which come parents first.
   /// After an IK constraint its bones and every bone below them are placed
-  /// again; after a transform constraint, the bones below its bones
+  /// again. After each bone of a transform constraint, the bones below
+  /// that bone are, and in a local mode that bone too
   pub(super) fn of(bones: &[BoneData], constraints: &[Constraint]) -> Self {
     let id = |bone: usize| u8::try_from(bone).ok().map(BoneId);
     let mut lists = Self::default();
     let mut changed = BoneSet::default();
     for constraint in constraints {
-      let ik = matches!(constraint, Constraint::Ik(_));
+      let (ik, local) = match constraint {
+        Constraint::Ik(_) => (true, true),
+        Constraint::Transform(transform) => (false, transform.setup.local),
+      };
       let mut own = BoneSet::default();
       for bone in constraint.bones() {
         own.set(bone.index());
-        if ik {
+        if local {
           changed.set(bone.index());
         }
       }
-      // A bone is below the constraint's when its parent is one of them or
-      // is below them, and parents come first: one walk finds them all
       let from = lists.again.len();
-      let mut below = BoneSet::default();
-      for (bone, data) in bones.iter().enumerate() {
-        let parent = data.parent.map(BoneId::index);
-        if parent.is_some_and(|parent| own.has(parent) || below.has(parent)) {
-          below.set(bone);
-        }
-        if below.has(bone) || (ik && own.has(bone)) {
-          lists.again.extend(id(bone));
+      let parts_from = lists.parts.len();
+      if ik {
+        lists.again.extend(below(bones, &own, true).filter_map(id));
+      } else {
+        // Each of its bones, in bone order, with the bones below it
+        for bone in (0..bones.len()).filter(|&bone| own.has(bone)) {
+          let mut this = BoneSet::default();
+          this.set(bone);
+          let start = lists.again.len();
+          lists
+            .again
+            .extend(below(bones, &this, local).filter_map(id));
+          if let Some(bone) = id(bone) {
+            lists.parts.push((bone, (start, lists.again.len())));
+          }
         }
       }
       lists.spans.push((from, lists.again.len()));
+      lists.part_spans.push((parts_from, lists.parts.len()));
     }
     let every = 0..bones.len();
     lists
@@ -68,10 +88,40 @@ impl ConstraintBones {
   /// The bones to place again after constraint `constraint`, in bone order
   fn again(&self, constraint: usize) -> &[BoneId] {
     let span = self.spans.get(constraint);
+    span.map_or(&[], |&span| self.listed(span))
+  }
+
+  /// A transform constraint's bones, in bone order, each with where the
+  /// bones to place again after it are
+  fn parts(&self, constraint: usize) -> &[(BoneId, (usize, usize))] {
+    let span = self.part_spans.get(constraint);
     span
-      .and_then(|&(from, to)| self.again.get(from..to))
+      .and_then(|&(from, to)| self.parts.get(from..to))
       .unwrap_or(&[])
   }
+
+  /// The bones in `again` from, and to
+  fn listed(&self, (from, to): (usize, usize)) -> &[BoneId] {
+    self.again.get(from..to).unwrap_or(&[])
+  }
+}
+
+/// The bones below those in `own`, in bone order, and those in `own` too
+/// when `with_own`. A bone is below them when its parent is one of them or
+/// is below them, and parents come first: one walk finds them all
+fn below<'a>(
+  bones: &'a [BoneData],
+  own: &'a BoneSet,
+  with_own: bool,
+) -> impl Iterator<Item = usize> + 'a {
+  let mut under = BoneSet::default();
+  bones.iter().enumerate().filter_map(move |(bone, data)| {
+    let parent = data.parent.map(BoneId::index);
+    if parent.is_some_and(|parent| own.has(parent) || under.has(parent)) {
+      under.set(bone);
+    }
+    (under.has(bone) || (with_own && own.has(bone))).then_some(bone)
+  })
 }
 
 /// What a skeleton keeps to apply its data's constraints, sized once for
@@ -146,8 +196,9 @@ impl Constrained {
 /// have been placed in the skeleton's space, the game's `overrides`
 /// applied, and the bones that constraints change must hold the own values
 /// animation and those overrides left them. Each constraint changes its
-/// bones' own values, and those bones and every bone below them are placed
-/// again before the next constraint is read.
+/// bones, and the bones it moved are placed again before the next
+/// constraint is read: after an IK constraint its bones and every bone
+/// below them, from their own values.
 ///
 /// A bone placed again that the game overrides, and that no constraint
 /// has changed in this pass, has its override applied afresh, from its
@@ -156,7 +207,13 @@ impl Constrained {
 /// constraint has changed keeps what the constraint gave it. An IK
 /// constraint whose mix is not above 0 changes nothing.
 ///
-/// Transform constraints are not applied yet
+/// A transform constraint takes its bones in bone order, each set, and the
+/// bones below it placed again, before the next is read. In a world mode
+/// it sets the bone's transform in the skeleton's space and places the
+/// bones below it again, leaving the bone's own values alone and the bone
+/// unmarked; in a local mode it changes the bone's own values, marks it,
+/// and places it and the bones below it again. One whose mixes are all 0,
+/// or one of them not a number, changes nothing
 pub(crate) fn constrain(
   pose: &mut Pose,
   data: &SkeletonData,
@@ -172,23 +229,86 @@ pub(crate) fn constrain(
   let lists = &data.index().constraint_bones;
   state.changed = BoneSet::default();
   for (at, constraint) in data.constraints().iter().enumerate() {
-    let Constraint::Ik(ik) = constraint else {
-      continue;
-    };
-    let Some(ConstraintValues::Ik(values)) = pose.constraints.get(at).copied() else {
-      continue;
-    };
-    // At a mix of 0, or one that is not a number, it is passed over as
-    // under a flat parent: nothing changed, marked or placed again, so its
-    // bones are left to the game's overrides
-    let applies = values.mix > 0.0;
-    if !applies || !solve(pose, data, ik, values, state) {
-      continue;
+    match (constraint, pose.constraints.get(at).copied()) {
+      (Constraint::Ik(ik), Some(ConstraintValues::Ik(values))) => {
+        // At a mix of 0, or one that is not a number, it is passed over as
+        // under a flat parent: nothing changed, marked or placed again, so
+        // its bones are left to the game's overrides
+        let applies = values.mix > 0.0;
+        if !applies || !solve(pose, data, ik, values, state) {
+          continue;
+        }
+        for bone in &ik.bones {
+          state.changed.set(bone.index());
+        }
+        place_listed(pose, data, root, lists.again(at), overrides, &state.changed);
+      }
+      (Constraint::Transform(transform), Some(ConstraintValues::Transform(mix))) => {
+        // Passed over at every mix 0 as an IK constraint is at a mix of 0
+        if !applies(&mix) {
+          continue;
+        }
+        // Each bone, in bone order, is set and the bones below it placed
+        // again before the next is read
+        for &(bone, after) in lists.parts(at) {
+          copy(pose, transform, bone, &mix, state);
+          place_listed(
+            pose,
+            data,
+            root,
+            lists.listed(after),
+            overrides,
+            &state.changed,
+          );
+        }
+      }
+      _ => {}
     }
-    for bone in &ik.bones {
+  }
+}
+
+/// Whether a transform constraint at `mix` does anything: each mix a
+/// number, and one of them not 0
+fn applies(mix: &TransformMix) -> bool {
+  let mixes = [
+    mix.rotate,
+    mix.x,
+    mix.y,
+    mix.scale_x,
+    mix.scale_y,
+    mix.shear_y,
+  ];
+  mixes.iter().all(|mix| mix.is_finite()) && mixes.iter().any(|&mix| mix != 0.0)
+}
+
+/// Moves one bone of a transform constraint toward its target, as its
+/// setup says: in the skeleton's space, or in its own values, which marks
+/// it changed
+fn copy(
+  pose: &mut Pose,
+  transform: &TransformConstraint,
+  bone: BoneId,
+  mix: &TransformMix,
+  state: &mut Constrained,
+) {
+  let (setup, target) = (&transform.setup, transform.target.index());
+  if setup.local {
+    let target = pose.bones.get(target).copied();
+    if let Some(target) = target
+      && let Some(own) = pose.bones.get_mut(bone.index())
+    {
+      in_its_own_values(own, &target, mix, &setup.offset, setup.relative);
       state.changed.set(bone.index());
     }
-    place_listed(pose, data, root, lists.again(at), overrides, &state.changed);
+  } else {
+    let target = pose.skeleton_space.get(target).copied();
+    if let Some(target) = target
+      && let Some(placed) = pose.skeleton_space.get_mut(bone.index())
+    {
+      // Its own values are as they were, and it is not marked: placed
+      // again later, it is placed from them, its override afresh
+      in_the_world(placed, &target, mix, &setup.offset, setup.relative);
+    }
   }
 }
 
@@ -318,8 +438,8 @@ mod tests {
   use crate::core::skeleton::ik::{CHAIN_NEAR, IkValues};
   use crate::core::skeleton::pose::ConstraintValues;
   use crate::core::skeleton::{
-    Animation, BoneOverride, BoneSetup, Curve, IkSetup, Skeleton, SkeletonAnimation,
-    SkeletonDataBuilder, Timeline, TransformMix, TransformSetup,
+    Animation, BoneOverride, BoneSetup, Curve, IkSetup, Inherit, Skeleton, SkeletonAnimation,
+    SkeletonDataBuilder, Timeline, TransformMix, TransformOffset, TransformSetup,
   };
   use crate::testing::asset_world;
 
@@ -694,14 +814,53 @@ mod tests {
 
     // What the data worked out for the pass: after an IK constraint its
     // bones and every bone below them are placed again, in bone order;
-    // after a transform constraint the bones below its bones; and the arm
-    // is the one bone an IK constraint changes
+    // after each bone of a transform constraint the bones below it; and
+    // the arm is the one bone an IK constraint changes
     let lists = &rig.data().index().constraint_bones;
     let ids = |bones: &[u8]| bones.iter().map(|&bone| BoneId(bone)).collect::<Vec<_>>();
     assert_eq!(lists.again(0), ids(&[1, 3, 5, 6]));
     assert_eq!(lists.again(1), ids(&[5]));
     assert_eq!(lists.again(2), ids(&[]), "no such constraint");
     assert_eq!(lists.changed, ids(&[1]));
+    assert!(lists.parts(0).is_empty(), "an IK constraint has no parts");
+    let [(hand, after)] = lists.parts(1) else {
+      panic!("one bone: {:?}", lists.parts(1));
+    };
+    assert_eq!((*hand, lists.listed(*after)), (BoneId(3), &ids(&[5])[..]));
+
+    // A transform constraint on the arm and the hand, named hand first:
+    // its bones in bone order, each with the bones below it; in a local
+    // mode with itself first, and those bones are changed
+    for local in [false, true] {
+      let setup = TransformSetup {
+        local,
+        ..TransformSetup::default()
+      };
+      let data = SkeletonData::builder()
+        .bone("root", None, BoneSetup::default())
+        .bone("arm", Some("root"), long(0.0, 20.0))
+        .bone("staff", Some("root"), at(50.0, 0.0))
+        .bone("hand", Some("arm"), long(20.0, 5.0))
+        .bone("finger", Some("hand"), at(5.0, 0.0))
+        .bone("watch", Some("arm"), at(10.0, 3.0))
+        .transform_constraint("carry", &["hand", "arm"], "staff", setup)
+        .build()
+        .expect("a valid skeleton");
+      let lists = &data.index().constraint_bones;
+      let parts: Vec<(BoneId, Vec<BoneId>)> = lists
+        .parts(0)
+        .iter()
+        .map(|&(bone, after)| (bone, lists.listed(after).to_vec()))
+        .collect();
+      let (arm, hand) = if local {
+        (ids(&[1, 3, 4, 5]), ids(&[3, 4]))
+      } else {
+        (ids(&[3, 4, 5]), ids(&[4]))
+      };
+      assert_eq!(parts, [(BoneId(1), arm), (BoneId(3), hand)]);
+      let changed = if local { ids(&[1, 3]) } else { ids(&[]) };
+      assert_eq!(lists.changed, changed);
+    }
   }
 
   /// Puts the limb's target at a point in the world
@@ -1031,30 +1190,39 @@ mod tests {
 
   #[test]
   fn a_world_override_on_an_ik_bone_is_the_game_s_at_a_mix_of_0_and_the_constraint_s_above_it() {
-    // Limit: the eye's treatment changes as the mix of "gaze" leaves 0. At
-    // 0 the constraint is passed over and the eye's override is applied
-    // afresh below the turned hip: the eye points at 0.3 in the world
-    let skeleton = eye_on_a_hip(0.0).posed(Affine2::IDENTITY, hold_the_eye);
+    // On an entity turned 0.4 and standing at (100, 50), so that the world
+    // and the skeleton's space differ. Limit: the eye's treatment changes
+    // as the mix of "gaze" leaves 0. At 0 the constraint is passed over
+    // and the eye's override is applied afresh below the turned hip: the
+    // eye points at 0.3 in the world
+    let root = Affine2::from_angle_translation(0.4, Vec2::new(100.0, 50.0));
+    let skeleton = eye_on_a_hip(0.0).posed(root, hold_the_eye);
     let off = shortest(heading(&skeleton, "eye") - 0.3);
     assert!(off.abs() < 0.001, "at 0: off by {off}");
+    near(
+      world(&skeleton, "eye"),
+      root.transform_point2(Vec2::new(0.0, 10.0)),
+    );
 
     // At a mix of 0.01 the constraint has the last word: the eye keeps its
-    // own rotation, 0.3 turned a hundredth of the way to the quarter turn,
-    // and the hip's quarter turn carries that round, about 1.6 from where
-    // a mix of 0 leaves it
-    let skeleton = eye_on_a_hip(0.01).posed(Affine2::IDENTITY, hold_the_eye);
-    let kept = 0.3 + (FRAC_PI_2 - 0.3) * 0.01;
-    let off = shortest(heading(&skeleton, "eye") - (kept + FRAC_PI_2));
+    // own rotation, the override's (0.3 in the world less the entity's
+    // 0.4, under the hip as it first lay) turned a hundredth of the way to
+    // the quarter turn, and the hip's quarter turn and the entity's 0.4
+    // carry that round, about 1.6 from where a mix of 0 leaves it
+    let skeleton = eye_on_a_hip(0.01).posed(root, hold_the_eye);
+    let held = 0.3 - 0.4;
+    let kept = held + (FRAC_PI_2 - held) * 0.01;
+    let off = shortest(heading(&skeleton, "eye") - (0.4 + kept + FRAC_PI_2));
     assert!(off.abs() < 0.001, "at 0.01: off by {off}");
 
     // A mix that is not a number is passed over as 0 is
     let rig = eye_on_a_hip(0.0);
-    let mut skeleton = rig.posed(Affine2::IDENTITY, hold_the_eye);
+    let mut skeleton = rig.posed(root, hold_the_eye);
     skeleton.pose.constraints[0] = ConstraintValues::Ik(IkValues {
       mix: f32::NAN,
       ..IkValues::of(&IkSetup::default())
     });
-    skeleton.place_again(rig.data(), Affine2::IDENTITY.into());
+    skeleton.place_again(rig.data(), root.into());
     let off = shortest(heading(&skeleton, "eye") - 0.3);
     assert!(off.abs() < 0.001, "not a number: off by {off}");
   }
@@ -1249,8 +1417,10 @@ mod tests {
 
   /// A hip 10 long at the origin that leans toward a target 30 below it,
   /// carrying the limb, which then reaches at half its mix for a target of
-  /// its own; and an animation "lift" that turns the limb's first bone by
-  /// 0.2
+  /// its own; a badge on the shin that "pin" moves half way to the limb's
+  /// target in the skeleton's space, and a patch on the hip that "sew"
+  /// turns and moves by half the limb's first bone's own values; and an
+  /// animation "lift" that turns the limb's first bone by 0.2
   fn leaning() -> Rig {
     let lift = Animation {
       name: Arc::from("lift"),
@@ -1264,11 +1434,36 @@ mod tests {
       mix: 0.5,
       ..IkSetup::default()
     };
+    let pin = TransformSetup {
+      mix: TransformMix {
+        rotate: 0.5,
+        x: 0.5,
+        y: 0.5,
+        scale_x: 0.5,
+        scale_y: 0.5,
+        shear_y: 0.5,
+      },
+      ..TransformSetup::default()
+    };
+    let sew = TransformSetup {
+      mix: TransformMix {
+        rotate: 0.5,
+        x: 0.5,
+        ..TransformMix::default()
+      },
+      local: true,
+      relative: true,
+      ..TransformSetup::default()
+    };
     built(
       limb_bones(long(0.0, 10.0), Vec2::new(70.0, 0.0))
         .bone("aim", None, at(0.0, 30.0))
+        .bone("badge", Some("lower"), at(10.0, 2.0))
+        .bone("patch", Some("hips"), at(5.0, -2.0))
         .ik("lean", &["hips"], "aim", IkSetup::default())
         .ik("reach", &["upper", "lower"], "goal", half)
+        .transform_constraint("pin", &["badge"], "goal", pin)
+        .transform_constraint("sew", &["patch"], "upper", sew)
         .animation(lift),
     )
   }
@@ -1301,10 +1496,20 @@ mod tests {
     let mut skeleton = rig.skeleton();
     hold(&mut skeleton);
     rig.step_playing(&mut skeleton, &mut lifting(), stand);
-    // Both constraints have moved their bones: the hip leans a quarter
-    // turn, and the limb's first bone is not as the animation left it
+    // Every constraint has moved its bones: the hip leans a quarter turn,
+    // the limb's first bone is not as the animation left it, the badge is
+    // not where its own values put it under the shin, and the patch has
+    // own values the constraint gave it
     assert!((own(&skeleton, "hips").rotation - FRAC_PI_2).abs() < 0.001);
     assert!((own(&skeleton, "upper").rotation - 0.2).abs() > 0.1);
+    let badge = space(&skeleton, "lower") * own(&skeleton, "badge").affine();
+    assert!(
+      space(&skeleton, "badge")
+        .translation
+        .distance(badge.translation)
+        > 1.0
+    );
+    assert!(own(&skeleton, "patch").rotation.abs() > 0.1);
 
     // Placed again where it stands, as a skeleton on a socket or a
     // flipped one is, once and then again: every bone is where the step
@@ -1438,9 +1643,9 @@ mod tests {
     skeleton.pose.constraints[1] = all;
     skeleton.place_again(rig.data(), Affine2::IDENTITY.into());
     assert_eq!(own(&skeleton, "upper").rotation, 0.0);
-    // A transform constraint is passed over so far: with every mix at 1
-    // the hand it names stays where the straight limb leaves it
-    near(space(&skeleton, "hand").translation, Vec2::new(70.0, 0.0));
+    // And with every mix of the transform constraint at 1 there, the hand
+    // it names takes its target's place, the hips' at the origin
+    near(space(&skeleton, "hand").translation, Vec2::ZERO);
 
     // A step puts every value back to its setup, in the list the pose
     // has: with no animation state, and with one
@@ -1485,6 +1690,7 @@ mod tests {
     near(space(&skeleton, "hand").translation, Vec2::new(70.0, 0.0));
     let lists = &rig.data().index().constraint_bones;
     assert!(lists.again.is_empty() && lists.spans.is_empty() && lists.changed.is_empty());
+    assert!(lists.parts.is_empty() && lists.part_spans.is_empty());
 
     // With a constraint on two bones, a skeleton keeps those bones'
     // animated values, and no scratch: only a chain is solved in one
@@ -1511,5 +1717,469 @@ mod tests {
     rig.step(&mut skeleton, Affine2::IDENTITY);
     nothing_kept(&skeleton);
     near(space(&skeleton, "hand").translation, Vec2::new(70.0, 0.0));
+  }
+
+  /// A copy at full mixes for place and rotation, in the mode `local` says
+  fn copy_at(local: bool, mix: TransformMix) -> TransformSetup {
+    TransformSetup {
+      mix,
+      local,
+      ..TransformSetup::default()
+    }
+  }
+
+  const PLACE_AND_TURN: TransformMix = TransformMix {
+    rotate: 1.0,
+    x: 1.0,
+    y: 1.0,
+    scale_x: 0.0,
+    scale_y: 0.0,
+    shear_y: 0.0,
+  };
+
+  /// A hip 10 long at the origin with a hand at its tip; a post, a root
+  /// bone at (30, 5) turned 0.5, which "copy" makes the hand copy at full
+  /// mixes for place and rotation, in the mode `local` says; and "lean",
+  /// which turns the hip a quarter turn toward a target 10 below it.
+  /// `copy_first` lists "copy" before "lean"
+  fn copying(local: bool, copy_first: bool) -> Rig {
+    let post = BoneSetup {
+      rotation: 0.5,
+      ..at(30.0, 5.0)
+    };
+    let bones = SkeletonData::builder()
+      .bone("hip", None, long(0.0, 10.0))
+      .bone("hand", Some("hip"), at(10.0, 0.0))
+      .bone("post", None, post)
+      .bone("aim", None, at(0.0, 10.0));
+    let copy = |bones: SkeletonDataBuilder| {
+      bones.transform_constraint("copy", &["hand"], "post", copy_at(local, PLACE_AND_TURN))
+    };
+    let lean = |bones: SkeletonDataBuilder| bones.ik("lean", &["hip"], "aim", IkSetup::default());
+    built(if copy_first {
+      lean(copy(bones))
+    } else {
+      copy(lean(bones))
+    })
+  }
+
+  #[test]
+  fn a_world_mode_result_is_lost_when_a_later_constraint_moves_an_ancestor() {
+    // "lean" first: the hand is set where the post is, at (30, 5) and
+    // turned 0.5 in the skeleton's space, and stays there
+    let skeleton = copying(false, false).posed(Affine2::IDENTITY, |_| {});
+    near(space(&skeleton, "hand").translation, Vec2::new(30.0, 5.0));
+    near(
+      space(&skeleton, "hand").matrix2.x_axis,
+      Vec2::from_angle(0.5),
+    );
+    // Its own values are as they were: at the hip's tip, unturned
+    let setup = Pose::setup(copying(false, false).data()).bones;
+    assert_eq!(own_bits(&[own(&skeleton, "hand")]), own_bits(&setup[1..2]));
+
+    // "copy" first: "lean" then turns the hip, and the hand is placed again
+    // from its own values, at the tip of the hip pointing down, (0, 10):
+    // the copy is lost
+    let skeleton = copying(false, true).posed(Affine2::IDENTITY, |_| {});
+    near(space(&skeleton, "hand").translation, Vec2::new(0.0, 10.0));
+    near(space(&skeleton, "hand").matrix2.x_axis, Vec2::new(0.0, 1.0));
+
+    // A world mode leaves the bone's own values, and so does not have the
+    // last word on it: held at 0.2 in the world by the game, the hand
+    // placed again has its override applied afresh, and points at 0.2,
+    // not at 0.2 carried round a quarter turn by the hip
+    let skeleton = copying(false, true).posed(Affine2::IDENTITY, |skeleton| {
+      let held = BoneOverride {
+        rotation: Some(0.2),
+        space: Space::World,
+        ..BoneOverride::default()
+      };
+      skeleton.override_bone("hand", held);
+    });
+    let off = shortest(heading(&skeleton, "hand") - 0.2);
+    assert!(off.abs() < 0.001, "off by {off}");
+  }
+
+  #[test]
+  fn an_own_values_result_is_kept_when_a_later_constraint_moves_an_ancestor() {
+    // The hand's own values become the post's: at (30, 5) of the hip and
+    // turned 0.5 there. When "lean" turns the hip a quarter turn, the hand
+    // goes with it, to (-5, 30), pointing 0.5 past straight down; listed
+    // either way round the result is the same. The game turns the hand to
+    // -0.4 of its own: the constraint has the last word over that
+    for copy_first in [true, false] {
+      let skeleton = copying(true, copy_first).posed(Affine2::IDENTITY, |skeleton| {
+        let turned = BoneOverride {
+          rotation: Some(-0.4),
+          ..BoneOverride::default()
+        };
+        skeleton.override_bone("hand", turned);
+      });
+      let hand = own(&skeleton, "hand");
+      assert!((hand.rotation - 0.5).abs() < 0.001, "{}", hand.rotation);
+      near(Vec2::new(hand.x, hand.y), Vec2::new(30.0, 5.0));
+      near(space(&skeleton, "hand").translation, Vec2::new(-5.0, 30.0));
+      let pointing = Vec2::from_angle(FRAC_PI_2 + 0.5);
+      near(space(&skeleton, "hand").matrix2.x_axis, pointing);
+    }
+  }
+
+  #[test]
+  fn a_bone_and_its_descendant_in_one_constraint_are_both_constrained() {
+    // An arm at the origin, a forearm 10 along it and a tip 5 along that,
+    // all unturned; a post at (30, 5) turned 0.5. "follow" moves the arm
+    // and the forearm (named forearm first) to the post's place, and half
+    // way round to its turn, in the skeleton's space.
+    //
+    // The arm comes first: it goes to (30, 5), turned 0.25, and the forearm
+    // is placed again under it, turned 0.25 too. The forearm is then read
+    // where it now is, and turned half way from 0.25 to 0.5, to 0.375, at
+    // (30, 5). The tip is placed again under it: 5 along 0.375 from there
+    let post = BoneSetup {
+      rotation: 0.5,
+      ..at(30.0, 5.0)
+    };
+    let follow = TransformMix {
+      rotate: 0.5,
+      ..PLACE_AND_TURN
+    };
+    let rig = built(
+      SkeletonData::builder()
+        .bone("arm", None, long(0.0, 10.0))
+        .bone("forearm", Some("arm"), long(10.0, 5.0))
+        .bone("tip", Some("forearm"), at(5.0, 0.0))
+        .bone("post", None, post)
+        .transform_constraint(
+          "follow",
+          &["forearm", "arm"],
+          "post",
+          copy_at(false, follow),
+        ),
+    );
+    let skeleton = rig.posed(Affine2::IDENTITY, |_| {});
+    let post = Vec2::new(30.0, 5.0);
+    near(space(&skeleton, "arm").translation, post);
+    near(
+      space(&skeleton, "arm").matrix2.x_axis,
+      Vec2::from_angle(0.25),
+    );
+    near(space(&skeleton, "forearm").translation, post);
+    near(
+      space(&skeleton, "forearm").matrix2.x_axis,
+      Vec2::from_angle(0.375),
+    );
+    near(
+      space(&skeleton, "tip").translation,
+      post + 5.0 * Vec2::from_angle(0.375),
+    );
+  }
+
+  #[test]
+  fn a_world_mode_ignores_the_bone_s_inherit_mode() {
+    // A parent at (5, 5), turned 0.7 and scaled 2, with a child 5 along it
+    // in each inherit mode and a mark 5 along the child; a post at (30, 5)
+    // turned 0.5. "copy" at every mix sets the child's transform in the
+    // skeleton's space to the post's, whatever its mode, and leaves its
+    // own values as they were; the mark is placed again under it
+    let parent = BoneSetup {
+      x: 5.0,
+      y: 5.0,
+      rotation: 0.7,
+      scale_x: 2.0,
+      scale_y: 2.0,
+      ..BoneSetup::default()
+    };
+    let post = BoneSetup {
+      rotation: 0.5,
+      ..at(30.0, 5.0)
+    };
+    let modes = [
+      Inherit::Normal,
+      Inherit::OnlyTranslation,
+      Inherit::NoRotationOrReflection,
+      Inherit::NoScale,
+      Inherit::NoScaleOrReflection,
+    ];
+    for inherit in modes {
+      let child = BoneSetup {
+        inherit,
+        ..long(5.0, 5.0)
+      };
+      let rig = built(
+        SkeletonData::builder()
+          .bone("parent", None, parent)
+          .bone("child", Some("parent"), child)
+          .bone("mark", Some("child"), at(5.0, 0.0))
+          .bone("post", None, post)
+          .transform_constraint(
+            "copy",
+            &["child"],
+            "post",
+            copy_at(false, TransformMix::ALL),
+          ),
+      );
+      let skeleton = rig.posed(Affine2::IDENTITY, |_| {});
+      let placed = space(&skeleton, "child");
+      let (along, across) = (Vec2::from_angle(0.5), Vec2::from_angle(0.5 + FRAC_PI_2));
+      near(placed.translation, Vec2::new(30.0, 5.0));
+      near(placed.matrix2.x_axis, along);
+      near(placed.matrix2.y_axis, across);
+      let setup = Pose::setup(rig.data()).bones;
+      assert_eq!(
+        own_bits(&skeleton.pose.bones),
+        own_bits(&setup),
+        "{inherit:?}"
+      );
+      near(
+        space(&skeleton, "mark").translation,
+        Vec2::new(30.0, 5.0) + 5.0 * along,
+      );
+    }
+  }
+
+  #[test]
+  fn an_own_values_mode_reads_the_target_as_animation_overrides_and_earlier_constraints_left_it() {
+    // A post at the origin, keyed by "turn" to 0.4; a copier apart, whose
+    // own rotation and x "copy" sets to the post's own; and, before or
+    // after "copy", "point", which turns the post toward a target 10 below
+    // the origin
+    let turn = Animation {
+      name: Arc::from("turn"),
+      duration: 1.0,
+      timelines: vec![Timeline::Rotate {
+        bone: BoneId(0),
+        frames: vec![(0.0, 0.4, Curve::Linear)],
+      }],
+    };
+    let copy = TransformMix {
+      rotate: 1.0,
+      x: 1.0,
+      ..TransformMix::default()
+    };
+    let rig = |point: Option<bool>| {
+      let bones = SkeletonData::builder()
+        .bone("post", None, long(0.0, 10.0))
+        .bone("copier", None, at(40.0, 0.0))
+        .bone("aim", None, at(0.0, 10.0))
+        .animation(turn.clone());
+      let copy = |bones: SkeletonDataBuilder| {
+        bones.transform_constraint("copy", &["copier"], "post", copy_at(true, copy))
+      };
+      let point_at =
+        |bones: SkeletonDataBuilder| bones.ik("point", &["post"], "aim", IkSetup::default());
+      built(match point {
+        None => copy(bones),
+        Some(true) => copy(point_at(bones)),
+        Some(false) => point_at(copy(bones)),
+      })
+    };
+    let turning = || {
+      let mut animation = SkeletonAnimation::new();
+      animation.set_animation(0, "turn", true);
+      animation
+    };
+    let moved = BoneOverride {
+      rotation: Some(0.9),
+      translation: Some(Vec2::new(12.0, 3.0)),
+      ..BoneOverride::default()
+    };
+    let copied = |rig: &Rig, overridden: bool| {
+      let mut skeleton = rig.skeleton();
+      if overridden {
+        skeleton.override_bone("post", moved);
+      }
+      rig.step_playing(&mut skeleton, &mut turning(), Affine2::IDENTITY);
+      let copier = own(&skeleton, "copier");
+      (copier.rotation, copier.x)
+    };
+    // As animation left it
+    let (rotation, x) = copied(&rig(None), false);
+    assert!(
+      (rotation - 0.4).abs() < 0.001 && x.abs() < 0.001,
+      "{rotation}, {x}"
+    );
+    // As the game's override left it
+    let (rotation, x) = copied(&rig(None), true);
+    assert!(
+      (rotation - 0.9).abs() < 0.001 && (x - 12.0).abs() < 0.001,
+      "{rotation}, {x}"
+    );
+    // As "point", listed before, left it: from (12, 3) toward (0, 10)
+    let pointed = Vec2::new(-12.0, 7.0).to_angle();
+    let (rotation, _) = copied(&rig(Some(true)), true);
+    assert!(shortest(rotation - pointed).abs() < 0.001, "{rotation}");
+    // Listed after, "point" turns the post once it has been read
+    let (rotation, _) = copied(&rig(Some(false)), true);
+    assert!((rotation - 0.9).abs() < 0.001, "{rotation}");
+  }
+
+  #[test]
+  fn a_transform_constraint_then_an_ik_constraint_and_the_other_way_round() {
+    // On one bone: an eye at the origin that "gaze" points at a target 10
+    // below it, a quarter turn, and that "copy" turns to a post's 0.5, in
+    // its own values. The later one's result stands
+    let eye = |gaze_first: bool| {
+      let post = BoneSetup {
+        rotation: 0.5,
+        ..BoneSetup::default()
+      };
+      let copy = TransformMix {
+        rotate: 1.0,
+        ..TransformMix::default()
+      };
+      let bones = SkeletonData::builder()
+        .bone("eye", None, long(0.0, 10.0))
+        .bone("look", None, at(0.0, 10.0))
+        .bone("post", None, post);
+      let gaze =
+        |bones: SkeletonDataBuilder| bones.ik("gaze", &["eye"], "look", IkSetup::default());
+      let copy = |bones: SkeletonDataBuilder| {
+        bones.transform_constraint("copy", &["eye"], "post", copy_at(true, copy))
+      };
+      let rig = built(if gaze_first {
+        copy(gaze(bones))
+      } else {
+        gaze(copy(bones))
+      });
+      let skeleton = rig.posed(Affine2::IDENTITY, |_| {});
+      own(&skeleton, "eye").rotation
+    };
+    assert!((eye(true) - 0.5).abs() < 0.001);
+    assert!((eye(false) - FRAC_PI_2).abs() < 0.001);
+
+    // A transform constraint whose target an IK constraint moves: an arm
+    // that "reach" points down at a target, and a level apart whose turn
+    // "match" sets to the arm's, in the skeleton's space. Arm first, the
+    // level is turned down with it; level first, it copies the arm as
+    // animation left it, unturned, and the arm turns afterwards
+    let level = |reach_first: bool| {
+      let bones = SkeletonData::builder()
+        .bone("arm", None, long(0.0, 20.0))
+        .bone("goal", None, at(0.0, 30.0))
+        .bone("level", None, at(40.0, 0.0));
+      let turn = TransformMix {
+        rotate: 1.0,
+        ..TransformMix::default()
+      };
+      let reach =
+        |bones: SkeletonDataBuilder| bones.ik("reach", &["arm"], "goal", IkSetup::default());
+      let copy = |bones: SkeletonDataBuilder| {
+        bones.transform_constraint("match", &["level"], "arm", copy_at(false, turn))
+      };
+      let rig = built(if reach_first {
+        copy(reach(bones))
+      } else {
+        reach(copy(bones))
+      });
+      let skeleton = rig.posed(Affine2::IDENTITY, |_| {});
+      near(space(&skeleton, "arm").matrix2.x_axis, Vec2::new(0.0, 1.0));
+      space(&skeleton, "level").matrix2.x_axis
+    };
+    near(level(true), Vec2::new(0.0, 1.0));
+    near(level(false), Vec2::new(1.0, 0.0));
+  }
+
+  #[test]
+  fn a_transform_constraint_whose_mixes_are_all_0_is_passed_over() {
+    // The eye on its hip, held at 0.3 in the world; "copy", listed before
+    // "lean", would turn the eye's own values to a post's 1.0. At every
+    // mix 0 it is passed over, and marks nothing: when "lean" turns the
+    // hip the eye's override is applied afresh, and it points at 0.3
+    let rig = |rotate: f32| {
+      let post = BoneSetup {
+        rotation: 1.0,
+        ..at(40.0, 0.0)
+      };
+      let copy = TransformMix {
+        rotate,
+        ..TransformMix::default()
+      };
+      built(
+        SkeletonData::builder()
+          .bone("hip", None, long(0.0, 10.0))
+          .bone("eye", Some("hip"), long(10.0, 5.0))
+          .bone("post", None, post)
+          .bone("aim", None, at(0.0, 10.0))
+          .transform_constraint("copy", &["eye"], "post", copy_at(true, copy))
+          .ik("lean", &["hip"], "aim", IkSetup::default()),
+      )
+    };
+    let skeleton = rig(0.0).posed(Affine2::IDENTITY, hold_the_eye);
+    let off = shortest(heading(&skeleton, "eye") - 0.3);
+    assert!(off.abs() < 0.001, "at 0: off by {off}");
+
+    // At a rotate mix of 0.01 it is applied and has the last word: the eye
+    // keeps its own rotation, 0.3 moved a hundredth of the way to 1.0, and
+    // the hip carries it round a quarter turn
+    let skeleton = rig(0.01).posed(Affine2::IDENTITY, hold_the_eye);
+    let kept = 0.3 + (1.0 - 0.3) * 0.01;
+    let off = shortest(heading(&skeleton, "eye") - (kept + FRAC_PI_2));
+    assert!(off.abs() < 0.001, "at 0.01: off by {off}");
+  }
+
+  #[test]
+  fn a_pelvis_turns_six_tenths_of_its_trunk_s_lean() {
+    // A hip turned 0.4 carries a torso, whose own rotation is a quarter
+    // turn back (it points up the screen) plus a lean, and a pelvis, whose
+    // own rotation is 0. "pelvis" copies six tenths of the torso's own
+    // rotation plus a quarter turn: 0 + (-π/2 + lean + π/2 - 0) × 0.6
+    for lean in [0.3, -0.2] {
+      let hip = BoneSetup {
+        rotation: 0.4,
+        ..BoneSetup::default()
+      };
+      let torso = BoneSetup {
+        rotation: -FRAC_PI_2 + lean,
+        ..long(0.0, 20.0)
+      };
+      let follow = TransformSetup {
+        mix: TransformMix {
+          rotate: 0.6,
+          ..TransformMix::default()
+        },
+        offset: TransformOffset {
+          rotation: FRAC_PI_2,
+          ..TransformOffset::default()
+        },
+        local: true,
+        ..TransformSetup::default()
+      };
+      let rig = built(
+        SkeletonData::builder()
+          .bone("hip", None, hip)
+          .bone("torso", Some("hip"), torso)
+          .bone("pelvis", Some("hip"), long(0.0, 8.0))
+          .transform_constraint("pelvis", &["pelvis"], "torso", follow),
+      );
+      let skeleton = rig.posed(Affine2::IDENTITY, |_| {});
+      let turned = own(&skeleton, "pelvis").rotation;
+      assert!((turned - 0.6 * lean).abs() < 0.001, "lean {lean}: {turned}");
+      let off = shortest(heading(&skeleton, "pelvis") - (0.4 + 0.6 * lean));
+      assert!(off.abs() < 0.001, "lean {lean}: off by {off}");
+    }
+  }
+
+  #[test]
+  fn an_override_first_set_between_steps_holds_on_a_skeleton_without_constraints() {
+    // The limb's bones without its constraint, stepped, and then an
+    // override at half its mix set on the hips: placed again twice, the
+    // hips turn half way to 1 once, and not three quarters of the way
+    let rig = built(limb_bones(BoneSetup::default(), Vec2::new(0.0, 50.0)));
+    assert!(rig.data().constraints().is_empty());
+    let mut skeleton = rig.posed(Affine2::IDENTITY, |_| {});
+    let half = BoneOverride {
+      rotation: Some(1.0),
+      mix: 0.5,
+      ..BoneOverride::default()
+    };
+    skeleton.override_bone("hips", half);
+    for again in 1..=2 {
+      skeleton.place_again(rig.data(), Affine2::IDENTITY.into());
+      let turned = own(&skeleton, "hips").rotation;
+      assert!(
+        (turned - 0.5).abs() < 0.001,
+        "placed again {again} times: {turned}"
+      );
+    }
   }
 }
