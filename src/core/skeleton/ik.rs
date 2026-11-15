@@ -44,12 +44,18 @@ pub(crate) const fn chain_room(bones: usize) -> usize {
 }
 
 /// The most a chain's swing, how far apart its parts point, changes in one
-/// step of the walk along its family of shapes, in radians: small enough
-/// that the tip's distance from the first joint turns back once at most
-/// inside a step
+/// step of a walk along its family of shapes, in radians. A closing walk's
+/// steps are shorter wherever the tip's distance could turn back sooner, so
+/// that no turn lies inside a step (`fall`); an opening walk takes the
+/// steps whole
 const CHAIN_STEP: f32 = PI / 8.0;
 
-/// The most steps of that walk
+/// How many times shorter than its most a closing walk's step may grow
+/// before the walk stops there: the tip's distance turns back within that
+/// of the stop, or has all but stopped falling
+const CHAIN_SETTLED: f32 = 4096.0;
+
+/// The most steps of a walk
 const CHAIN_WALK: usize = 96;
 
 /// How many times the step that holds the shape wanted is halved
@@ -315,16 +321,19 @@ pub(crate) fn two_bones(
 /// the one whose tip is as far from the first joint as the target is, and
 /// is then turned about its first joint onto the target. So the shape
 /// follows the target's distance alone and its direction only turns the
-/// chain, and a target that moves does not make the chain jump:
+/// chain, and a target that moves does not make the chain jump. What the
+/// pose decides is not the target's: as the pose is animated the chain can
+/// flip sides (below, and the module notes' limits):
 ///
 /// - A target farther than the pose's tip opens the pose: every turn is
 ///   scaled by one factor, from 1 (the pose) toward 0 (straight).
 /// - A nearer one closes it: one even turn is added to every joint, the way
-///   that brings the tip nearer, which is the way the pose bends. The chain
-///   curls further as an arc, until its tip's distance stops falling or a
-///   joint has folded half a turn. A target nearer than that is not
-///   reached: the chain takes that nearest shape, pointed at the target. It
-///   curls, and does not fold.
+///   that brings the tip nearer (for a pose bent one way, the way it
+///   bends; for an S, whichever way that is, so a chain swaying in an S
+///   flips sides as that way changes). The chain curls further as an arc,
+///   until its tip's distance stops falling or a joint has folded half a
+///   turn. A target nearer than that is not reached: the chain takes that
+///   nearest shape, pointed at the target. It curls, and does not fold.
 /// - A target at least the chain's length away lays every part along the
 ///   line to it, which is where opening ends.
 /// - A pose with no bend of its own, every joint within `CHAIN_NEAR ×` its
@@ -333,10 +342,13 @@ pub(crate) fn two_bones(
 ///
 /// The shape is found by walking the family from the pose in steps, for the
 /// first step in which the tip's distance crosses the target's, and halving
-/// that step. The walk goes the way the tip's distance changes at the pose:
-/// a pose wound so far that bending it further takes its tip out is bent
-/// further for a farther target, as far as that helps, and only then
-/// opened, which can make it jump.
+/// that step. A closing walk's steps are sized from the parts' lengths so
+/// that the tip's distance cannot turn back inside one: it stops at the
+/// first turn, and the shape follows a target coming in without a jump out
+/// to there. The walk goes the way the tip's distance changes at the pose:
+/// a pose wound past half a turn, so far that bending it further takes its
+/// tip out, is bent further for a farther target, as far as that helps,
+/// and only then opened, which can make it jump.
 ///
 /// Each part has then turned from where it stood, and turning a bone turns
 /// its part and every part after it. So a bone is turned by what its part
@@ -430,14 +442,10 @@ pub(crate) fn chain(
     Shape::STRAIGHT
   } else if on_one_line(joints, CHAIN_NEAR * total) {
     // No bend of its own: an even arc the positive way, from straight
-    let arc = |added: f32| {
-      let (_, far, _, by_added) = reach(Shape { factor: 0.0, added });
-      (far, by_added)
-    };
     let step = CHAIN_STEP / (long - 1.0);
     Shape {
       factor: 0.0,
-      added: fall(&arc, 0.0, total, step, PI, distance),
+      added: fall(sizes_now, Shape::STRAIGHT, 1.0, step, PI, distance),
     }
   } else {
     let (_, pose, by_factor, by_added) = reach(Shape::POSE);
@@ -470,17 +478,11 @@ pub(crate) fn chain(
       } else {
         PI + turns.0
       };
-      let bent = |added: f32| {
-        let (_, far, _, by_added) = reach(Shape {
-          factor: 1.0,
-          added: added * way,
-        });
-        (far, by_added * way)
-      };
       let step = CHAIN_STEP / (long - 1.0);
+      let curl = fall(sizes_now, Shape::POSE, way, step, folded.max(0.0), distance);
       Shape {
         factor: 1.0,
-        added: fall(&bent, 0.0, pose, step, folded.max(0.0), distance) * way,
+        added: curl * way,
       }
     }
   };
@@ -570,46 +572,111 @@ fn reached(sizes: &[Vec2], shape: Shape) -> (Vec2, f32, f32, f32) {
   }
 }
 
-/// Walks a chain's family from the place `from`, where the tip is `here`
-/// from the first joint, in steps of `step` as far as `end`, for the place
-/// where the tip is `distance` away. `at` gives the tip's distance at a
-/// place and how fast it changes as the place grows. The tip's distance is
-/// to fall along the way. Where it turns back first, or the family ends,
-/// with the tip still farther than `distance`, that nearest place is given:
-/// a later crossing would make the chain jump as its target passed the turn
-fn fall(
-  at: &impl Fn(f32) -> (f32, f32),
-  from: f32,
-  here: f32,
-  step: f32,
-  end: f32,
-  distance: f32,
-) -> f32 {
-  let (mut older, mut held, mut at_held) = (from, from, here);
+/// Walks a chain's closing family from `from` (the pose, or straight),
+/// curling it by an even turn at every joint, `way` round, as far as `end`,
+/// for the curl that puts the tip `distance` from the first joint. The tip's
+/// distance is to fall along the way. Where it stops falling first, or the
+/// family ends, with the tip still farther than `distance`, that nearest
+/// curl is given: a later crossing would make the chain jump as its target
+/// passed the turn.
+///
+/// No turn of the tip's distance can hide inside a step. Its square is a sum
+/// of cosines of the curl, so how fast its slope can change is bounded by
+/// the parts' lengths alone (`turning_bound`). From the slope and the
+/// slope's rate at a place, each step goes only as far as the slope is sure
+/// to stay below 0 (`falling_for`), and never more than `step`: across every
+/// step the distance falls, so a crossing there is the only one. The sure
+/// stretch shrinks as the walk nears a turn, and the walk stops once it is
+/// less than `step / CHAIN_SETTLED`: at the first turn, or where the
+/// distance has all but stopped falling. The places walked are the pose's
+/// alone, whatever the target, so as the target comes in the curl follows it
+/// without a jump, out to that stop
+fn fall(sizes: &[Vec2], from: Shape, way: f32, step: f32, end: f32, distance: f32) -> f32 {
+  let bound = turning_bound(sizes);
+  let at = |curl: f32| curled(sizes, from, way, curl);
+  let near = |curl: f32| {
+    let (far, slope, _) = at(curl);
+    (far, slope)
+  };
+  let settled = step / CHAIN_SETTLED;
+  let (_, mut slope, mut bend) = at(0.0);
+  let mut held = 0.0;
   for _ in 0..CHAIN_WALK {
-    let next = (held + step).min(end);
-    let (at_next, slope) = at(next);
-    // Rising at `next`: the tip's distance turned back inside this step,
-    // whether or not it is back above where the step began
-    if at_next > at_held || slope > 0.0 {
-      let nearest = least(at, older, next);
-      return if at(nearest).0 <= distance {
-        halved(at, older, nearest, distance)
-      } else {
-        nearest
-      };
+    let sure = falling_for(slope, bend, bound);
+    if sure < settled {
+      return held;
     }
-    if at_next <= distance {
-      return halved(at, held, next, distance);
+    let next = (held + sure.min(step)).min(end);
+    let (far, next_slope, next_bend) = at(next);
+    if far <= distance {
+      return halved(&near, held, next, distance);
     }
     if next >= end {
       return end;
     }
-    older = held;
-    held = next;
-    at_held = at_next;
+    (held, slope, bend) = (next, next_slope, next_bend);
   }
   held
+}
+
+/// Where `shape` curled by `curl` more at every joint, `way` round, puts the
+/// tip: how far from the first joint, how fast the square of that distance
+/// changes as the curl grows, and how fast that changes. `sizes` is as for
+/// `reached`
+fn curled(sizes: &[Vec2], shape: Shape, way: f32, curl: f32) -> (f32, f32, f32) {
+  let (mut tip, mut by_curl, mut by_curl_twice) = (Vec2::ZERO, Vec2::ZERO, Vec2::ZERO);
+  let added = shape.added + curl * way;
+  let mut joints_before = 0.0;
+  for size in sizes.iter().filter(|size| size.x > 0.0) {
+    let along = Vec2::from_angle(size.y * shape.factor + added * joints_before);
+    tip += along * size.x;
+    by_curl += along.perp() * (size.x * joints_before * way);
+    by_curl_twice -= along * (size.x * joints_before * joints_before);
+    joints_before += 1.0;
+  }
+  let slope = 2.0 * tip.dot(by_curl);
+  let bend = 2.0 * (by_curl.length_squared() + tip.dot(by_curl_twice));
+  (tip.length(), slope, bend)
+}
+
+/// The most the third derivative of the square of the tip's distance can be
+/// along a closing family. That square is the sum over every two parts of
+/// `lᵢ lⱼ cos(aᵢ - aⱼ)`, and the curl turns `aᵢ - aⱼ` by `kᵢ - kⱼ` times
+/// itself, `k` counting the joints before a part: so its third derivative is
+/// at most the sum of `lᵢ lⱼ |kᵢ - kⱼ|³`
+fn turning_bound(sizes: &[Vec2]) -> f64 {
+  let parts = || sizes.iter().filter(|size| size.x > 0.0).map(|size| size.x);
+  let mut bound = 0.0;
+  for (one, first) in parts().enumerate() {
+    for (other, second) in parts().enumerate().skip(one + 1) {
+      let apart = (other - one) as f64;
+      bound += 2.0 * f64::from(first) * f64::from(second) * apart * apart * apart;
+    }
+  }
+  bound
+}
+
+/// How far past a place the square of the tip's distance is sure to go on
+/// falling, from its `slope` and that slope's rate (`bend`) there, its third
+/// derivative being at most `bound`: the slope further on is at most
+/// `slope + bend × t + bound × t² / 2`, which is below 0 up to its first
+/// root. None, where it is not falling there
+fn falling_for(slope: f32, bend: f32, bound: f64) -> f32 {
+  let (slope, bend) = (f64::from(slope), f64::from(bend));
+  if !(slope < 0.0 || (slope == 0.0 && bend < 0.0)) {
+    return 0.0;
+  }
+  if bound <= 0.0 {
+    return f32::MAX;
+  }
+  let root = (bend * bend - 2.0 * bound * slope).sqrt();
+  // Each form where it does not take one near number from another
+  let sure = if bend <= 0.0 {
+    (root - bend) / bound
+  } else {
+    -2.0 * slope / (bend + root)
+  };
+  sure as f32
 }
 
 /// Walks a chain's family from the place `from`, where the tip is `here`
@@ -659,20 +726,6 @@ fn halved(at: &impl Fn(f32) -> (f32, f32), mut held: f32, mut crossed: f32, dist
     }
   }
   0.5 * (held + crossed)
-}
-
-/// The place between `from` and `to`, the greater, where the tip is nearest
-/// the first joint: where its distance stops falling
-fn least(at: &impl Fn(f32) -> (f32, f32), mut from: f32, mut to: f32) -> f32 {
-  for _ in 0..CHAIN_HALVINGS {
-    let middle = 0.5 * (from + to);
-    if at(middle).1 < 0.0 {
-      from = middle;
-    } else {
-      to = middle;
-    }
-  }
-  0.5 * (from + to)
 }
 
 /// Whether every joint is within `near` of one line through the first
@@ -2656,7 +2709,7 @@ mod tests {
     // the target's direction only turns it: nowhere does a joint jump by
     // 1% of the chain's length. Reaching for the target from the pose
     // afresh at each step, in sweeps back and out along the joints, jumped
-    // so on 56 of these strokes, 91 times, by up to 0.95 of the length
+    // so on 53 of these strokes, 91 times, by up to 0.95 of the length
     let (mut solves, mut worst) = (0, 0.0_f32);
     for (rig, bones, length) in walked_rigs() {
       for (index, stroke) in STROKES.into_iter().enumerate() {
@@ -2677,6 +2730,123 @@ mod tests {
     // chain following its target through its full reach, where a joint
     // moves as the square root of the target's step: 0.0007 of the length
     assert!(worst < 0.002, "the largest jump is {worst} of the length");
+  }
+
+  #[test]
+  fn a_chain_does_not_jump_where_its_tip_s_distance_turns_inside_one_step() {
+    // Two poses whose tip, as they close, comes in, goes out a hair and
+    // comes in again, all inside one of the walk's largest steps. Parts of
+    // 9.90, 21.64 and 18.84 turned -0.906 and -0.587: the tip's distance
+    // dips to 0.17064 of the length at an added turn of about 2.0 rad a
+    // joint, and is back up at 0.17078 by 2.1. Parts of 13.19, 22.63, 6.34
+    // and 6.57 turned 0.412, 0.697 and 0.633 turn back at 0.36986. The walk
+    // cannot step over a turn, so it stops at the first, and a target
+    // walked in through it in steps of a ten thousandth of the length moves
+    // no joint by a jump. A walk that looked for a turn only at each step's
+    // end stepped over these, on to a shape that comes nearer: a joint
+    // jumped 0.085 and 0.020 of the length as the target passed the turn
+    let toward = Vec2::from_angle(0.7);
+    for (what, (bones, length), nearest, stroke) in [
+      (
+        "9.90, 21.64 and 18.84",
+        links_each(
+          &[9.900633, 21.638046, 18.837463],
+          0.0,
+          &[-0.90585124, -0.58698565],
+        ),
+        0.17064,
+        Stroke::Line(Vec2::new(0.25, 0.0), Vec2::new(0.12, 0.0)),
+      ),
+      (
+        "13.19, 22.63, 6.34 and 6.57",
+        links_each(
+          &[13.188526, 22.632181, 6.343409, 6.571412],
+          2.1846757,
+          &[0.4121013, 0.6971329, 0.63312465],
+        ),
+        0.36986,
+        Stroke::Line(toward * 0.42, toward * 0.30),
+      ),
+    ] {
+      let (_, jump, missed) = walked(&bones, length, stroke, 0.0001);
+      assert!(jump < 0.01, "{what}: a joint jumps {jump} of the length");
+      assert_eq!(missed, 0, "{what}: steps off the target");
+      let comes = chain_nearest(&bones, length) / chain_length(&bones, length);
+      assert!(
+        (comes - nearest).abs() < 0.0002,
+        "{what}: as near as {comes}"
+      );
+    }
+  }
+
+  /// A number from 0 to 1, the next from `seed`: splitmix64, so a test's
+  /// random poses are the same every run
+  fn random(seed: &mut u64) -> f32 {
+    *seed = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let mut mixed = *seed;
+    mixed = (mixed ^ (mixed >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    mixed ^= mixed >> 31;
+    (mixed >> 40) as f32 / (1_u64 << 24) as f32
+  }
+
+  #[test]
+  fn a_chain_walked_in_from_random_poses_does_not_jump() {
+    // Seeded poses, each with its target walked in along a line through
+    // the first joint. A turn of the tip's distance inside one step that
+    // made a jump of 1% of the length is rare in poses drawn at random,
+    // about one in 1,700 of three to five bones walked in from the tip, so
+    // sixty of these are drawn about the two poses that have one, each
+    // part's length and each turn moved by up to 1%, and walked in through
+    // where they turn in steps of 0.00025 of the length. Forty more are
+    // drawn at random, three to five bones with parts of 5 to 30 and turns
+    // up to 1 rad a joint, and walked in from 95% of the length to 15% in
+    // steps of 0.001. No joint jumps. A walk that looked for a turn only at
+    // each step's end jumped on 14 of the sixty, by up to 0.09 of the length
+    let mut seed = 2026;
+    let wiggling: [(&[f32], &[f32], f32); 2] = [
+      (
+        &[9.900633, 21.638046, 18.837463],
+        &[-0.90585124, -0.58698565],
+        0.0,
+      ),
+      (
+        &[13.188526, 22.632181, 6.343409, 6.571412],
+        &[0.4121013, 0.6971329, 0.63312465],
+        2.1846757,
+      ),
+    ];
+    let mut poses = Vec::new();
+    for index in 0..60 {
+      let (lengths, turns, first) = wiggling[index % 2];
+      let mut moved = |value: f32| value * (1.0 + 0.01 * (2.0 * random(&mut seed) - 1.0));
+      let lengths: Vec<f32> = lengths.iter().map(|length| moved(*length)).collect();
+      let turns: Vec<f32> = turns
+        .iter()
+        .map(|turn| turn + 0.01 * (2.0 * random(&mut seed) - 1.0))
+        .collect();
+      let toward = Vec2::from_angle(TAU * random(&mut seed));
+      let stroke = Stroke::Line(toward * 0.45, toward * 0.12);
+      poses.push((links_each(&lengths, first, &turns), stroke, 0.00025));
+    }
+    for index in 0..40 {
+      let count = 3 + index % 3;
+      let lengths: Vec<f32> = (0..count).map(|_| 5.0 + 25.0 * random(&mut seed)).collect();
+      let turns: Vec<f32> = (1..count).map(|_| 2.0 * random(&mut seed) - 1.0).collect();
+      let first = TAU * random(&mut seed);
+      let toward = Vec2::from_angle(TAU * random(&mut seed));
+      let stroke = Stroke::Line(toward * 0.95, toward * 0.15);
+      poses.push((links_each(&lengths, first, &turns), stroke, 0.001));
+    }
+    let mut jumped = Vec::new();
+    for (index, ((bones, length), stroke, step)) in poses.into_iter().enumerate() {
+      let (_, jump, missed) = walked(&bones, length, stroke, step);
+      if jump >= 0.01 {
+        jumped.push((index, jump));
+      }
+      assert_eq!(missed, 0, "pose {index}: steps off the target");
+    }
+    assert!(jumped.is_empty(), "joints jump: {jumped:?}");
   }
 
   #[test]
@@ -3734,6 +3904,64 @@ mod tests {
   }
 
   #[test]
+  fn an_s_shaped_sway_changes_sides_when_its_target_is_nearer_than_its_tip() {
+    // The chain's main limit, as a tail's usual sway shows it: a wave that
+    // travels down the chain, each joint turned `amplitude × sin(2π joint /
+    // wave - phase)`. The pose is an S, bent both ways at once, and never
+    // passes through straight; but which way it closes changes as the wave
+    // travels, twice a cycle, and with its target held nearer than its tip
+    // the chain flips to the other side each time
+    for (what, lengths, wave, amplitude, share, size) in [
+      ("4 of 25", vec![25.0; 4], 4.0, 0.4, 0.5, 0.72),
+      ("4 of 25", vec![25.0; 4], 4.0, 0.4, 0.9, 0.35),
+      ("16 of 10", vec![10.0; 16], 16.0, 0.2, 0.5, 0.66),
+      ("16 of 10", vec![10.0; 16], 16.0, 0.2, 0.9, 0.23),
+    ] {
+      let what = format!("{what}, target at {share} of the length");
+      let pose = |phase: f32| {
+        let turns: Vec<f32> = (1..lengths.len())
+          .map(|joint| amplitude * (TAU * joint as f32 / wave - phase).sin())
+          .collect();
+        links_each(&lengths, 0.0, &turns)
+      };
+      let (bones, length) = pose(0.0);
+      let total = chain_length(&bones, length);
+      let target = ORIGIN + Vec2::new(share * total, 0.0);
+      // A cycle in 2,000 frames, each half a frame off the phases where the
+      // pose is exactly symmetric
+      let frames = 2000;
+      let (mut least_bend, mut joints) = (f32::MAX, Vec::new());
+      for frame in 0..frames {
+        let (bones, length) = pose(TAU * (frame as f32 + 0.5) / frames as f32);
+        let bend = chain_turns(&bones, length)
+          .iter()
+          .fold(0.0_f32, |most, turn| most.max(turn.abs()));
+        least_bend = least_bend.min(bend);
+        let after = reached(&bones, length, target, 1.0);
+        assert_on_target(&after, length, target, &what);
+        joints.push(chain_joints(&after, length));
+      }
+      let pops: Vec<f32> = (0..frames)
+        .filter_map(|frame| {
+          let (from, to) = (&joints[frame], &joints[(frame + 1) % frames]);
+          let moved = from
+            .iter()
+            .zip(to)
+            .map(|(from, to)| from.distance(*to))
+            .fold(0.0, f32::max)
+            / total;
+          (moved > 0.01).then_some(moved)
+        })
+        .collect();
+      assert!(least_bend > 0.19, "{what}: bent only {least_bend} at most");
+      assert_eq!(pops.len(), 2, "{what}: {pops:?}");
+      for pop in pops {
+        assert!((pop - size).abs() < 0.03, "{what}: a joint jumps {pop}");
+      }
+    }
+  }
+
+  #[test]
   fn a_wound_up_pose_may_jump_as_its_target_moves_out() {
     // The limit for a pose wound up on itself. Sixteen parts of 10 turned
     // 0.45 rad at each joint are wound 6.75 rad, more than a full turn,
@@ -3742,8 +3970,8 @@ mod tests {
     // first joint, before it goes out. So the walk bends it further while
     // that takes the tip out, as far as 35.2, and only for a target farther
     // than that opens it: the chain goes from wound tighter than its pose
-    // to unwound past it, and a joint jumps half the chain's length. A
-    // pose wound less than two thirds of a turn does not do this
+    // to unwound past it, and a joint jumps half the chain's length. No
+    // pose whose parts point half a turn or less apart can do this
     let (bones, length) = links(&[10.0; 16], 0.0, 0.45);
     let total = chain_length(&bones, length);
     let tip = chain_tip(&bones, length).distance(ORIGIN);
