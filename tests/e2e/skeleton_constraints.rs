@@ -309,7 +309,7 @@ fn the_overlay_draws_its_marks_at_the_target_and_the_tip() {
   reach_for(&mut engine, hero, Vec2::new(32.5, 60.5));
   let off = settled(&mut engine);
   // `colors::SKELETON_CONSTRAINT`, which the crate does not export
-  let mark = [0xff, 0x90, 0x00, 0xff];
+  let mark = [0xff, 0x50, 0xa0, 0xff];
   let marked = |frame: &image::RgbaImage, x: u32, y: u32| frame.get_pixel(x, y).0 == mark;
   assert!(
     off.pixels().all(|pixel| pixel.0 != mark),

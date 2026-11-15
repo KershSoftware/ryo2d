@@ -167,8 +167,9 @@ pub mod colors {
   pub const BOUNDING_BOX: [u8; 4] = [0x00, 0xff, 0x00, 0xff];
   /// Magenta for a skeleton's points
   pub const SKELETON_POINT: [u8; 4] = [0xff, 0x00, 0xff, 0xff];
-  /// Orange for a skeleton's constraints: each target and the line to it
-  pub const SKELETON_CONSTRAINT: [u8; 4] = [0xff, 0x90, 0x00, 0xff];
+  /// Rose for a skeleton's constraints: each target and the line to it,
+  /// clear of the bones' amber and the kinematic bodies' orange
+  pub const SKELETON_CONSTRAINT: [u8; 4] = [0xff, 0x50, 0xa0, 0xff];
 }
 
 /// Half the length of an origin crosshair arm, in screen pixels.

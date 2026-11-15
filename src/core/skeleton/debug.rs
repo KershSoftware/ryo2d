@@ -1,6 +1,7 @@
 //! The `debug:skeletons` overlay: every skeleton's bones and joints, the
 //! outlines of the regions its slots show, the triangles and hulls of
-//! their meshes, and its bounding boxes and points, where the frame draws
+//! their meshes, its bounding boxes and points, and its constraints' marks
+//! (each target, and the lines that reach for it), where the frame draws
 //! the skeleton.
 
 use glam::Vec2;
@@ -39,8 +40,10 @@ type Shown = (
 /// it, with a ring at its origin (its joint); the outline of each region
 /// drawn; each mesh drawn, as its triangles with its hull over them (the
 /// first vertices, as many as its `hull` says, joined in order and back to
-/// the first); each bounding box its slots show; and each point as a cross
-/// with a line the way it faces.
+/// the first); each bounding box its slots show; each point as a cross
+/// with a line the way it faces; and each constraint's target, an IK
+/// constraint's crossed and reached for from its last bone's tip, a
+/// transform constraint's joined to each of its bones.
 ///
 /// All of it is where the frame draws the skeleton (`alpha` of the way
 /// from the last fixed step to the next, lifted on a floor, flipped), so
@@ -196,7 +199,8 @@ mod tests {
   use crate::core::render::ShapeKind;
   use crate::core::skeleton::component::{Fired, Flip, Stand};
   use crate::core::skeleton::{
-    BoneId, BoneSetup, BoundingBoxAttachment, PointAttachment, Region, RegionAttachment, SlotSetup,
+    BoneId, BoneOverride, BoneSetup, BoundingBoxAttachment, PointAttachment, Region,
+    RegionAttachment, SlotSetup,
   };
   use crate::testing::asset_world;
 
@@ -526,6 +530,220 @@ mod tests {
       [vec![at, goal], vec![at + Vec2::new(8.0, 0.0), goal],]
     );
     assert!(marks(&mut world, ShapeKind::Cross).is_empty());
+  }
+
+  /// A world with an entity at (100, 50) showing `data`, posed in one step
+  fn spawned(data: SkeletonData) -> (World, Entity) {
+    let mut world = asset_world();
+    let handle = world.resource_mut::<Assets<SkeletonData>>().add(data);
+    let at = Transform::from_xy(100.0, 50.0);
+    let entity = world.spawn((at, Skeleton::new(handle))).id();
+    step(&mut world, entity);
+    (world, entity)
+  }
+
+  /// One fixed step of the entity's skeleton, where the entity stands
+  fn step(world: &mut World, entity: Entity) {
+    let skeleton = world.get::<Skeleton>(entity).expect("the skeleton");
+    let handle = skeleton.data().clone();
+    let assets = world.resource::<Assets<SkeletonData>>();
+    let seen = (handle.id(), assets.version(&handle).expect("a version"));
+    let data = assets.get(&handle).expect("the data").clone();
+    let root = world.get::<Transform>(entity).expect("placed").to_affine();
+    let mut skeleton = world.get_mut::<Skeleton>(entity).expect("the skeleton");
+    skeleton.step(
+      &data,
+      seen,
+      None,
+      1.0 / 60.0,
+      root.into(),
+      &mut Fired::default(),
+    );
+  }
+
+  /// Bones "a" (10 long) and its child "b" (8 along it), and a target
+  /// "goal" at (0, 20): an IK constraint turns "a" toward the goal and a
+  /// transform constraint (every mix 0, so it moves nothing) names "b"
+  fn reaching_and_linked() -> SkeletonData {
+    reaching_and_linked_from(false)
+  }
+
+  /// [`reaching_and_linked`], with "goal" the first bone when `goal_first`
+  /// and the last otherwise
+  fn reaching_and_linked_from(goal_first: bool) -> SkeletonData {
+    use crate::core::skeleton::{IkSetup, TransformSetup};
+    let long = BoneSetup {
+      length: 10.0,
+      ..BoneSetup::default()
+    };
+    let beside = BoneSetup {
+      x: 8.0,
+      ..BoneSetup::default()
+    };
+    let goal = BoneSetup {
+      y: 20.0,
+      ..BoneSetup::default()
+    };
+    let mut builder = SkeletonData::builder();
+    if goal_first {
+      builder = builder.bone("goal", None, goal);
+    }
+    builder = builder.bone("a", None, long).bone("b", Some("a"), beside);
+    if !goal_first {
+      builder = builder.bone("goal", None, goal);
+    }
+    builder
+      .ik("reach", &["a"], "goal", IkSetup::default())
+      .transform_constraint("link", &["b"], "goal", TransformSetup::default())
+      .build()
+      .expect("a valid skeleton")
+  }
+
+  /// Every shape of the overlay drawn at `alpha`
+  fn drawn_at(world: &mut World, alpha: f32) -> DebugDraw {
+    let mut debug = DebugDraw::default();
+    draw(world, alpha, 1.0, &mut debug);
+    debug
+  }
+
+  /// The lines and crosses of `debug` in the constraints' colour
+  fn marks_of(debug: &DebugDraw, kind: ShapeKind) -> Vec<Vec<Vec2>> {
+    let [r, g, b, a] = colors::SKELETON_CONSTRAINT;
+    let mark = Color::new(r, g, b, a);
+    let ours = debug
+      .each()
+      .filter(|(shape, _)| shape.kind == kind && shape.color == mark);
+    ours.map(|(_, points)| points.to_vec()).collect()
+  }
+
+  #[test]
+  fn the_overlay_marks_constraints_where_a_frame_between_steps_draws_the_bones() {
+    // The goal moves from (0, 20) to (20, 0) between two steps, so "a"
+    // turns from pointing down to pointing right. Drawn half way between
+    // the steps, the goal is drawn at (10, 10), "a" half way round, its
+    // tip 10 along it at 45 degrees, and "b"'s origin half way from (0, 8)
+    // to (8, 0); the last step's pose alone would put them elsewhere
+    let (mut world, entity) = spawned(reaching_and_linked());
+    let moved = BoneOverride {
+      translation: Some(Vec2::new(20.0, 0.0)),
+      ..BoneOverride::default()
+    };
+    let mut skeleton = world.get_mut::<Skeleton>(entity).expect("the skeleton");
+    skeleton.override_bone("goal", moved);
+    step(&mut world, entity);
+    let global = *world.get::<GlobalTransform>(entity).expect("placed");
+    world.entity_mut(entity).insert(PreviousGlobalTransform {
+      global,
+      skip: false,
+    });
+    let at = Vec2::new(100.0, 50.0);
+    let near = |actual: Vec2, expected: Vec2| {
+      assert!(
+        actual.abs_diff_eq(expected, 1e-3),
+        "expected {expected}, got {actual}"
+      );
+    };
+
+    let debug = drawn_at(&mut world, 0.5);
+    let goal = at + Vec2::new(10.0, 10.0);
+    let lines = marks_of(&debug, ShapeKind::Line);
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    // The IK constraint's reach, from the tip to the goal
+    let tip = at + Vec2::from_angle(std::f32::consts::FRAC_PI_4) * 10.0;
+    near(lines[0][0], tip);
+    near(lines[0][1], goal);
+    // The transform constraint's line, from "b"'s origin to the goal
+    near(lines[1][0], at + Vec2::new(4.0, 4.0));
+    near(lines[1][1], goal);
+    let crosses = marks_of(&debug, ShapeKind::Cross);
+    assert_eq!(crosses.len(), 1);
+    near(crosses[0][0], goal);
+
+    // At the end of the step, where the last step left them
+    let debug = drawn_at(&mut world, 1.0);
+    let lines = marks_of(&debug, ShapeKind::Line);
+    near(lines[0][0], at + Vec2::new(10.0, 0.0));
+    near(lines[0][1], at + Vec2::new(20.0, 0.0));
+    near(lines[1][0], at + Vec2::new(8.0, 0.0));
+  }
+
+  #[test]
+  fn the_overlay_marks_nothing_for_bones_or_constraints_that_are_gone() {
+    use crate::core::skeleton::IkSetup;
+    let (mut world, entity) = spawned(reaching_and_linked());
+    assert_eq!(
+      marks_of(&drawn_at(&mut world, 0.0), ShapeKind::Line).len(),
+      2
+    );
+
+    // New data without "b" or its transform constraint, before the next
+    // step: the skeleton has no pose for it, so nothing is drawn
+    let long = BoneSetup {
+      length: 10.0,
+      ..BoneSetup::default()
+    };
+    let goal = BoneSetup {
+      y: 20.0,
+      ..BoneSetup::default()
+    };
+    let fewer = SkeletonData::builder()
+      .bone("a", None, long)
+      .bone("goal", None, goal)
+      .ik("reach", &["a"], "goal", IkSetup::default())
+      .build()
+      .expect("a valid skeleton");
+    let handle = world
+      .get::<Skeleton>(entity)
+      .expect("the skeleton")
+      .data()
+      .clone();
+    let mut assets = world.resource_mut::<Assets<SkeletonData>>();
+    *assets.get_mut(&handle).expect("the data") = fewer;
+    assert_eq!(drawn_at(&mut world, 0.0).each().count(), 0);
+    // After a step, only the IK constraint is marked
+    step(&mut world, entity);
+    let debug = drawn_at(&mut world, 0.0);
+    assert_eq!(marks_of(&debug, ShapeKind::Line).len(), 1);
+    assert_eq!(marks_of(&debug, ShapeKind::Cross).len(), 1);
+
+    // A pose shorter than its data: every index is looked up, so what
+    // names a bone the pose lacks is not marked. Without "goal" neither
+    // constraint has a target; without "b" alone the link has no bone
+    let (mut world, entity) = spawned(reaching_and_linked());
+    let mut skeleton = world.get_mut::<Skeleton>(entity).expect("the skeleton");
+    skeleton.pose.skeleton_space.truncate(2);
+    skeleton.previous_space.truncate(2);
+    let debug = drawn_at(&mut world, 0.0);
+    assert!(marks_of(&debug, ShapeKind::Line).is_empty());
+    assert!(marks_of(&debug, ShapeKind::Cross).is_empty());
+    // The bones it has are drawn: "a" as a line and both as joints
+    let bones = Color::new(
+      colors::BONE[0],
+      colors::BONE[1],
+      colors::BONE[2],
+      colors::BONE[3],
+    );
+    let lines = debug.each().filter(|(shape, _)| shape.color == bones);
+    assert_eq!(lines.count(), 1);
+    assert_eq!(
+      debug
+        .each()
+        .filter(|(shape, _)| shape.kind == ShapeKind::Circle)
+        .count(),
+      2
+    );
+
+    // With "goal" listed first, "b" is the last bone: without it the link
+    // has no bone to mark, and the IK constraint still marks its reach
+    let (mut world, entity) = spawned(reaching_and_linked_from(true));
+    let mut skeleton = world.get_mut::<Skeleton>(entity).expect("the skeleton");
+    skeleton.pose.skeleton_space.truncate(2);
+    skeleton.previous_space.truncate(2);
+    let debug = drawn_at(&mut world, 0.0);
+    let lines = marks_of(&debug, ShapeKind::Line);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0][1].abs_diff_eq(Vec2::new(100.0, 70.0), 1e-3));
+    assert_eq!(marks_of(&debug, ShapeKind::Cross).len(), 1);
   }
 
   #[test]
