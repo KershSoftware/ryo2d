@@ -345,3 +345,134 @@ A `Mesh(..)` attachment and a `deform` block per slot in an animation. The exact
   - 200 skeletons of 25 regions plus one weighted mesh of 60 vertices each: the drawing work in extract is at most 600 µs a frame, and the update at most 1,000 µs a step;
   - the region-only figures of the core do not rise by more than 5%.
 - **Demo:** a new page with a weighted cape that swings with its bones, a banner rippled by deform keys, and a line pointing at the console's `debug:skeletons` for the overlay. The page tests cover it.
+
+## Constraints: details settled at planning (2026-11-14)
+
+Stage 3 builds on the merged core and meshes. These are the planner's calls. The owner may revisit them when the plan comes for approval.
+
+The rules come from Spine's public user guide and format reference (its pages on IK constraints, transform constraints and constraint order), from geometry and from first principles. Where the solvers below differ from what those pages describe, the difference is stated.
+
+### What a constraint is
+
+- **A constraint moves bones after animation**, by a rule and not by keys. A skeleton's data holds one list of constraints, in the order they apply. There are two kinds:
+  - an **IK constraint** turns one bone, two bones or a chain so the last one's tip reaches or points at a target bone;
+  - a **transform constraint** makes one or more bones copy a target bone's rotation, place, scale or shear, each by its own mix.
+- **A target is a bone.** A rig gives a constraint a target bone of its own (often a child of the root, with no image), and a game moves it with a bone override in world space, or an animation keys it. So a target moves in the same step as the bones that follow it, with no lag.
+- **Skeletons without constraints do no new work**: their step takes the path it takes today.
+
+### IK constraints
+
+- **Settings:** a name, the bones (first to last), the target, and:
+  - `mix`, 0 to 1: 0 leaves the animated pose, 1 is the solved pose, and between them each bone's rotation is blended the short way;
+  - `bend_positive` (two bones): which way the joint bends, judged in the space of the first bone's parent. Positive means the turn from the first part of the limb to the second is in the positive direction there. For a skeleton that is not mirrored that is clockwise on screen; under a mirrored ancestor or a flipped entity the limb is drawn mirrored, so a character turned round keeps its knees. The bones' own scales do not change which side that is;
+  - `softness` (two bones): a distance. When the target is within this distance of the bones' full reach, the tip slows as the bones straighten, and never snaps straight;
+  - `stretch` (one or two bones): when the target is beyond reach, the first bone is scaled along its length so the tip reaches it;
+  - `compress` (one bone): when the target is nearer than the bone's length, the bone is scaled down so its tip is on it;
+  - `uniform`: with stretch or compress, scale the bone across its length by the same factor.
+- **One bone** turns to point at the target. Pointing needs no length, so a bone of length 0 can look at a target.
+- **Two bones** (the second an immediate child of the first) are solved as a triangle: the two parts' lengths and the distance to the target.
+  - The solve is in the space of the first bone's parent, so a squashed, sheared or mirrored ancestor is handled exactly: the target is brought into that space first, and every length and distance below is measured there.
+  - The first part runs from the first bone's origin to the second bone's origin, wherever that is: the second bone need not lie on the first's axis. The second part is the second bone's length along its axis.
+  - Both parts are taken as rigid, at their lengths in the animated pose, and the triangle is solved by the law of cosines. That is exact when the first bone's own scale is even and it has no shear (the usual case). When it is uneven or sheared, the second part's length changes as it turns and the tip misses: a recorded limit. Spine's guide meets that case by moving the second bone onto the first's axis and clearing the first's shear; this design changes neither.
+  - A target too far away straightens the bones toward it. One too near folds them as far as they go.
+  - **Softness:** with full reach `m` and softness `s` (taken as `m` at most), a target distance `d` beyond `m - s` is replaced by `(m - s) + s × (1 - e^(-(d - (m - s)) / s))`, which approaches `m` and never reaches it. The slope is continuous where it begins. The triangle is solved for that distance, and `mix` then blends toward the result.
+  - **Stretch** applies only when softness is 0 and the first bone's scale is even and unsheared, as Spine's guide has it. It reaches the target exactly when the second bone lies on the first's axis or `uniform` is set.
+- **Stretch and compress** multiply the first bone's own scale along its length (and across it with `uniform`) by the target's distance over the reach, blended by `mix` as `1 + (factor - 1) × mix`.
+- **A chain** (three to sixteen bones, each an immediate child of the one before) is solved by an iterative method (forward and backward reaching) from the animated pose, with a fixed cap on its passes, so the same pose and target always give the same result. A chain has `mix` only. Spine has no chains; this is the engine's own.
+- **Every bone an IK constraint turns must inherit normally** from its parent. Another inherit mode fails to load, as Spine's guide rules it out.
+
+### Transform constraints
+
+- **Settings:** a name, the bones, the target, six mixes (`rotate`, `x`, `y`, `scale_x`, `scale_y`, `shear_y`), six offsets added to the target's values (the same six), and two switches, `local` and `relative`.
+- **A mix** of 0 leaves that property alone and 1 applies it fully. A mix may be below 0 or above 1: a gear that turns against another is a rotate mix of -1.
+- **World, not relative** (the default): each bone's transform in the skeleton's space moves toward the target's.
+  - Place: toward the target's point `(offset x, offset y)`, by the x and y mixes.
+  - Rotation: its x axis turns the short way toward the target's x axis plus the offset.
+  - Scale: each axis's length moves toward the target's axis's length plus the offset.
+  - Shear: the angle between its axes moves toward the target's plus the offset.
+- **World and relative:** the target's values (plus offsets) are added to the bone's, times the mix: its place is moved by the target's point, it is turned by the target's turn, and its axes' lengths are multiplied by `1 + (target's length - 1 + offset) × mix`.
+- **Local, not relative:** the bone's own values (those animation keys set) move toward the target's own values plus the offsets.
+- **Local and relative:** the target's own values plus the offsets are added to the bone's, times the mix (scale multiplies, as above).
+- **The target's own values** are read as they stand when the constraint runs: after animation, the game's overrides and any earlier constraint that changed them.
+- **Rotation in a local mode is the plain number**, not the short way round: an own rotation is what keys set and may pass a full turn, so a gear at half the speed of another is a local relative rotate mix of 0.5 and turns smoothly. A world mode reads the way an axis points, which is only known within a turn, and goes the short way.
+- **Mirroring is the bone's own.** In a world mode a length is never negative and shear is how far a bone's axes are from square on that bone's own side, so a transform constraint never mirrors a bone or undoes its mirror. A mirrored target (one whose axes are reflected) mirrors the rotation and shear offsets.
+- A world mode sets a bone's transform in the skeleton's space directly, whatever its inherit mode, and leaves its own values as they were. A local mode changes its own values.
+- **A constraint's bones are taken in bone order.** Each is set, and its descendants placed again, before the next is read, so a bone and its own descendant can both be in one constraint.
+
+### Order and the step
+
+- **The step** becomes: animation, then the game's bone overrides and every bone's transform in the skeleton's space (as today), then each constraint in order, then the root transform, sockets and events.
+- **After a constraint is applied**, the descendants of the bones it moved are placed again (and, for IK and the local modes, those bones themselves, from their new values), so the next constraint sees them where they now are.
+- **A later constraint wins.** If a later constraint moves an ancestor of a bone that an earlier world-mode transform constraint placed, that bone is placed again from its own values and the earlier result is lost. This is Spine's stated rule. IK and local-mode results are kept, since they are in the bones' own values.
+- **Overrides come first, and still hold.** A world-space override is converted against the pose before constraints, so an override on a target bone steers the constraint in the same step. When a bone is placed again because a constraint moved a bone above it, its override is applied afresh against the new pose, so a world-space override on it still points where the game asked: a foot held level under a shin that IK turns stays level. A bone that a constraint has itself changed keeps the constraint's result: on that bone the constraint has the last word over the override.
+- **Placing a posed skeleton again** between steps (it rides another skeleton's socket, or it is flipped) gives the pose the step gave: constraints run again from the animated pose.
+- **Drawing between steps** blends the constrained pose, as it blends any pose.
+
+### Keys
+
+- **An IK timeline** keys one constraint's `mix`, `softness`, `bend_positive`, `compress` and `stretch` together. **A transform timeline** keys one constraint's six mixes.
+- A value a key leaves out is the constraint's setup value.
+- Numbers blend between keys by the key's curve, and between animations as bone values do (replace toward the key, or add). A crossfade treats a constraint as one property. A mix is clamped to its range after the tracks are applied.
+- The three switches are stepped: they change at their key, and follow the module's rule for attachment keys. In a crossfade the newest animation with any weight decides, and if it has no key for the constraint the setup value stands from the first step of the mix.
+- An override of a switch forces it, whatever the animations key.
+- Two timelines for one constraint in an animation fail to load.
+
+### The game's side
+
+- **`Skeleton::override_constraint(name, ..)`** sets any of an IK constraint's keyed values, or any of a transform constraint's mixes, after animation and until `clear_constraint_override(name)`. A value left out is the animated one. It is how a game turns foot IK off in the air.
+- **A target is moved** with `override_bone` on the target bone, in world space.
+- Overrides are kept by name through a hot reload. An unknown constraint name warns once per name and does nothing.
+
+### Validation
+
+A constraint that cannot work fails to load, naming the constraint and the reason:
+
+- names are unique among constraints of both kinds; at most 255 constraints;
+- every bone and the target exist; a constraint's bones are distinct; the target is not one of its bones nor a descendant of one;
+- IK: one to sixteen bones, each after the first an immediate child of the one before; every bone inherits normally; `mix` is 0 to 1; `softness` is finite and not negative;
+- IK settings that cannot apply are refused: `bend_positive` set false, or `softness`, on other than two bones; `compress` on other than one; `stretch` or `uniform` on a chain;
+- IK lengths: the last bone of a two-bone or chain constraint has a length above 0 (its tip is what reaches, and a length left out would make the constraint do nothing in silence); a one-bone constraint with `stretch` or `compress` has a length above 0;
+- transform: at least one bone; mixes and offsets finite;
+- timelines: the constraint exists and is of the timeline's kind; values are finite and in range; a key sets no switch its constraint could not have.
+
+### Limits, recorded
+
+- **Constraints bound to a skin** (active only while a skin is worn) are not built: every constraint is always active. The import part decides whether it needs them.
+- **Two bones whose first has an uneven scale or a shear of its own** miss the target, by more the more uneven it is. An uneven or sheared ancestor is exact.
+- **A chain** assumes each of its bones has an even scale and no shear; otherwise its tip may miss.
+- **Stretch on two bones** falls a little short or long when the second bone is off the first's axis and `uniform` is not set.
+- **A world mode with a mix that is not a whole number** jumps when its target passes half a turn, since the way an axis points is only known within a turn. A local mode does not.
+- **A target moved from frame-rate input** (the pointer) is read in the fixed step, so the bones follow at the step's rate and are drawn blended between steps, as every bone is.
+- **A game cannot read where animation puts a bone in the step under way**, only where the last step left it. So lifting a keyed foot target to the ground reads that target a step late (a step's travel, at most), or the game computes the target itself, as the demo's walker does. An override that adds to the animated place, or a read of the animated pose, is the lever if a game needs better.
+- **Path and physics constraints** stay in the backlog.
+
+### File format
+
+A `constraints` list at the top of the file, in the order they apply, each `Ik(..)` or `Transform(..)`; and a `constraints` block in an animation, by constraint name, holding an `ik` or a `transform` list of keys. Angles are degrees, as everywhere in the file. The exact keys are in the plan and are checked by the loader's tests. The format carries everything the data can hold.
+
+### Debug and demo
+
+- **`debug:skeletons`** draws, for an IK constraint, a mark at the target and a line from the last bone's tip to it; for a transform constraint, a line from each bone to the target.
+- **The demo gets a ninth page, "Constraints":**
+  - an arm of two parts that reaches for the pointer, with settings for the bend, softness, stretch and mix;
+  - a walker whose two-part legs plant their feet on uneven ground as it crosses it;
+  - a part held level by a transform constraint while the arm carrying it turns.
+- **The hero's pelvis** follows its trunk through a transform constraint (it is keyed by hand in three animations today), so every animation gets it.
+
+### Acceptance (stage 3)
+
+- **Solvers** (unit tests on positions, to 0.01 of a unit):
+  - one bone points at its target, at each mix, with stretch, compress and uniform;
+  - two bones reach a target in range on each bend side; straighten toward one out of range; fold for one too near; under softness the tip's distance follows the formula and is continuous;
+  - the same under a rotated, unevenly scaled, sheared and mirrored ancestor, and with the second bone off the first's axis; the bend side holds under a mirrored ancestor, a flipped entity and a first bone mirrored by its own scale;
+  - a chain reaches a target in range and straightens toward one out of range, the same on every run;
+  - a transform constraint in each of its four modes, each mix alone, with offsets, at mixes of -1, 0.5 and 2, under a mirrored target and on a mirrored bone; a local relative rotate mix of 0.5 turns smoothly through a full turn of its target.
+- **Order:** two constraints in each order give the results the order rule says; a world-mode result is lost when a later constraint moves an ancestor; a bone and its descendant in one constraint are both constrained; a world-space override on a bone below an IK bone still holds; a placed-again skeleton equals its step's pose; a skeleton posed in the frame it appears has its constraints applied.
+- **Keys and overrides:** a keyed mix blends through a crossfade without a dip; a switch changes at its key and follows the attachment rule in a crossfade; an override beats the animation and is cleared; a target bone moved by a world override is reached in the same step.
+- **Pixels:** a two-bone arm reaches a moved target; a constrained skeleton flipped, y-sorted and drawn between steps behaves as an unconstrained one does; a socket on a constrained bone follows it in the same step; the overlay draws its marks at the target and the tip.
+- **Robustness:** every validation rule fails with the constraint named; a reload that removes or reorders constraints keeps playing, with overrides kept by name; a target at the first bone's origin, a second bone at the first's origin, a flat (zero-scale) parent, and a flat bone or target under a transform constraint change nothing they cannot solve and make no NaN.
+- **Allocations:** no per-step allocation with constraints running.
+- **Speed** (release, median of three, with `uptime` recorded):
+  - 200 skeletons, each with two two-bone IK constraints, one one-bone IK constraint and one transform constraint: the update is at most 1,000 µs a step;
+  - the figures of skeletons without constraints do not rise by more than 5%, measured in one sitting against the build before constraints.
+- **Demo:** the Constraints page as above; the hero's pelvis by constraint on every page. The page tests cover both.
