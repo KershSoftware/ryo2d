@@ -1311,10 +1311,19 @@ const FEET: [(&str, &str); 2] = [("foot_near", "shin_near"), ("foot_far", "shin_
 
 /// Steps the walker for four seconds, handing each step's targets and tips
 /// (in `FEET`'s order) and the body's place to `each`
-fn walk(engine: &mut HeadlessEngine, mut each: impl FnMut([(Vec2, Vec2); 2], Vec2)) {
+fn walk(engine: &mut HeadlessEngine, each: impl FnMut([(Vec2, Vec2); 2], Vec2)) {
+  walk_for(engine, 240, each);
+}
+
+/// [`walk`] for `frames` steps
+fn walk_for(
+  engine: &mut HeadlessEngine,
+  frames: usize,
+  mut each: impl FnMut([(Vec2, Vec2); 2], Vec2),
+) {
   engine.step_frames(10).unwrap();
   let walker = one(engine, WALKER);
-  for _ in 0..240 {
+  for _ in 0..frames {
     engine.step().unwrap();
     let feet = FEET.map(|(target, shin)| {
       (
@@ -1405,6 +1414,77 @@ fn the_walker_s_feet_are_on_the_ground() {
     }
   });
   assert!(planted_frames > 200, "planted frames: {planted_frames}");
+}
+
+/// Sets the Speed row (the panel's sixth, at 120 to start) to `speed`
+fn set_speed(engine: &mut HeadlessEngine, speed: f32) {
+  // The panel has the focus once it has been drawn
+  engine.step_frames(10).unwrap();
+  for _ in 0..5 {
+    engine.tap_key(KeyCode::ArrowDown);
+    engine.step_frames(2).unwrap();
+  }
+  let steps = ((speed - 120.0) / 20.0).round() as i32;
+  let key = if steps > 0 {
+    KeyCode::ArrowRight
+  } else {
+    KeyCode::ArrowLeft
+  };
+  for _ in 0..steps.abs() {
+    engine.tap_key(key);
+    engine.step_frames(2).unwrap();
+  }
+}
+
+#[test]
+fn the_walker_s_feet_stay_planted_on_the_ground_fast_slow_and_across_the_wrap() {
+  // At the fastest speed long enough to go off the right and start again
+  // at the left, and at the slowest. Each first walks a while at its
+  // speed: a step planned before the speed changed lands as far ahead as
+  // the old speed would have carried the hip, and a foot put down farther
+  // than the leg reaches slides until the hip comes up to it
+  for (speed, settle, frames) in [(240.0, 30, 330), (40.0, 240, 240)] {
+    let Some(mut engine) = engine_on(CONSTRAINTS) else {
+      return;
+    };
+    set_speed(&mut engine, speed);
+    engine.step_frames(settle).unwrap();
+    let mut last: [Option<Vec2>; 2] = [None; 2];
+    let mut planted: [Option<Vec2>; 2] = [None; 2];
+    let (mut planted_frames, mut wrapped) = (0, false);
+    let mut before: Option<Vec2> = None;
+    walk_for(&mut engine, frames, |feet, body| {
+      wrapped |= before.is_some_and(|before| body.x < before.x);
+      before = Some(body);
+      for (foot, (target, tip)) in feet.into_iter().enumerate() {
+        let ground = ground_height(tip.x);
+        assert!(
+          tip.y <= ground + 2.0,
+          "speed {speed}: foot {foot} at {tip}, under the ground at {ground}"
+        );
+        if last[foot].is_some_and(|last| last.distance(target) < 1e-3) {
+          planted_frames += 1;
+          assert!(
+            (tip.y - ground).abs() <= 2.0,
+            "speed {speed}: foot {foot} planted at {tip}, the ground at {ground}"
+          );
+          let start = *planted[foot].get_or_insert(tip);
+          assert!(
+            start.distance(tip) < 1.0,
+            "speed {speed}: foot {foot} planted at {start}, now at {tip}"
+          );
+        } else {
+          planted[foot] = None;
+        }
+        last[foot] = Some(target);
+      }
+    });
+    assert!(
+      planted_frames > frames,
+      "speed {speed}: {planted_frames} planted frames of two feet in {frames}"
+    );
+    assert_eq!(wrapped, speed > 200.0, "speed {speed}: wrapped {wrapped}");
+  }
 }
 
 /// A turn in radians brought within half a turn either way

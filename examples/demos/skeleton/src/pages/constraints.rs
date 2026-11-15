@@ -4,7 +4,7 @@
 //! legs whose feet IK puts on targets the page plants and steps ahead.
 //!
 //! The page moves only target bones, with world-space bone overrides, and
-//! sets the arm's constraints' values with `override_constraint`
+//! sets the arm's constraints' values with `override_constraint`.
 
 use std::f32::consts::PI;
 
@@ -16,13 +16,17 @@ use crate::hero::{self, EDGE, GRASS, HAZE, SKY};
 const REACHER: &str = "reacher.skeleton.ron";
 const WALKER: &str = "walker.skeleton.ron";
 
-/// Where the arm's stand is, and its shoulder above the stand's foot (as
-/// the rig has it)
-const STAND: f32 = 430.0;
+/// Where the arm's stand is, right of the readout so the arm never
+/// reaches over it, and its shoulder above the stand's foot (as the rig has
+/// it)
+const STAND: f32 = 780.0;
 const SHOULDER: f32 = 268.0;
 /// The arm's full reach: its two parts' lengths in the rig
 const REACH: f32 = 250.0;
 const TARGET: Color = Color::rgb(255, 214, 102);
+/// How far above the wrist the `horizon` bone is kept: the overlay's line
+/// from the hand to it is a short tick
+const HORIZON: f32 = 24.0;
 
 /// The ground: its mean height on the 1280 x 720 canvas, and the top of the
 /// image drawn for it, clear above its highest point
@@ -307,6 +311,19 @@ impl ConstraintsPage {
     let Some(mut skeleton) = ctx.world.get_mut::<Skeleton>(arm) else {
       return;
     };
+    // The level constraint copies only the horizon bone's rotation, which
+    // stays 0: it is kept just above the wrist (where the last step left
+    // it), so debug:skeletons draws its line as a short tick there
+    if let Some(hand) = skeleton.bone_world("hand") {
+      skeleton.override_bone(
+        "horizon",
+        BoneOverride {
+          translation: Some(hand.translation - Vec2::new(0.0, HORIZON)),
+          space: BoneSpace::World,
+          ..Default::default()
+        },
+      );
+    }
     skeleton.override_bone(
       "target",
       BoneOverride {
