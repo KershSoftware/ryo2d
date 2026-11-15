@@ -2850,6 +2850,56 @@ mod tests {
   }
 
   #[test]
+  fn a_chain_settles_steeply_into_its_nearest_shape() {
+    // The pose that settled most steeply of 4,000 drawn at random (three
+    // bones, turns up to 1 rad a joint), walked in from its tip: parts of
+    // 11.90, 15.63 and 24.58 turned 0.782 and -0.976, whose nearest shape
+    // is 0.00316 of the length from the first joint. Near there the shape
+    // goes as the square root of how far the target is outside it, so a
+    // joint moves steeply over the target's last steps: walked in along
+    // sixteen lines through the first joint to 0.002 of the length, the
+    // most a joint moves across the last 1/1024 of a step is 0.0116 of the
+    // length in steps of 0.001 and 0.0015 in steps of 0.0001. Steep, and
+    // less the smaller the step: not a jump
+    let (bones, length) = links_each(
+      &[11.898093, 15.626931, 24.577766],
+      0.0,
+      &[0.78162336, -0.9757828],
+    );
+    let total = chain_length(&bones, length);
+    let nearest = chain_nearest(&bones, length) / total;
+    assert!(
+      (nearest - 0.00316).abs() < 0.00002,
+      "the nearest shape is {nearest} of the length away"
+    );
+    let tip = chain_tip(&bones, length).distance(ORIGIN) / total;
+    let mut most = [0.0_f32; 2];
+    for index in 0..16 {
+      let toward = Vec2::from_angle(TAU * index as f32 / 16.0);
+      let stroke = Stroke::Line(toward * tip, toward * 0.002);
+      for (most, step) in most.iter_mut().zip([0.001, 0.0001]) {
+        let (_, moved, missed) = walked(&bones, length, stroke, step);
+        assert!(
+          moved < 0.015,
+          "line {index}, steps of {step}: a joint moves {moved} of the length"
+        );
+        assert_eq!(
+          missed, 0,
+          "line {index}, steps of {step}: steps off the target"
+        );
+        *most = most.max(moved);
+      }
+    }
+    // The case is the steep one, and a smaller step moves a joint less
+    assert!(
+      most[0] > 0.009 && most[1] < most[0] / 4.0,
+      "a joint moves at most {} of the length in steps of 0.001, {} in steps of 0.0001",
+      most[0],
+      most[1]
+    );
+  }
+
+  #[test]
   fn a_chain_meets_every_target_from_its_nearest_shape_out() {
     // The fourteen chains again, and one whose joints are where the bones'
     // own matrices put them: its second and fourth bones sit off their

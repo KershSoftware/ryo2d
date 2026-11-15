@@ -49,6 +49,12 @@
 //!   the first has in it;
 //! - `skeletons_update_sockets` and `skeletons_extract_sockets`: 200
 //!   skeletons each carrying a socket with a child;
+//! - `skeletons_update_constraints`: the crowd with constraints, each
+//!   skeleton's two limbs of two bones reaching by IK, a bone pointed by a
+//!   one-bone IK constraint and a bone copying a turn by a transform
+//!   constraint, the three targets moved by world-space bone overrides
+//!   before every step; a step whose tips are not on their targets is a
+//!   miss, so the constraints are known to act in the steps measured;
 //! - `skeleton_pass_200` and `skeleton_pass_2000`: the frame pass that
 //!   poses new skeletons (`pose_new_skeletons`) in a steady frame, per call,
 //!   run outside a frame;
@@ -112,6 +118,8 @@ struct Case {
   /// A weighted mesh of 60 vertices in a slot among the regions, its shape
   /// keyed by both of the base track's animations
   mesh: bool,
+  /// The constraints of [`LIMBS`] and their targets moved every step
+  constraints: bool,
 }
 
 impl Case {
@@ -124,6 +132,7 @@ impl Case {
       sockets: false,
       plain: false,
       mesh: false,
+      constraints: false,
     }
   }
 }
@@ -247,8 +256,10 @@ fn ribbon() -> MeshAttachment {
 /// slot among them shows the [`ribbon`], and `idle` and `walk` each key
 /// every position of it (three keys, a bezier on each, by a different
 /// amount), so a deform plays in every step and two are blended through
-/// every crossfade of the base track
-fn rig(images: &[Handle<Image>], mesh: bool) -> SkeletonData {
+/// every crossfade of the base track. With `constraints`, the IK
+/// constraints of [`LIMBS`] and then a transform constraint that copies the
+/// turn of the first limb's second bone (`b28`), in the world, onto `b26`
+fn rig(images: &[Handle<Image>], mesh: bool, constraints: bool) -> SkeletonData {
   let turn = |bone: usize, amount: f32| SkeletonTimeline::Rotate {
     bone: BoneId(bone as u8),
     frames: vec![
@@ -379,6 +390,24 @@ fn rig(images: &[Handle<Image>], mesh: bool) -> SkeletonData {
       );
     }
   }
+  if constraints {
+    for (name, [first, second, target]) in LIMBS {
+      let bones: &[&str] = if first == second {
+        &[first]
+      } else {
+        &[first, second]
+      };
+      builder = builder.ik(name, bones, target, IkSetup::default());
+    }
+    let turn = TransformSetup {
+      mix: TransformMix {
+        rotate: 1.0,
+        ..TransformMix::default()
+      },
+      ..TransformSetup::default()
+    };
+    builder = builder.transform_constraint("copy", &["b26"], "b28", turn);
+  }
   builder
     .event(SkeletonEventData::new("step"))
     .animation(clip("idle", idle))
@@ -424,7 +453,7 @@ impl Scene for Crowd {
         })
         .collect()
     };
-    let data = ctx.assets().add(rig(&images, case.mesh));
+    let data = ctx.assets().add(rig(&images, case.mesh, case.constraints));
     let shift = if case.offscreen { OFF_SCREEN } else { 0.0 };
     for i in 0..case.skeletons {
       let at = Vec2::new(
@@ -448,6 +477,9 @@ impl Scene for Crowd {
       // that off again
       if case.plain {
         ctx.world.entity_mut(skeleton).remove::<Interpolated>();
+      }
+      if case.constraints {
+        ctx.world.entity_mut(skeleton).insert(Goals::default());
       }
       if case.sockets {
         let socket = ctx
@@ -488,9 +520,132 @@ fn mix(animation: &mut SkeletonAnimation, index: usize, frame: usize) {
   }
 }
 
+/// The IK constraints of the constraint case, each named, with its first
+/// and last bone and its target: two limbs of two bones (parts of 4 and 4,
+/// hanging from the spine) and one bone pointed (the same bone twice).
+/// The bones are among the rig's 30; the targets are leaves no constraint
+/// moves
+const LIMBS: [(&str, [&str; 3]); 3] = [
+  ("limb_a", ["b19", "b28", "b21"]),
+  ("limb_b", ["b20", "b29", "b22"]),
+  ("point", ["b27", "b27", "b23"]),
+];
+
+/// The length of every bone of the rig: how far its tip is along its x axis
+const BONE_LENGTH: f32 = 4.0;
+
+/// Where a constrained skeleton's targets were put for its next step, in
+/// the world, and how many times; and where each limb's first bone was in
+/// the step before
+#[derive(Component, Default)]
+struct Goals {
+  at: [Vec2; 3],
+  steps: u32,
+  origins: [Option<Vec2>; 3],
+}
+
+/// How the constrained crowd's steps went: those checked, those in which a
+/// tip was off its target (or a target off where it was put), and the
+/// farthest any was
+#[derive(Resource, Default, Clone, Copy)]
+struct Reached {
+  steps: u32,
+  missed: u32,
+  worst: f32,
+}
+
+/// Before each step, puts every constrained skeleton's targets about where
+/// the first bone of each limb is going (where it is, moved on as far as
+/// it moved in the last step: the animation swings it by up to 5 a step),
+/// 2.5 to 3.5 away, well within the limbs' reach of 8, each at a new place
+/// every step
+fn steer(mut skeletons: Query<(&mut Skeleton, &mut Goals)>) {
+  for (index, (mut skeleton, mut goals)) in skeletons.iter_mut().enumerate() {
+    goals.steps += 1;
+    let t = goals.steps as f32 * 0.1 + index as f32;
+    for (limb, (_, [first, _, target])) in LIMBS.into_iter().enumerate() {
+      let Some(origin) = skeleton.bone_world(first).map(|bone| bone.translation) else {
+        continue;
+      };
+      let last = goals.origins[limb].replace(origin).unwrap_or(origin);
+      let turn = t + limb as f32 * 2.0;
+      let goal = 2.0 * origin - last + Vec2::from_angle(turn) * (3.0 + 0.5 * (0.7 * turn).sin());
+      goals.at[limb] = goal;
+      let put = BoneOverride {
+        translation: Some(goal),
+        space: BoneSpace::World,
+        ..BoneOverride::default()
+      };
+      skeleton.override_bone(target, put);
+    }
+  }
+}
+
+/// After each step, how far each constrained skeleton's targets are from
+/// where they were put, and each limb's tip from its target (the pointed
+/// bone's axis, from the line to its target). A target the limb's first
+/// bone has moved out of reach of is reached for: the tip is then at the
+/// full reach on the line to it
+fn check(skeletons: Query<(&Skeleton, &Goals)>, mut reached: ResMut<Reached>) {
+  let mut worst = 0.0_f32;
+  let mut seen = 0;
+  for (skeleton, goals) in &skeletons {
+    for (limb, (_, [first, last, target])) in LIMBS.into_iter().enumerate() {
+      let pointed = first == last;
+      let (Some(origin), Some(last), Some(target)) = (
+        skeleton.bone_world(first),
+        skeleton.bone_world(last),
+        skeleton.bone_world(target),
+      ) else {
+        worst = f32::INFINITY;
+        continue;
+      };
+      let goal = goals.at[limb];
+      let miss = if pointed {
+        // The bone's axis passes through its target, ahead of it
+        let axis = origin.matrix2.x_axis.normalize_or_zero();
+        let to = goal - origin.translation;
+        if axis.dot(to) > 0.0 {
+          axis.perp_dot(to).abs()
+        } else {
+          f32::INFINITY
+        }
+      } else {
+        let reach = 2.0 * BONE_LENGTH;
+        let to = goal - origin.translation;
+        let toward = if to.length() < reach {
+          goal
+        } else {
+          origin.translation + to.normalize_or_zero() * reach
+        };
+        last
+          .transform_point2(Vec2::new(BONE_LENGTH, 0.0))
+          .distance(toward)
+      };
+      // A distance that is not a number is as far as any can be
+      for off in [miss, target.translation.distance(goal)] {
+        worst = if off.is_nan() {
+          f32::INFINITY
+        } else {
+          worst.max(off)
+        };
+      }
+    }
+    seen += 1;
+  }
+  if seen == 0 {
+    return;
+  }
+  reached.steps += 1;
+  if worst >= 0.01 {
+    reached.missed += 1;
+  }
+  reached.worst = reached.worst.max(worst);
+}
+
 /// A started engine over `case`, its probes in
 fn start(case: Case) -> Option<HeadlessEngine> {
-  let builder = EngineBuilder::new()
+  let mut builder = EngineBuilder::new()
     .resolution(RESOLUTION.0, RESOLUTION.1)
     .add_systems(
       Phase::FixedUpdate,
@@ -501,10 +656,21 @@ fn start(case: Case) -> Option<HeadlessEngine> {
     .add_systems(
       Phase::FixedUpdate,
       end.after(FixedSet::Skeletons).before(FixedSet::Particles),
-    )
-    .start_scene(Crowd { case });
-  let mut engine = HeadlessEngine::new_or_skip(builder)?;
+    );
+  if case.constraints {
+    builder = builder
+      .add_systems(
+        Phase::FixedUpdate,
+        steer.after(FixedSet::Transforms).before(begin),
+      )
+      .add_systems(
+        Phase::FixedUpdate,
+        check.after(end).before(FixedSet::Particles),
+      );
+  }
+  let mut engine = HeadlessEngine::new_or_skip(builder.start_scene(Crowd { case }))?;
   engine.world_mut().insert_resource(UpdateClock::default());
+  engine.world_mut().insert_resource(Reached::default());
   Some(engine)
 }
 
@@ -529,6 +695,10 @@ struct Figures {
   draws: u32,
   /// The skeletons whose mesh a deform is moving, after the last step
   deformed: usize,
+  /// How the measured steps' constraints reached their targets
+  reached: Reached,
+  /// The fixed steps measured
+  steps: usize,
 }
 
 impl Figures {
@@ -567,6 +737,7 @@ fn measure(case: Case) -> Option<Figures> {
         .resource_mut::<UpdateClock>()
         .steps
         .clear();
+      *engine.world_mut().resource_mut::<Reached>() = Reached::default();
     }
     let recorded = world_pass
       .lock()
@@ -579,6 +750,7 @@ fn measure(case: Case) -> Option<Figures> {
     }
   }
   let update = std::mem::take(&mut engine.world_mut().resource_mut::<UpdateClock>().steps);
+  let steps = update.len();
   Some(Figures {
     update: median(update),
     extract: median(extract),
@@ -587,6 +759,8 @@ fn measure(case: Case) -> Option<Figures> {
     pass: median(pass),
     draws: engine.debug_stats().draw_calls,
     deformed: deformed(&mut engine),
+    reached: *engine.world().resource::<Reached>(),
+    steps,
   })
 }
 
@@ -820,6 +994,29 @@ fn main() {
     println!("skeletons_extract_sockets: {:.1} µs", figures.extract);
     held("skeletons_update_sockets", figures.update, UPDATE_MAX);
     held("skeletons_extract_sockets", figures.extract, EXTRACT_MAX);
+  }
+  if let Some(figures) = measure(Case {
+    constraints: true,
+    ..Case::crowd()
+  }) {
+    println!("skeletons_update_constraints: {:.1} µs", figures.update);
+    held("skeletons_update_constraints", figures.update, UPDATE_MAX);
+    let Reached {
+      steps,
+      missed,
+      worst,
+    } = figures.reached;
+    println!(
+      "skeletons_constraints_checked: {steps} steps, a tip at most {worst:.4} from its target"
+    );
+    // The constraints act in every step measured: no tip off its target
+    let measured = figures.steps as u32;
+    if missed > 0 || steps < measured {
+      guards::miss(format!(
+        "skeletons_update_constraints: {missed} of {steps} steps had a tip off its target (at most \
+         {worst:.4}), of {measured} measured"
+      ));
+    }
   }
   if let Some(none) = measure(Case {
     skeletons: 0,

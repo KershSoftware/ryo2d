@@ -2,7 +2,7 @@
 
 ## Measured
 
-What is measured: skeletons against the spec's targets (`docs/specs/2026-11-12-skeleton-design.md`, Targets), by `cargo bench --bench skeleton` (release) and by the allocation tests `fifty_animated_skeletons_allocate_nothing_per_frame` and `fifty_skeletons_with_a_deforming_mesh_allocate_nothing_per_frame` in `tests/tilemap_alloc.rs`. Meshes have a section of their own below (Meshes), with the comparison of the region-only figures against the build before them.
+What is measured: skeletons against the spec's targets (`docs/specs/2026-11-12-skeleton-design.md`, Targets), by `cargo bench --bench skeleton` (release) and by the allocation tests `fifty_animated_skeletons_allocate_nothing_per_frame`, `fifty_skeletons_with_a_deforming_mesh_allocate_nothing_per_frame` and `fifty_skeletons_with_constraints_allocate_nothing_per_frame` in `tests/tilemap_alloc.rs`. Meshes and constraints have sections of their own below (Meshes, Constraints), each with the comparison of the figures without them against the build before them.
 
 Machine: Apple M5 Pro, 18 cores, shared with other work.
 
@@ -207,6 +207,54 @@ So the finished tree agrees with the sets above: a crowd of regions costs about 
 | Second set | 1,132.5 | 1,129.2 (-0.3%) | 1,116.4 (-1.4%) |
 
 The three do not differ by more than the build before meshes spreads over its own three runs (1.6% in the first set, 6.8% in the second): ten thousand calls of a few instructions each do not show in a frame of 1.1 ms. The change is made for the shape of the loop every sprite passes through, not for a figure.
+
+### Constraints
+
+The scene is the crowd's, each skeleton with four constraints on bones among its 30: two limbs of two bones (parts of 4 and 4, hanging from the spine) reaching by IK, a bone pointed by a one-bone IK constraint, and then a transform constraint copying the turn of the first limb's second bone, in the world, onto another bone. Before every fixed step a system of the bench puts the three targets (leaf bones no constraint moves) at new places by world-space bone overrides, about where each limb's first bone is going (where it is, moved on as far as it moved in the step before: the animation swings it by up to 5 a step), 2.5 to 3.5 from it, within the limbs' reach of 8. After every step another checks each target is where it was put and each tip is on its target (the pointed bone's axis through it; a target the animation has carried out of reach is reached for, the tip at the full reach on the line to it), and a step in which one is off by 0.01 or more counts as a miss, so the constraints are known to act in every step measured. Both systems are outside the two probes.
+
+- `skeletons_update_constraints`: the update (`FixedSet::Skeletons`) per fixed step, guarded at the update's 1,000 µs. It holds the four solves, the bones placed again below each, and the three world-space overrides a skeleton.
+
+#### The constraints record
+
+Three runs (`skeleton` bench binary, release), each after a run of the build before constraints (the comparison below). One-minute load before each run: 7.44, 6.09 and 5.04, every one above 3 and so flagged: the machine was in use throughout, and nothing waited for a quiet one. Medians in microseconds:
+
+| Bench | Run 1 | Run 2 | Run 3 | Median of runs | Target |
+|-------|-------|-------|-------|----------------|--------|
+| `skeletons_update_constraints` | 586.1 | 546.9 | 549.2 | 549.2 | 1,000 |
+| `skeletons_update` (the same crowd without) | 535.7 | 496.2 | 491.3 | 496.2 | 1,000 |
+
+In every run all 390 measured steps had every tip on its target, at most 0.0004 from it. The guard is met by 45%. A fourth run, after a change to the check alone (outside the probes: a distance that is not a number now counts as a miss), read 549.0 µs at a load of 7.50. The four constraints and three overrides cost about 53 µs a step for the 200 skeletons, 0.27 µs a skeleton. An earlier run of the day, at a load of 9.8 and before the targets were placed ahead of the limbs, read 568.0 µs (its check missed: the animation had carried 227 of its 390 steps' targets out of reach, which is why the check now reaches for the line).
+
+#### Against the build before constraints
+
+The cases without constraints must not cost more than 5% over what they cost before constraints, measured in one sitting: main at `06b68319` exported with `git archive` and its bench built apart (its own target directory), the two benches run alternately, main first, three each, and the medians compared. Loads before the six runs, main then this tree: 8.08, 7.44, 6.93, 6.09, 5.30 and 5.04, all flagged (the load fell through the sitting, so each tree run had a lower load than the main run before it). Medians of three in microseconds:
+
+| Bench | Before constraints | With constraints | Difference |
+|-------|--------------------|------------------|------------|
+| `skeletons_update` | 503.5 | 496.2 | -1.4% |
+| `skeletons_extract` | 167.5 | 169.0 | +0.9% |
+| `skeletons_extract_shadow` | 199.1 | 199.0 | -0.1% |
+| `skeletons_extract_shadow_update` | 521.2 | 496.8 | -4.7% |
+| `skeletons_extract_offscreen` | 161.9 | 164.5 | +1.6% |
+| `skeletons_extract_offscreen_update` | 495.7 | 495.0 | -0.1% |
+| `skeletons_extract_images` | 284.2 | 288.7 | +1.6% |
+| `skeletons_extract_images_update` | 495.9 | 505.4 | +1.9% |
+| `skeletons_extract_plain` | 102.7 | 105.6 | +2.8% |
+| `skeletons_extract_plain_update` | 496.8 | 494.7 | -0.4% |
+| `skeletons_update_sockets` | 505.9 | 507.6 | +0.3% |
+| `skeletons_extract_sockets` | 163.8 | 169.3 | +3.4% |
+| `one_skeleton_update` | 3.5 | 3.6 | +2.9% |
+| `skeleton_pass_socket_spawn` | 2.6 | 2.6 | 0.0% |
+| `skeleton_pass_socket_spawn_sockets` | 8.5 | 8.9 | +4.7% |
+| `skeletons_update_mesh` | 605.3 | 607.5 | +0.4% |
+| `skeletons_extract_mesh` | 287.9 | 294.0 | +2.1% |
+| `skeletons_extract_mesh_shadow` | 369.8 | 369.8 | 0.0% |
+
+Every case is inside the 5%; the nearest are the socket-spawn pass with a socket on each skeleton (+0.4 µs) and the shadow case's update, which reads under. `skeleton_pass_200` and `skeleton_pass_2000` read 0.08 and 0.50 µs in both. The render step and its parts (`skeletons_render*`, `skeletons_prepare*`, `skeletons_world_pass*`) moved by up to 16% both ways between runs of either build, with the first run of each the highest, and are context, not compared. Skeletons without constraints run the code they ran before (`Skeleton::place` branches on the data's constraints being empty), so no difference was expected, and nothing was changed for speed. The sitting was not on a quiet machine: a quiet one would settle the two readings near 5%, though both are fractions of a microsecond and one is not in a step at all.
+
+**Allocations.** `fifty_skeletons_with_constraints_allocate_nothing_per_frame` (`tests/tilemap_alloc.rs`) is the allocation crowd with constraints of every kind on bones beside its chain: two limbs of two bones by IK (the first one's mix keyed by both of the base track's animations, so blended through every crossfade), a chain of four bones by IK, and a transform constraint in each of the four modes (world, world relative, own values, own values relative). Before every frame the game puts the three targets at new places by world-space bone overrides, and every 30 frames a skeleton changes its overrides of the first limb (its mix and its bend) and of the world-mode transform constraint (its rotate mix), so the twelve traced frames hold changes on several skeletons. Before the traced frames and after each, the test asserts every skeleton's second limb and chain have their tips on their targets, within 0.01, where the game put the targets in that step. The comparison with the sprites' frame is the other two tests': 390 allocations a frame (229 the engine's own) against the sprites' 392 (231), none from the skeletons' path.
+
+It passed at once. Planted allocations, one at a time, each named by the test and removed: one in `constrain` fails with 50 a frame at `<alloc::vec::Vec<u8>>::with_capacity <- ryo2d::core::skeleton::constrain::constrain` in a debug build, and in a release build at `<ryo2d::core::skeleton::component::Skeleton>::place`, where the compiler inlines `constrain` (the stack names only the caller); one in `ik::chain` fails with 50 a frame at `<alloc::vec::Vec<u8>>::with_capacity <- ryo2d::core::skeleton::ik::chain` in both.
 
 ### Reading the figures
 

@@ -9,10 +9,12 @@
 //! shadowed lights, hard and soft, against the same lights unshadowed; and
 //! a lit frame of 50 animated skeletons (two tracks, events firing, a
 //! socket each, a mix started on some every frame) against the same entities
-//! as sprites, of regions alone and with a weighted mesh among them whose
-//! shape a deform keys. For the skeletons the GPU's are compared too, site
-//! by site: no call the engine makes into the GPU API may allocate more for
-//! the skeletons' frame than for the sprites', but for a small room.
+//! as sprites, of regions alone, with a weighted mesh among them whose
+//! shape a deform keys, and with IK and transform constraints applied in
+//! every step, their targets moved by the game. For the skeletons the GPU's
+//! are compared too, site by site: no call the engine makes into the GPU
+//! API may allocate more for the skeletons' frame than for the sprites',
+//! but for a small room.
 //!
 //! A frame's allocations are told apart by their stacks: those made inside
 //! the GPU API (wgpu, naga and the Metal bindings, which allocate as they
@@ -1479,12 +1481,65 @@ fn ribbon() -> MeshAttachment {
   MeshAttachment::new(0, vertices, uvs, triangles)
 }
 
+/// What the crowd's rig has beside its regions
+#[derive(Clone, Copy, PartialEq)]
+enum Extra {
+  None,
+  /// A weighted mesh whose shape a deform keys ([`ribbon`])
+  Mesh,
+  /// Constraints of every kind ([`CONSTRAINED`])
+  Constraints,
+}
+
+/// The constrained rig's bones beside its chain, each with its parent, its
+/// place in it, its turn and its length: two limbs of two bones (each 6
+/// and 5 long), a chain of four (four parts of 5, bent 0.3 rad a joint),
+/// the three bones their IK constraints reach for, and a bone for each mode
+/// of transform constraint. Every one hangs from the root, at its origin
+/// unless placed
+const CONSTRAINED: [(&str, &str, f32, f32, f32); 15] = [
+  ("arm_a", "b0", 0.0, 0.5, 6.0),
+  ("hand_a", "arm_a", 6.0, 0.6, 5.0),
+  ("arm_b", "b0", 0.0, -0.5, 6.0),
+  ("hand_b", "arm_b", 6.0, 0.6, 5.0),
+  ("tail_1", "b0", 0.0, 2.0, 5.0),
+  ("tail_2", "tail_1", 5.0, 0.3, 5.0),
+  ("tail_3", "tail_2", 5.0, 0.3, 5.0),
+  ("tail_4", "tail_3", 5.0, 0.3, 5.0),
+  ("goal_a", "b0", 8.0, 0.0, 0.0),
+  ("goal_b", "b0", 8.0, 0.0, 0.0),
+  ("goal_tail", "b0", 14.0, 0.0, 0.0),
+  ("copy_world", "b0", 3.0, 0.0, 4.0),
+  ("copy_world_relative", "b0", 3.0, 0.0, 4.0),
+  ("copy_local", "b0", 3.0, 0.0, 4.0),
+  ("copy_local_relative", "b0", 3.0, 0.0, 4.0),
+];
+
+/// Where the constrained crowd's skeleton `index` puts its targets in
+/// `frame`, from its entity's origin (the limbs' and the chain's first
+/// joint): within the limbs' reach (4 to 9 of their 11) and between the
+/// chain's nearest shape and its reach (11 to 16 of its 20), moving every
+/// frame
+fn goals(index: usize, frame: usize) -> [Vec2; 3] {
+  let t = (frame + 7 * index) as f32 * 0.05;
+  [
+    Vec2::from_angle(t) * (6.5 + 2.5 * (0.7 * t).sin()),
+    Vec2::from_angle(-t + 1.0) * (6.5 + 2.5 * (0.9 * t).cos()),
+    Vec2::from_angle(0.5 * t + 2.0) * (13.5 + 2.5 * (1.3 * t).sin()),
+  ]
+}
+
 /// A rig of 12 bones in a chain and 10 region slots, a step event, and
-/// the animations the crowd mixes between. With `mesh`, a slot among the
-/// regions shows the [`ribbon`], and both of the base track's animations
-/// key its shape (every position of it, by a different amount each), so a
-/// deform plays in every step and two are blended through every crossfade
-fn crowd_rig(image: Handle<Image>, mesh: bool) -> SkeletonData {
+/// the animations the crowd mixes between. With [`Extra::Mesh`], a slot
+/// among the regions shows the [`ribbon`], and both of the base track's
+/// animations key its shape (every position of it, by a different amount
+/// each), so a deform plays in every step and two are blended through
+/// every crossfade. With [`Extra::Constraints`], the bones of
+/// [`CONSTRAINED`] and, in order, an IK constraint on each limb (the first
+/// one's mix keyed by both of the base track's animations), one on the
+/// chain, and a transform constraint of each mode
+fn crowd_rig(image: Handle<Image>, extra: Extra) -> SkeletonData {
+  let mesh = extra == Extra::Mesh;
   let turn = |bone: u8, keys: &[(f32, f32)]| SkeletonTimeline::Rotate {
     bone: BoneId(bone),
     frames: keys
@@ -1512,6 +1567,21 @@ fn crowd_rig(image: Handle<Image>, mesh: bool) -> SkeletonData {
       .collect();
     if let Some(amount) = deform.filter(|_| mesh) {
       timelines.push(sway(amount));
+    }
+    // The first limb's mix, keyed by the animations a deform keys
+    if extra == Extra::Constraints && deform.is_some() {
+      let mix = |mix: f32| IkValues {
+        mix,
+        ..IkValues::of(&IkSetup::default())
+      };
+      timelines.push(SkeletonTimeline::Ik {
+        constraint: SkeletonConstraintId(0),
+        frames: vec![
+          (0.0, mix(1.0), SkeletonCurve::Linear),
+          (0.25, mix(0.4), SkeletonCurve::Linear),
+          (0.5, mix(1.0), SkeletonCurve::Linear),
+        ],
+      });
     }
     if !events.is_empty() {
       timelines.push(SkeletonTimeline::Event {
@@ -1571,6 +1641,70 @@ fn crowd_rig(image: Handle<Image>, mesh: bool) -> SkeletonData {
       );
     }
   }
+  if extra == Extra::Constraints {
+    for (name, parent, x, rotation, length) in CONSTRAINED {
+      let setup = BoneSetup {
+        x,
+        rotation,
+        length,
+        ..BoneSetup::default()
+      };
+      builder = builder.bone(name, Some(parent), setup);
+    }
+    let copy = |local, relative, mix| TransformSetup {
+      mix,
+      local,
+      relative,
+      ..TransformSetup::default()
+    };
+    let half = TransformMix {
+      rotate: 0.5,
+      x: 0.5,
+      y: 0.5,
+      ..TransformMix::default()
+    };
+    builder = builder
+      .ik("limb_a", &["arm_a", "hand_a"], "goal_a", IkSetup::default())
+      .ik(
+        "limb_b",
+        &["arm_b", "hand_b"],
+        "goal_b",
+        IkSetup {
+          bend_positive: false,
+          ..IkSetup::default()
+        },
+      )
+      .ik(
+        "tail",
+        &["tail_1", "tail_2", "tail_3", "tail_4"],
+        "goal_tail",
+        IkSetup::default(),
+      )
+      .transform_constraint(
+        "world",
+        &["copy_world"],
+        "hand_b",
+        copy(false, false, TransformMix::ALL),
+      )
+      .transform_constraint(
+        "world_relative",
+        &["copy_world_relative"],
+        "tail_2",
+        copy(false, true, half),
+      )
+      .transform_constraint(
+        "local",
+        &["copy_local"],
+        "hand_a",
+        copy(true, false, TransformMix::ALL),
+      )
+      .transform_constraint(
+        "local_relative",
+        &["copy_local_relative"],
+        "tail_3",
+        copy(true, true, half),
+      );
+  }
   builder
     .event(SkeletonEventData::new("step"))
     .animation(clip("idle", 12, 0.2, &[0.0, 0.2, 0.4], Some(1.0)))
@@ -1584,13 +1718,12 @@ fn crowd_rig(image: Handle<Image>, mesh: bool) -> SkeletonData {
 /// `count` skeletons in a lit room, each with a socket that has a child; or
 /// (`skeletons` false) the same entities as plain sprites, each with a
 /// child that has a child: the baseline, which makes the allocations the
-/// entity drawer and the engine's queries make for any entities. With
-/// `mesh`, each skeleton has a deforming mesh among its regions
-/// ([`crowd_rig`])
+/// entity drawer and the engine's queries make for any entities. Each
+/// skeleton's rig has the `extra` of [`crowd_rig`]
 struct Crowd {
   count: usize,
   skeletons: bool,
-  mesh: bool,
+  extra: Extra,
 }
 
 impl Scene for Crowd {
@@ -1607,7 +1740,7 @@ impl Scene for Crowd {
     let atlas = ctx
       .assets()
       .add(Image::solid_rect(80, 8, 255, 255, 255, 255));
-    let data = ctx.assets().add(crowd_rig(atlas.clone(), self.mesh));
+    let data = ctx.assets().add(crowd_rig(atlas.clone(), self.extra));
     for i in 0..self.count {
       let at = Vec2::new(40.0 + (i % 10) as f32 * 60.0, 40.0 + (i / 10) as f32 * 60.0);
       let carrier = ctx
@@ -1665,7 +1798,7 @@ fn mix(animation: &mut SkeletonAnimation, index: usize, frame: usize) {
 
 #[test]
 fn fifty_animated_skeletons_allocate_nothing_per_frame() {
-  skeletons_allocate_nothing(false);
+  skeletons_allocate_nothing(Extra::None);
 }
 
 /// The same crowd with a weighted mesh of 60 vertices among each skeleton's
@@ -1673,7 +1806,86 @@ fn fifty_animated_skeletons_allocate_nothing_per_frame() {
 /// every frame, an item of its own between two runs of quads
 #[test]
 fn fifty_skeletons_with_a_deforming_mesh_allocate_nothing_per_frame() {
-  skeletons_allocate_nothing(true);
+  skeletons_allocate_nothing(Extra::Mesh);
+}
+
+/// The same crowd with constraints of every kind applied in every step
+/// ([`CONSTRAINED`]): two two-bone IK constraints, a chain of four bones and
+/// a transform constraint in each of the four modes, the first limb's mix
+/// keyed and blended through the crossfades, an override on two of the
+/// constraints changed every 30 frames, and the three targets moved by
+/// world-space bone overrides every frame
+#[test]
+fn fifty_skeletons_with_constraints_allocate_nothing_per_frame() {
+  skeletons_allocate_nothing(Extra::Constraints);
+}
+
+/// What the game does to the constrained crowd's skeleton `index` before
+/// `frame`: puts its three targets where [`goals`] says, in the world, and
+/// every 30 frames changes its overrides of the first limb (its mix and its
+/// bend) and of the world-mode transform constraint (its rotate mix)
+fn steer(skeleton: &mut Skeleton, at: Vec2, index: usize, frame: usize) {
+  for (bone, goal) in ["goal_a", "goal_b", "goal_tail"]
+    .into_iter()
+    .zip(goals(index, frame))
+  {
+    let put = BoneOverride {
+      translation: Some(at + goal),
+      space: BoneSpace::World,
+      ..BoneOverride::default()
+    };
+    skeleton.override_bone(bone, put);
+  }
+  if (frame + index).is_multiple_of(30) {
+    let odd = (frame + index) / 30 % 2 == 1;
+    let limb = IkOverride {
+      mix: Some(if odd { 0.5 } else { 0.9 }),
+      bend_positive: Some(odd),
+      ..IkOverride::default()
+    };
+    skeleton.override_constraint("limb_a", SkeletonConstraintOverride::Ik(limb));
+    let copy = TransformMixOverride {
+      rotate: Some(if odd { 0.25 } else { 0.75 }),
+      ..TransformMixOverride::default()
+    };
+    skeleton.override_constraint("world", SkeletonConstraintOverride::Transform(copy));
+  }
+}
+
+/// Asserts that the constraints act in every constrained skeleton as the
+/// crowd's last step left it: the second limb's hand and the chain's tip
+/// are on their targets, where the game's overrides put them in that step
+fn constraints_act(crowd: &mut HeadlessEngine, frame: usize, when: &str) {
+  let world = crowd.world_mut();
+  let mut skeletons = world.query::<(&Skeleton, &Transform)>();
+  let mut acted = 0;
+  for (index, (skeleton, transform)) in skeletons.iter(world).enumerate() {
+    let at = transform.translation;
+    let [_, limb, tail] = goals(index, frame);
+    for (tip, length, goal, target) in [
+      ("hand_b", 5.0, limb, "goal_b"),
+      ("tail_4", 5.0, tail, "goal_tail"),
+    ] {
+      let reached = skeleton
+        .bone_world(tip)
+        .map(|bone| bone.transform_point2(Vec2::new(length, 0.0)));
+      let target_at = skeleton.bone_world(target).map(|bone| bone.translation);
+      let (Some(reached), Some(target_at)) = (reached, target_at) else {
+        panic!("{when}: skeleton {index} has no {tip} or {target}");
+      };
+      assert!(
+        target_at.distance(at + goal) < 0.01,
+        "{when}: skeleton {index}'s {target} is at {target_at}, not {}",
+        at + goal
+      );
+      assert!(
+        reached.distance(target_at) < 0.01,
+        "{when}: skeleton {index}'s {tip} reaches {reached}, its target is at {target_at}"
+      );
+    }
+    acted += 1;
+  }
+  assert_eq!(acted, CROWD, "{when}: {acted} constrained skeletons");
 }
 
 /// How far the vertices of the skeleton's [`ribbon`] are from where its
@@ -1708,28 +1920,35 @@ fn counted(names: &[String]) -> BTreeMap<&str, usize> {
   counts
 }
 
-/// Fifty skeletons, of regions alone or (`mesh`) each with a deforming
-/// mesh among them, allocate nothing in a steady frame that the same
-/// entities drawn as sprites do not
-fn skeletons_allocate_nothing(mesh: bool) {
+/// Fifty skeletons, of regions alone or with the `extra` of [`crowd_rig`],
+/// allocate nothing in a steady frame that the same entities drawn as
+/// sprites do not
+fn skeletons_allocate_nothing(extra: Extra) {
+  let (mesh, constrained) = (extra == Extra::Mesh, extra == Extra::Constraints);
   let start = |skeletons| {
     let builder = EngineBuilder::new()
       .resolution(640, 360)
       .start_scene(Crowd {
         count: CROWD,
         skeletons,
-        mesh,
+        extra,
       });
     HeadlessEngine::new_or_skip(builder)
   };
   let (Some(mut crowd), Some(mut empty)) = (start(true), start(false)) else {
     return;
   };
-  let mut animations = crowd.world_mut().query::<&mut SkeletonAnimation>();
+  let mut animations = crowd
+    .world_mut()
+    .query::<(&mut SkeletonAnimation, &mut Skeleton, &Transform)>();
   let mut steady = |engine: &mut HeadlessEngine, frame: usize| {
     let world = engine.world_mut();
-    for (index, mut animation) in animations.iter_mut(world).enumerate() {
+    for (index, (mut animation, mut skeleton, transform)) in animations.iter_mut(world).enumerate()
+    {
       mix(&mut animation, index, frame);
+      if constrained {
+        steer(&mut skeleton, transform.translation, index, frame);
+      }
     }
   };
   // Warm: every kind of call has run on every skeleton, the data has
@@ -1758,6 +1977,9 @@ fn skeletons_allocate_nothing(mesh: bool) {
       CROWD + 1
     );
     deform_plays(&mut crowd, "before the traced frames");
+  }
+  if constrained {
+    constraints_act(&mut crowd, warm - 1, "before the traced frames");
   }
   for frame in warm..warm + 12 {
     let drawn = traced_after(&mut crowd, |engine| steady(engine, frame));
@@ -1803,6 +2025,11 @@ fn skeletons_allocate_nothing(mesh: bool) {
       counted(&drawn.in_skeleton),
       counted(&drawn.skeleton_gpu),
     );
+    // And the frame traced applied them: the step in it reached the
+    // targets the game moved before it
+    if constrained {
+      constraints_act(&mut crowd, frame, &format!("frame {frame}"));
+    }
   }
   if mesh {
     // And it was so to the end: the frames traced drew a deforming mesh
