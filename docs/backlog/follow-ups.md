@@ -4,6 +4,64 @@ Small issues found while building each sub-project and left for later: deferred 
 
 Items from 4f on were copied from their execution records. Items from earlier sub-projects come from notes kept at the time, and some may have been fixed since: check before working on one.
 
+## Skeleton meshes
+
+- Owner decisions (2026-11-13 to 2026-11-14):
+  - The second of the skeleton's four parts, after the core: mesh attachments (weighted and unweighted), skinning on the CPU with a skeleton's meshes drawn among its regions, deform keys, and a Meshes page in the demo. The design (the spec's last section, "Meshes: details settled at planning") and the plan were approved together and the plan ran subagent-driven. Constraints (IK) and import remain, and the import tool is still the owner's to settle.
+  - Hand-play in a real window on the demo's Meshes page: "the meshes seems to work well". The owner saw one fault in the demo: in a run the hero's body looked detached from its hips. It was the rig, and older than this part (the hips' band was on the hip bone and stayed level while the trunk leaned 12 to 15 degrees; the cape behind made the gap bright). A pelvis bone now carries the band, keyed at six tenths of the trunk's turn in the run, the jump and the slash; the owner saw it running ("that looks good") before it was committed.
+  - Merged and pushed at the owner's word after the scripted tour (141 pages against main's 140: two runs of the finished tree agree but for the five pages that differ run to run, and against main only the new page and the page count in the top bar of the skeleton demo's first six differ, with two heroes' waists on the Sockets page after the rig fix). The owner approved deleting `target/debug` as needed until the merge when the disk neared the 40 GiB floor (used twice), and reset the model's usage limit when it cut one implementer off mid-measurement.
+- Not hand-checked at merge (headless tests and reading only):
+  - The web build of the demo in a browser, and hot reload by hand of a file with a mesh.
+  - Any GPU backend but Metal. A mesh draws as quads do (a slice of the instance buffer, no first instance), so by reading it has their support everywhere; the tests that hold a mesh equal to a sprite pixel for pixel ran on Metal only and could differ by one level under linear sampling elsewhere. On the Windows machine: `cargo test -p ryo2d --lib -- core::testing::mesh_gpu`.
+  - A sitting on a quiet machine of the comparison with the build before meshes (the first ruling below).
+- Rulings the owner may revisit:
+  - **Skeletons of regions alone cost about 4% more to draw than before meshes**, against the design's bound of 5%, and it is accepted as it stands. Three sets on the finished tree read the crowd at +4.5, +6.7 and +5.0%, the six region-only cases at 3.1, 5.3 and 4.5% on average, and the update at +2.5 to +6.3%: 3 to 16 µs of drawing and 12 to 32 µs of update a frame for 200 skeletons. Every sitting was on a machine in use (loads of 3 to 7), so it is not shown to be inside the bound; the shadowed case is the dearest. One real cost was found and removed on the way (a loop the compiler did not inline: 8 to 19% before). `docs/backlog/skeleton.md`, "Against the build before meshes", has every set and what did not help.
+  - **The 5% bound is a comparison in one sitting with the build before meshes**, not a guard against a stored figure, whose own runs spread 8%. Nothing fails by itself if the region-only speed slips later; the mesh cases have absolute guards (update 1,000 µs, drawing 600 µs, shadowed drawing 600 µs, reading about 640, 300 and 380).
+  - **A mesh draws through the sprite shader's own stages**, so the entity's built-in effects (flash, colour shift, silhouette, grayscale, invert, pixelate, wave, dissolve) and a game's own sprite shader reach a skeleton's meshes as its regions. The design had recorded a game's shader as a limit. The cost is a draw a mesh, two with a drop shadow (about 1.6 µs a mesh in the render step), and effects that grow the quad (outline, glow, directional outline) reach the regions and leave the meshes plain, with one warning a run.
+  - **A deform whose slot shows another attachment does nothing, in silence**: an animation that keys two names of one slot, a crossfade between attachments and a game's `set_attachment` are ordinary play. The one warning per skeleton per animation is for a misfit under the deform's own name (not a mesh, or another count of positions).
+  - **A deform naming an attachment that no skin has under its slot fails to load**, since it can never apply and would otherwise pass in silence. A file saved in mid-edit with its mesh taken out and its deform left fails to reload until the deform goes too (the last good data keeps playing); data built in code that shares one animation between rigs with and without the part must drop the deform for the rig without. Only the name is checked at load.
+  - **A deform that does not fit warns again after each reload** (its warned names are cleared when a skeleton takes up new data), so a save that leaves a misfit standing says so. That is one line per skeleton per animation per save, and it differs from the module's other once-per-name warnings, which still stay quiet after a reload.
+  - **A deform is known by its slot, its attachment's name and its count of positions only.** Two skins that give one name to a weighted and an unweighted mesh of the same count get each other's keys, bent wrongly with no warning. A tighter identity needs a skin in the timeline's key, which is the import part's question.
+  - **The demo's Meshes page has no setting for the overlay**: its text points at the console's `debug:skeletons`, as the first page does, since overlays are developer tools and absent from a shipped build. A switch a scene can write is an idea for the dev tools (below).
+  - **`position_count()`** is the name of a mesh's count of positions (it was `positions()` for a day on the branch).
+  - **Two flaky tests were ruled older than this part.** The asset watcher's debounce test fails about half the time on main under CPU load (29 of 54 on the base, 23 of 54 with the change, nothing under `src/core/asset` touched but the skeleton loader): unfixed, see below. The lit frame's allocation test failed on main as on the branch beside other GPU work (11 and 9 of 50) and was cured here: it now compares the GPU API's allocations site by site with room, so slow growth frame over frame that stays under the room of 24 at one site would pass where the old exact count caught any change.
+- Limits recorded (the `ryo-skeleton` skill, the module notes, and `docs/backlog/skeleton.md`, Limits): the growing effects and the draw a mesh above; pixel-art snapping does not apply to a mesh's vertices; a game shader's first use on a mesh draws the mesh plain for the one to three frames its check takes (one more first-use key, as a blend mode is); wgpu allocates about four times a mesh a frame on Metal for the two pipeline sets a mesh costs (the engine's own code allocates nothing in a steady frame), and one pipeline shared by quads and meshes would remove both; a skin swap between meshes of different counts shows the setup shape until the next step.
+- Deferred findings:
+  - **For a game developer.**
+    - A scene cannot switch a debug overlay (they are console commands), and `Skeleton` has no public read of a mesh's skinned vertices: the demo's page wanted the first, and a game drawing its own outline or hit shape of a mesh would want the second.
+    - The growing-effect warning is once a run, naming the first entity only.
+    - `Influence::new` and `Influence`'s fields have no doc comments. The skill does not mention that a weighted vertex whose weights sum to a non-finite number is refused (its "every number finite" rule partly covers it), and its Limits line on the 64 warned names does not say the deform's list is reset by new data (the table beside it does).
+  - **Speed and bounds.**
+    - The shadowed region-only case is the open figure of the comparison above. In single readings the update read +4.4% and the sockets case +5.7%.
+    - The mesh stream's buffers grow without the device cap the chunk arena has (out of reach: 16.7 million vertices a frame).
+    - The loader finds each influence's bone by a linear scan, so a load is influences times bones: worth a map before an importer feeds it.
+    - `batch_prepare_time` (added for the bench) costs a shipped game one field and two clock reads a frame, ungated, the same shape as `entity_draw_time` beside it: gate both together on the dev tools or testing.
+    - A mesh that draws nothing still ends the open run of regions (no extra draw: the plan merges them).
+    - A crowd whose skeletons all fire events in one step grows the `SkeletonEvent` buffer once (three allocations).
+    - Every hero of the demo steps three more bones than before this part (two for the cape, one for the pelvis), the crowd page's 200 included: not measured on a quiet machine.
+    - The stream clear beside the draw list's is no longer needed by anything, and is harmless.
+  - **Tests.**
+    - No pixel test has one mesh seen by two cameras, or only a mesh's shadow in view; none reloads a game shader that a mesh draws; none lands a reload in mid-crossfade between two animations that key a deform.
+    - "A crossfade blends two deforms" is pinned in the state's tests and not by pixels, where the design's acceptance lists it.
+    - The region parity test's effect cases compare against the empty stage, not the plain region; `sprite_then_mesh` does not assert that its second frame held a mesh item.
+    - The loader has no test of a negative weight through a file (validation pins the rule), and `weight: NaN` has no case of its own (infinity has, through the same check).
+    - The allocation tests' room of 24 a site was measured on Metal only; the lit frame uses 13 of it in a debug build at the encoder's finish, so a wgpu change of about 7 allocations there would trip it. The lit test's comment does not say that slow growth under the room is let through.
+    - The skills' `.skeleton.ron` examples are loaded by no committed test (`tests/skill-examples` compiles the Rust blocks only; they were loaded once by a throwaway). A build step that loads them would guard later edits.
+    - The demo: the cape toggle and gait tests do not assert an empty log (the warnings check runs on the page's first state only); the overlay test's 12 px tolerance would not catch an overlay one frame late; the flash test reads colours near the hero and would be weakened in silence by moving the pole or the patrol; the cape keys' loop join in walk and run was not checked numerically for a kink.
+    - The banner rig and its fan-mesh helper are written out in `apply.rs`, `state.rs`, `component.rs` and `tests/skeleton.rs` (a shared rig would cut about 120 lines; `state.rs` is near 4,700 lines with its tests inline); `banner_file`'s comment in `tests/skeleton.rs` still lists "nothing" as a form and then says it no longer loads.
+  - **The demo.**
+    - The cape's overlay hull stands up to 7 px below its scalloped hem (a straight outline against the art's edge); the page's readout rebuilds its strings each frame.
+    - The pelvis is keyed by hand at a fraction of the trunk's turn, in three animations: a transform constraint would do it for every animation once constraints are built.
+  - **For the import part.**
+    - The deform's identity (the ruling above); linked meshes, a mesh's own timeline attachment and sequence keys are not built.
+    - An attachment key, or a slot's setup attachment, naming something no skin has under the slot still loads in silence, though it is as certain a mistake as the deform's name that now fails.
+- Pre-existing bugs seen along the way:
+  - `core::asset::watch::tests::two_writes_in_the_debounce_reload_once_with_the_last` sleeps 30 ms of wall clock between two writes against a 100 ms settle, and fails about half the time under CPU load.
+  - `tilemap_alloc`'s `an_idle_frame_of_an_isometric_streamed_map_allocates_nothing` missed its 10 s wall-clock deadline twice at a load of 22.
+  - A game shader's first frame costs about 90 ms when the shader is new to the machine (2 to 4 ms cached): it is compiled on the main thread.
+  - The main camera on a half-window viewport draws its full-width view squeezed to half the width (sprites too).
+  - The skeleton module's other once-per-name warnings (an unknown animation, skin or bone name) stay quiet after a reload that leaves the name missing.
+
 ## Skeleton (the core)
 
 - Owner decisions (2026-11-12 to 2026-11-13):
