@@ -104,7 +104,7 @@ pub fn face(ctx: &mut SceneContext, hero: Entity, left: bool) {
 }
 
 /// A flat band of `color` across the canvas, `height` tall from `top`
-fn band(ctx: &mut SceneContext, top: f32, height: f32, color: Color, z: i32) {
+pub fn band(ctx: &mut SceneContext, top: f32, height: f32, color: Color, z: i32) {
   let image = ctx
     .assets()
     .add(Image::solid_rect(8, 8, color.r, color.g, color.b, 255));
@@ -116,10 +116,10 @@ fn band(ctx: &mut SceneContext, top: f32, height: f32, color: Color, z: i32) {
   ));
 }
 
-const SKY: Color = Color::rgb(46, 64, 104);
-const HAZE: Color = Color::rgb(52, 76, 116);
-const GRASS: Color = Color::rgb(66, 104, 88);
-const EDGE: Color = Color::rgb(92, 138, 104);
+pub const SKY: Color = Color::rgb(46, 64, 104);
+pub const HAZE: Color = Color::rgb(52, 76, 116);
+pub const GRASS: Color = Color::rgb(66, 104, 88);
+pub const EDGE: Color = Color::rgb(92, 138, 104);
 
 /// The sky and the ground the heroes stand on, behind everything
 pub fn backdrop(ctx: &mut SceneContext) {

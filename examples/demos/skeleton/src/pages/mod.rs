@@ -2,6 +2,7 @@
 
 pub mod aiming;
 pub mod character;
+pub mod constraints;
 pub mod crowd;
 pub mod events;
 pub mod layers;

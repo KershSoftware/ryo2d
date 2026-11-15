@@ -36,7 +36,17 @@ pub static EMBEDDED: &[(&str, &[u8])] = &[
     "hero.skeleton.ron",
     include_bytes!("../assets/hero.skeleton.ron"),
   ),
+  ("reacher.png", include_bytes!("../assets/reacher.png")),
+  (
+    "reacher.skeleton.ron",
+    include_bytes!("../assets/reacher.skeleton.ron"),
+  ),
   ("sword.png", include_bytes!("../assets/sword.png")),
+  ("walker.png", include_bytes!("../assets/walker.png")),
+  (
+    "walker.skeleton.ron",
+    include_bytes!("../assets/walker.skeleton.ron"),
+  ),
 ];
 
 /// The demo's assets in memory, as the engine's asset source: the web

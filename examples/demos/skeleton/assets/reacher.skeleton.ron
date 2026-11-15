@@ -1,0 +1,69 @@
+// The Constraints page's reaching arm: two parts and a hand on a stand,
+// drawn for the demo (see README.md) and written by hand.
+//
+// No animation moves it. Two constraints place it in every step: an IK
+// constraint turns the two parts so the wrist reaches the `target` bone,
+// which the page moves to the pointer, and a transform constraint turns
+// the hand to the `horizon` bone's rotation, so its tray stays level.
+//
+// Units are the art's pixels, drawn at full size. The origin is the
+// stand's foot, on the ground. Angles are degrees, clockwise.
+(
+  images: { "parts": "reacher.png" },
+
+  // Where each part is in the image, as README.md's packing command puts them
+  regions: {
+    "upper": (image: "parts", rect: (8, 8, 158, 28)),
+    "fore": (image: "parts", rect: (8, 44, 144, 24)),
+    "hand": (image: "parts", rect: (8, 76, 84, 56)),
+    "hub": (image: "parts", rect: (100, 76, 48, 48)),
+    "elbow": (image: "parts", rect: (156, 76, 30, 30)),
+    "post": (image: "parts", rect: (194, 8, 60, 280)),
+  },
+
+  // The shoulder is at the stand's top. The upper arm and the forearm lie
+  // along their parts, 130 and 120 long, and the hand's bone is at the
+  // wrist. `horizon` and `target` carry no image: they are the
+  // constraints' targets, children of the root
+  bones: [
+    (name: "root"),
+    (name: "shoulder", parent: "root", y: -268),
+    (name: "upper", parent: "shoulder", rotation: 40, length: 130),
+    (name: "fore", parent: "upper", x: 130, rotation: -80, length: 120),
+    (name: "hand", parent: "fore", x: 120),
+    (name: "horizon", parent: "root"),
+    (name: "target", parent: "root", x: 200, y: -230),
+  ],
+
+  // Back to front: the stand, the upper arm, the pivot over its end, the
+  // forearm with its elbow cap, and the hand
+  slots: [
+    (name: "post", bone: "root", attachment: "post"),
+    (name: "upper", bone: "upper", attachment: "upper"),
+    (name: "hub", bone: "shoulder", attachment: "hub"),
+    (name: "fore", bone: "fore", attachment: "fore"),
+    (name: "elbow", bone: "fore", attachment: "elbow"),
+    (name: "hand", bone: "hand", attachment: "hand"),
+  ],
+
+  // A part's middle is half way between its joints; the hand's image has
+  // the palm's middle 14 below its own
+  skins: {
+    "default": {
+      "post": { "post": Region(region: "post", y: -140) },
+      "upper": { "upper": Region(region: "upper", x: 65) },
+      "hub": { "hub": Region(region: "hub") },
+      "fore": { "fore": Region(region: "fore", x: 60) },
+      "elbow": { "elbow": Region(region: "elbow") },
+      "hand": { "hand": Region(region: "hand", y: -14) },
+    },
+  },
+
+  // In this order: the arm reaches first, then the hand is levelled where
+  // the reach has put it. The elbow bends the negative way: reaching to
+  // the right, it hangs below the line to the target
+  constraints: [
+    Ik(name: "arm", bones: ["upper", "fore"], target: "target", bend_positive: false),
+    Transform(name: "level", bones: ["hand"], target: "horizon", mix: (rotate: 1)),
+  ],
+)

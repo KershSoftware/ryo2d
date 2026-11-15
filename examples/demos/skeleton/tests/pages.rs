@@ -7,7 +7,7 @@
 use ryo2d::core::audio::AudioLogKind;
 use ryo2d::prelude::*;
 use ryo2d::testing::{HeadlessEngine, LogCapture};
-use skeleton_demo::{EMBEDDED, demo, embedded};
+use skeleton_demo::{EMBEDDED, demo, embedded, ground_height};
 
 const CHARACTER: usize = 0;
 const LAYERS: usize = 1;
@@ -17,12 +17,16 @@ const SKINS: usize = 4;
 const AIMING: usize = 5;
 const CROWD: usize = 6;
 const MESHES: usize = 7;
-const PAGES: usize = 8;
+const CONSTRAINTS: usize = 8;
+const PAGES: usize = 9;
 
-/// The skeleton files the pages show: the hero on every page, and the
-/// banner beside it on the Meshes page
+/// The skeleton files the pages show: the hero on every page but the
+/// Constraints page, the banner beside it on the Meshes page, and the
+/// Constraints page's reaching arm and walker
 const HERO: &str = "hero.skeleton.ron";
 const BANNER: &str = "banner.skeleton.ron";
+const REACHER: &str = "reacher.skeleton.ron";
+const WALKER: &str = "walker.skeleton.ron";
 
 /// The frames each page runs
 const FRAMES: u32 = 120;
@@ -115,10 +119,11 @@ fn pixels_near(engine: &mut HeadlessEngine, color: [u8; 3], tolerance: u8) -> us
     .count()
 }
 
-/// Steps every page for two seconds, checking that it has a hero, that
-/// each of its skeletons (the heroes, and the Meshes page's banner) is
-/// posed and drawn as the engine asks of a figure of many parts, and that
-/// nothing warns
+/// Steps every page for two seconds, checking that it has a hero (the
+/// Constraints page has its arm and walker instead), that each of its
+/// skeletons (the heroes, the Meshes page's banner, the arm and the walker)
+/// is posed and drawn as the engine asks of a figure of many parts, and
+/// that nothing warns
 fn every_page_steps(mut engine_on: impl FnMut(usize) -> Option<HeadlessEngine>) {
   for page in 0..PAGES {
     // A capture for each page, opened before its engine
@@ -127,11 +132,16 @@ fn every_page_steps(mut engine_on: impl FnMut(usize) -> Option<HeadlessEngine>) 
       return;
     };
     engine.step_frames(FRAMES).unwrap();
-    assert!(
-      !heroes(&mut engine).is_empty(),
-      "page {}: no hero",
-      page + 1
-    );
+    if page == CONSTRAINTS {
+      assert_eq!(showing(&mut engine, REACHER).len(), 1, "the arm");
+      assert_eq!(showing(&mut engine, WALKER).len(), 1, "the walker");
+    } else {
+      assert!(
+        !heroes(&mut engine).is_empty(),
+        "page {}: no hero",
+        page + 1
+      );
+    }
     for skeleton in skeletons(&mut engine) {
       let bones = bones(&mut engine, skeleton);
       let world = engine.world();
@@ -1134,4 +1144,433 @@ fn the_console_s_overlay_draws_each_mesh_s_triangles_and_hull_on_the_mesh() {
     0,
     "the two draw one frame again with the overlay off"
   );
+}
+
+// --- The Constraints page ---
+
+/// Where the tip of `skeleton`'s bone `name` is in the world: its data's
+/// length along its x axis
+fn tip(engine: &mut HeadlessEngine, skeleton: Entity, name: &str) -> Vec2 {
+  let data = engine
+    .world()
+    .get::<Skeleton>(skeleton)
+    .unwrap()
+    .data()
+    .clone();
+  let length = {
+    let assets = engine.assets();
+    let data = assets.get(&data).expect("the skeleton's data is loaded");
+    let id = data.bone(name).unwrap_or_else(|| panic!("the {name} bone"));
+    data.bones()[id.index()].length
+  };
+  bone(engine, skeleton, name).transform_point2(Vec2::new(length, 0.0))
+}
+
+/// The angle between two directions, 0 to half a turn
+fn between(a: Vec2, b: Vec2) -> f32 {
+  a.angle_to(b).abs()
+}
+
+/// Places within the arm's reach, all round its shoulder: its two parts are
+/// 130 and 120 long
+fn in_reach(shoulder: Vec2) -> [Vec2; 4] {
+  [
+    shoulder + Vec2::new(170.0, 60.0),
+    shoulder + Vec2::new(-130.0, -110.0),
+    shoulder + Vec2::new(40.0, 190.0),
+    shoulder + Vec2::new(-90.0, 150.0),
+  ]
+}
+
+#[test]
+fn the_reaching_arm_s_hand_is_on_the_pointer() {
+  let Some(mut engine) = engine_on(CONSTRAINTS) else {
+    return;
+  };
+  engine.step_frames(10).unwrap();
+  let arm = one(&mut engine, REACHER);
+  let shoulder = bone(&engine, arm, "upper").translation;
+  // In reach, the wrist (the hand bone's origin) is on the pointer
+  for target in in_reach(shoulder) {
+    engine.mouse_move(target.x, target.y);
+    engine.step_frames(10).unwrap();
+    let hand = bone(&engine, arm, "hand").translation;
+    assert!(
+      hand.distance(target) < 2.0,
+      "the hand is at {hand}, the pointer at {target}"
+    );
+  }
+  // Out of reach, with Stretch off, both parts point at it
+  let target = shoulder + Vec2::new(-300.0, 150.0);
+  engine.mouse_move(target.x, target.y);
+  engine.step_frames(10).unwrap();
+  let wanted = target - shoulder;
+  for part in ["upper", "fore"] {
+    let pointing = bone(&engine, arm, part).matrix2.x_axis;
+    assert!(
+      between(pointing, wanted) < 0.01,
+      "the {part} points {pointing}, the pointer is {wanted} away"
+    );
+  }
+  let hand = bone(&engine, arm, "hand").translation;
+  assert!(
+    (hand.distance(shoulder) - 250.0).abs() < 1.0,
+    "the arm lies straight, its wrist {} from the shoulder",
+    hand.distance(shoulder)
+  );
+}
+
+/// Which side of the line from `from` to `to` the point `at` is: positive
+/// below it for a line running right (y is down)
+fn side(from: Vec2, to: Vec2, at: Vec2) -> f32 {
+  (to - from).perp_dot(at - from)
+}
+
+#[test]
+fn the_bend_setting_moves_the_elbow_to_the_other_side() {
+  let Some(mut engine) = engine_on(CONSTRAINTS) else {
+    return;
+  };
+  engine.step_frames(10).unwrap();
+  let arm = one(&mut engine, REACHER);
+  let shoulder = bone(&engine, arm, "upper").translation;
+  let target = shoulder + Vec2::new(170.0, 40.0);
+  engine.mouse_move(target.x, target.y);
+  engine.step_frames(10).unwrap();
+  // The arm starts bent the negative way: reaching right, its elbow is
+  // below the line to the pointer
+  let elbow = bone(&engine, arm, "fore").translation;
+  let before = side(shoulder, target, elbow);
+  assert!(before > 0.0, "the elbow is at {elbow}, above the line");
+
+  // The panel's first row is the bend
+  engine.tap_key(KeyCode::ArrowRight);
+  engine.step_frames(10).unwrap();
+  let elbow = bone(&engine, arm, "fore").translation;
+  let after = side(shoulder, target, elbow);
+  assert!(after < 0.0, "the elbow is at {elbow}, still below the line");
+  // Mirrored across the line, and the hand still on the pointer
+  assert!(
+    (before + after).abs() < 0.01 * before.abs(),
+    "{before} and {after}"
+  );
+  let hand = bone(&engine, arm, "hand").translation;
+  assert!(hand.distance(target) < 2.0, "the hand is at {hand}");
+}
+
+#[test]
+fn the_level_hand_keeps_its_angle_while_the_arm_turns() {
+  let Some(mut engine) = engine_on(CONSTRAINTS) else {
+    return;
+  };
+  engine.step_frames(10).unwrap();
+  let arm = one(&mut engine, REACHER);
+  let shoulder = bone(&engine, arm, "upper").translation;
+  let mut forearms = Vec::new();
+  for target in in_reach(shoulder) {
+    engine.mouse_move(target.x, target.y);
+    engine.step_frames(10).unwrap();
+    let hand = bone(&engine, arm, "hand").matrix2.x_axis;
+    assert!(
+      between(hand, Vec2::X) < 0.001,
+      "the hand points {hand}, not level"
+    );
+    forearms.push(bone(&engine, arm, "fore").matrix2.x_axis.to_angle());
+  }
+  // The forearm turned a long way meanwhile
+  let (low, high) = forearms
+    .iter()
+    .fold((f32::MAX, f32::MIN), |(low, high), &a| {
+      (low.min(a), high.max(a))
+    });
+  assert!(high - low > 1.0, "the forearm turned {forearms:?}");
+
+  // Rows: the bend, the softness, the stretch, the mix, the level hand.
+  // At a level hand's mix of 0 the hand turns with the forearm
+  for _ in 0..4 {
+    engine.tap_key(KeyCode::ArrowDown);
+    engine.step_frames(2).unwrap();
+  }
+  for _ in 0..10 {
+    engine.tap_key(KeyCode::ArrowLeft);
+    engine.step_frames(2).unwrap();
+  }
+  engine.step_frames(5).unwrap();
+  let hand = bone(&engine, arm, "hand").matrix2.x_axis;
+  let fore = bone(&engine, arm, "fore").matrix2.x_axis;
+  assert!(
+    between(hand, fore) < 0.001,
+    "the hand points {hand}, the forearm {fore}"
+  );
+  assert!(between(hand, Vec2::X) > 0.1, "the hand is still level");
+}
+
+/// The walker's two feet: each IK target bone and the shin whose tip it
+/// holds
+const FEET: [(&str, &str); 2] = [("foot_near", "shin_near"), ("foot_far", "shin_far")];
+
+/// Steps the walker for four seconds, handing each step's targets and tips
+/// (in `FEET`'s order) and the body's place to `each`
+fn walk(engine: &mut HeadlessEngine, mut each: impl FnMut([(Vec2, Vec2); 2], Vec2)) {
+  engine.step_frames(10).unwrap();
+  let walker = one(engine, WALKER);
+  for _ in 0..240 {
+    engine.step().unwrap();
+    let feet = FEET.map(|(target, shin)| {
+      (
+        bone(engine, walker, target).translation,
+        tip(engine, walker, shin),
+      )
+    });
+    let body = bone(engine, walker, "body").translation;
+    each(feet, body);
+  }
+}
+
+#[test]
+fn the_walker_s_planted_feet_stay_put_while_its_body_moves() {
+  let Some(mut engine) = engine_on(CONSTRAINTS) else {
+    return;
+  };
+  // For each foot: where its tip was when its target last stopped, the
+  // longest a target has stood, and how often each foot stepped
+  let mut planted: [Option<Vec2>; 2] = [None; 2];
+  let mut last: [Option<Vec2>; 2] = [None; 2];
+  let mut stood = [0u32; 2];
+  let mut longest = [0u32; 2];
+  let mut steps = [0u32; 2];
+  let mut bodies = Vec::new();
+  walk(&mut engine, |feet, body| {
+    bodies.push(body);
+    for (foot, (target, tip)) in feet.into_iter().enumerate() {
+      let still = last[foot].is_some_and(|last| last.distance(target) < 1e-3);
+      if still {
+        stood[foot] += 1;
+        longest[foot] = longest[foot].max(stood[foot]);
+        let start = *planted[foot].get_or_insert(tip);
+        assert!(
+          start.distance(tip) < 1.0,
+          "foot {foot}: planted at {start}, now at {tip}"
+        );
+      } else {
+        if stood[foot] > 0 {
+          steps[foot] += 1;
+        }
+        stood[foot] = 0;
+        planted[foot] = None;
+      }
+      last[foot] = Some(target);
+    }
+  });
+  let travelled = bodies.last().unwrap().x - bodies.first().unwrap().x;
+  assert!(travelled > 200.0, "the body moved {travelled}");
+  for foot in 0..2 {
+    assert!(
+      steps[foot] >= 2,
+      "foot {foot} stepped {} times",
+      steps[foot]
+    );
+    assert!(
+      longest[foot] >= 15,
+      "foot {foot} stood {} steps at most",
+      longest[foot]
+    );
+  }
+}
+
+#[test]
+fn the_walker_s_feet_are_on_the_ground() {
+  let Some(mut engine) = engine_on(CONSTRAINTS) else {
+    return;
+  };
+  let mut last: [Option<Vec2>; 2] = [None; 2];
+  let mut planted_frames = 0;
+  walk(&mut engine, |feet, _| {
+    for (foot, (target, tip)) in feet.into_iter().enumerate() {
+      let ground = ground_height(tip.x);
+      // A foot in the air is never under the ground
+      assert!(
+        tip.y <= ground + 2.0,
+        "foot {foot} at {tip}, under the ground at {ground}"
+      );
+      // A planted one is on it
+      if last[foot].is_some_and(|last| last.distance(target) < 1e-3) {
+        planted_frames += 1;
+        assert!(
+          (tip.y - ground).abs() <= 2.0,
+          "foot {foot} planted at {tip}, the ground at {ground}"
+        );
+      }
+      last[foot] = Some(target);
+    }
+  });
+  assert!(planted_frames > 200, "planted frames: {planted_frames}");
+}
+
+/// A turn in radians brought within half a turn either way
+fn wrapped(angle: f32) -> f32 {
+  let turn = std::f32::consts::TAU;
+  (angle + turn / 2.0).rem_euclid(turn) - turn / 2.0
+}
+
+#[test]
+fn the_hero_s_pelvis_turns_six_tenths_of_the_way_with_its_trunk() {
+  let Some(mut engine) = engine_on(CHARACTER) else {
+    return;
+  };
+  engine.step_frames(10).unwrap();
+  let hero = hero(&mut engine);
+  {
+    // A transform constraint turns it, and no animation keys it
+    let data = engine.world().get::<Skeleton>(hero).unwrap().data().clone();
+    let assets = engine.assets();
+    let data = assets.get(&data).unwrap();
+    let pelvis = data.bone("pelvis").unwrap();
+    let constrained = data.constraints().iter().any(|constraint| {
+      matches!(constraint, SkeletonConstraint::Transform(transform)
+        if &*transform.name == "pelvis" && transform.bones.contains(&pelvis))
+    });
+    assert!(constrained, "the pelvis constraint");
+    for animation in data.animations() {
+      let name = &animation.name;
+      let keyed = animation.timelines.iter().any(
+        |timeline| matches!(timeline, SkeletonTimeline::Rotate { bone, .. } if *bone == pelvis),
+      );
+      assert!(!keyed, "{name} keys the pelvis");
+    }
+  }
+  // The pelvis's own turn (the hip is never turned) is six tenths of the
+  // trunk's lean from upright, in the walk and in the run
+  let lean = |engine: &HeadlessEngine| {
+    let torso = bone(engine, hero, "torso").matrix2.x_axis.to_angle();
+    let pelvis = bone(engine, hero, "pelvis").matrix2.x_axis.to_angle();
+    (
+      wrapped(torso + std::f32::consts::FRAC_PI_2),
+      wrapped(pelvis),
+    )
+  };
+  engine.press_key(KeyCode::KeyD);
+  for gait in ["walk", "run"] {
+    if gait == "run" {
+      engine.press_key(KeyCode::ShiftLeft);
+    }
+    engine.step_frames(30).unwrap();
+    assert_eq!(playing(&engine, hero, 0).as_deref(), Some(gait));
+    let mut most = 0.0f32;
+    for _ in 0..40 {
+      engine.step().unwrap();
+      let (trunk, pelvis) = lean(&engine);
+      most = most.max(trunk.abs());
+      assert!(
+        (pelvis - 0.6 * trunk).abs() < 1e-3,
+        "{gait}: the trunk leans {trunk}, the pelvis turns {pelvis}"
+      );
+    }
+    assert!(most > 0.03, "{gait}: the trunk leans {most} at most");
+  }
+}
+
+/// The pelvis keys the hero's run, jump and slash had before a constraint
+/// turned it: six tenths of the torso's, by hand
+const PELVIS_KEYS: [(&str, &str); 3] = [
+  (
+    "run",
+    "[(0.0, 7.2), (0.125, 9), (0.25, 7.2), (0.375, 9), (0.5, 7.2)]",
+  ),
+  (
+    "jump",
+    "[(0.0, 0), (0.11, 7.2), (0.2, -2.4), (0.47, 1.2), (0.8, 3.6), (0.87, 7.2), (1.0, 0)]",
+  ),
+  (
+    "slash",
+    "[(0.0, 0, Bezier(0.4, 0, 0.6, 1)), (0.14, -4.8), (0.3, 8.4), (0.4, 6, Bezier(0.4, 0, 0.6, 1)), (0.6, 0)]",
+  ),
+];
+
+/// The hero's file as it was: without its constraints, and with the
+/// pelvis keyed by hand in the run, the jump and the slash
+fn hand_keyed(file: &str) -> String {
+  let start = file.find("\n  constraints: [").expect("the constraints");
+  let end = start + file[start..].find("\n  ],").expect("their end") + "\n  ],".len();
+  let mut text = format!("{}{}", &file[..start], &file[end..]);
+  for (animation, keys) in PELVIS_KEYS {
+    let at = text
+      .find(&format!("\"{animation}\": ("))
+      .unwrap_or_else(|| panic!("the {animation}"));
+    let bones = at + text[at..].find("bones: {").expect("its bones") + "bones: {".len();
+    text.insert_str(bones, &format!("\n        \"pelvis\": (rotate: {keys}),"));
+  }
+  text
+}
+
+#[test]
+fn the_hero_s_run_jump_and_slash_poses_are_what_the_hand_keys_gave() {
+  let file = EMBEDDED
+    .iter()
+    .find(|(path, _)| *path == HERO)
+    .map(|(_, bytes)| std::str::from_utf8(bytes).unwrap())
+    .unwrap();
+  let before = embedded();
+  before.insert(HERO, hand_keyed(file).into_bytes());
+  let on = |files: MemorySource| {
+    HeadlessEngine::new_or_skip(
+      demo()
+        .start_page(SKINS)
+        .engine_builder()
+        .asset_source(files),
+    )
+  };
+  let (Some(mut now), Some(mut then)) = (on(embedded()), on(before)) else {
+    return;
+  };
+  // A hero of each engine's file for each animation, side by side
+  let animations = ["run", "jump", "slash"];
+  let spawn = |engine: &mut HeadlessEngine| -> Vec<Entity> {
+    engine.step_frames(2).unwrap();
+    let page_hero = hero(engine);
+    let data = engine
+      .world()
+      .get::<Skeleton>(page_hero)
+      .unwrap()
+      .data()
+      .clone();
+    animations
+      .iter()
+      .enumerate()
+      .map(|(index, animation)| {
+        let world = engine.world_mut();
+        let hero = world
+          .spawn((
+            Transform::from_xy(200.0 + 300.0 * index as f32, 600.0).with_uniform_scale(0.45),
+            Skeleton::new(data.clone()),
+            SkeletonAnimation::new(),
+            Renderable::skeleton(),
+          ))
+          .id();
+        let mut state = world.get_mut::<SkeletonAnimation>(hero).unwrap();
+        state.set_animation(0, animation, true);
+        hero
+      })
+      .collect()
+  };
+  let ours = spawn(&mut now);
+  let theirs = spawn(&mut then);
+  let names = bones(&mut now, ours[0]);
+  for frame in 0..60 {
+    now.step().unwrap();
+    then.step().unwrap();
+    if frame % 4 != 0 {
+      continue;
+    }
+    for (index, animation) in animations.iter().enumerate() {
+      for name in &names {
+        let a = bone(&now, ours[index], name);
+        let b = bone(&then, theirs[index], name);
+        assert!(
+          a.abs_diff_eq(b, 1e-3),
+          "{animation} at step {frame}: the {name} bone is {a:?}, by hand {b:?}"
+        );
+      }
+    }
+  }
 }

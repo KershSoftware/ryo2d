@@ -1,0 +1,67 @@
+// The Constraints page's walker: a body on two legs of two parts each,
+// drawn for the demo (see README.md) and written by hand.
+//
+// No animation moves it. The page places the body and each foot's target
+// bone in the world every step, and an IK constraint on each leg turns
+// its thigh and shin so the foot is on its target.
+//
+// Units are the art's pixels, drawn at full size. The origin is on the
+// ground under the body. Angles are degrees, clockwise.
+(
+  images: { "parts": "walker.png" },
+
+  // Where each part is in the image, as README.md's packing command puts them
+  regions: {
+    "body": (image: "parts", rect: (8, 8, 96, 72)),
+    "thigh": (image: "parts", rect: (112, 8, 94, 24)),
+    "shin": (image: "parts", rect: (112, 40, 80, 24)),
+    "joint": (image: "parts", rect: (112, 72, 22, 22)),
+  },
+
+  // The body's bone is at the hip, 108 above the ground. Each thigh and
+  // shin is 70 long and lies along its part; a shin's tip is the bottom of
+  // its round foot. `foot_near` and `foot_far` carry no image: they are
+  // the legs' targets, children of the root
+  bones: [
+    (name: "root"),
+    (name: "body", parent: "root", y: -108),
+    (name: "thigh_far", parent: "body", x: 4, rotation: 60, length: 70),
+    (name: "shin_far", parent: "thigh_far", x: 70, rotation: 50, length: 70),
+    (name: "thigh_near", parent: "body", x: -4, rotation: 60, length: 70),
+    (name: "shin_near", parent: "thigh_near", x: 70, rotation: 50, length: 70),
+    (name: "foot_far", parent: "root", x: 10),
+    (name: "foot_near", parent: "root", x: -10),
+  ],
+
+  // Back to front: the far leg, a shade darker, the body, then the near
+  // leg with caps over its hip and knee
+  slots: [
+    (name: "thigh_far", bone: "thigh_far", attachment: "thigh", color: "#b4b4c4"),
+    (name: "shin_far", bone: "shin_far", attachment: "shin", color: "#b4b4c4"),
+    (name: "body", bone: "body", attachment: "body"),
+    (name: "thigh_near", bone: "thigh_near", attachment: "thigh"),
+    (name: "shin_near", bone: "shin_near", attachment: "shin"),
+    (name: "knee_near", bone: "shin_near", attachment: "joint"),
+    (name: "hip_near", bone: "thigh_near", attachment: "joint"),
+  ],
+
+  // A part's middle from its upper joint: the thigh's image has its joints
+  // 12 in from each end, the shin's knee is 10 in from its end
+  skins: {
+    "default": {
+      "thigh_far": { "thigh": Region(region: "thigh", x: 35) },
+      "shin_far": { "shin": Region(region: "shin", x: 30) },
+      "body": { "body": Region(region: "body", y: -26) },
+      "thigh_near": { "thigh": Region(region: "thigh", x: 35) },
+      "shin_near": { "shin": Region(region: "shin", x: 30) },
+      "knee_near": { "joint": Region(region: "joint") },
+      "hip_near": { "joint": Region(region: "joint") },
+    },
+  },
+
+  // Knees bend the positive way: facing right, they point ahead
+  constraints: [
+    Ik(name: "leg_far", bones: ["thigh_far", "shin_far"], target: "foot_far"),
+    Ik(name: "leg_near", bones: ["thigh_near", "shin_near"], target: "foot_near"),
+  ],
+)

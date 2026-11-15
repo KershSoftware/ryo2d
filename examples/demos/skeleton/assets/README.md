@@ -2,12 +2,16 @@
 
 | File | What |
 |---|---|
-| `hero.skeleton.ron` | The hero: 17 bones, 28 slots, seven skins, seven animations and a footstep event. Written by hand; its comments say how it is put together |
+| `hero.skeleton.ron` | The hero: 17 bones, 28 slots, seven skins, seven animations, a footstep event and a transform constraint that turns its pelvis with its trunk. Written by hand; its comments say how it is put together |
 | `hero.png` | The hero's parts in one 1024 x 744 atlas: three bodies, three outfits, the faces' parts and a cap. The skeleton file names each part's rectangle |
 | `cape.png` | The cape the Meshes page puts on the hero, 280 x 292: the image of the mesh in the hero's `cape` skin |
 | `banner.skeleton.ron` | The Meshes page's banner: three bones, a pole and a flag. The flag is a mesh of 27 vertices, and the `ripple` animation's deform keys move them. Written by hand, but for the ripple's keys (below) |
 | `banner.png` | The banner's flag (296 x 176) and its pole (640 x 20, lying down) in one 656 x 220 image |
 | `sword.png` | The sword the Sockets page puts on the hero's weapon bone, 300 x 68, its grip on the left |
+| `reacher.skeleton.ron` | The Constraints page's arm on its stand: six bones, an IK constraint that reaches its wrist for a target bone and a transform constraint that keeps its hand level. Written by hand |
+| `reacher.png` | The arm's parts in one 262 x 296 image: its upper arm, forearm, hand with a tray, shoulder pivot, elbow cap and stand |
+| `walker.skeleton.ron` | The Constraints page's walker: a body on two legs of two parts each, an IK constraint on each leg that puts its foot on a target bone. Written by hand |
+| `walker.png` | The walker's parts in one 214 x 102 image: its body, a thigh, a shin with its foot, and a joint cap |
 | `audio/footstep.sound.ron` | The sound the skeleton's footstep event names: one of four takes, heard from where it is played |
 | `audio/step-1.wav` to `step-4.wav` | The four takes |
 
@@ -31,7 +35,7 @@ The hero's parts are from **Modular Characters** by Kenney (<https://kenney.nl/a
 
 The parts are assembled as the pack's `instruction.png` shows: hair and a face on a head, a neck, a shirt with a sleeve and a hand each side, the trousers' top under the shirt, a leg each side and a shoe under each. An arm and a leg are one piece each in the pack, so the rig has one bone for each, and one for each hand and shoe. The hero is turned a little to its right, so its two legs are the same piece and its two arms the same piece, the far ones drawn behind and a shade darker.
 
-The cap, the sword, the cape and the banner (its flag and its pole) are not from the pack: it has none of them. They were drawn for this demo with ImageMagick, as flat shapes with a little shading in the hero's colours (the cap's yellows, the red of the shirt, the brown of the shoes), and are under the repository's licence.
+The cap, the sword, the cape, the banner (its flag and its pole), the reaching arm and the walker are not from the pack: it has none of them. They were drawn for this demo with ImageMagick, as flat shapes with a little shading in the hero's colours (the cap's yellows, the red of the shirt, the brown of the shoes, the sword's steel and the pole's wood), and are under the repository's licence.
 
 ## Making the images
 
@@ -97,6 +101,114 @@ magick -size 656x220 xc:none \
   pole.png -geometry +8+192 -composite \
   PNG32:banner.png
 ```
+
+The Constraints page's two figures are drawn the same way, each part at twice its size and halved, then packed with 8 pixels between parts. A limb's part is a bar with rounded ends whose joints are as far apart as its bone is long:
+
+```sh
+# upper.png: the upper arm, joint to joint 130 apart, bolts at each joint
+magick -size 316x56 xc:none \
+  -fill '#f2b632' -draw 'roundrectangle 0,0 315,55 28,28' \
+  \( -size 316x56 xc:none -fill '#e09f1f' -draw 'rectangle 0,36 316,56' \) \
+  -compose SrcAtop -composite -compose Over \
+  -fill '#c9861a' -draw 'circle 28,28 28,37' -draw 'circle 288,28 288,37' \
+  -filter Lanczos -resize 50% PNG32:upper.png
+
+# fore.png: the forearm, joint to wrist 120 apart, a bolt at the wrist
+magick -size 288x48 xc:none \
+  -fill '#f2b632' -draw 'roundrectangle 0,0 287,47 24,24' \
+  \( -size 288x48 xc:none -fill '#e09f1f' -draw 'rectangle 0,31 288,48' \) \
+  -compose SrcAtop -composite -compose Over \
+  -fill '#c9861a' -draw 'circle 264,24 264,32' \
+  -filter Lanczos -resize 50% PNG32:fore.png
+
+# elbow.png: the cap over the elbow
+magick -size 60x60 xc:none \
+  -fill '#c9861a' -draw 'circle 30,30 30,1' \
+  -fill '#f7d070' -draw 'circle 30,30 30,16' \
+  -filter Lanczos -resize 50% PNG32:elbow.png
+
+# hub.png: the shoulder's pivot on the top of the stand
+magick -size 96x96 xc:none \
+  -fill '#8f9bab' -draw 'circle 48,48 48,2' \
+  -fill '#b8c3d1' -draw 'circle 48,48 48,20' \
+  -fill '#8f9bab' -draw 'circle 48,48 48,38' \
+  -filter Lanczos -resize 50% PNG32:hub.png
+
+# hand.png: a red hand under a tray with a cup on it, the palm's middle
+# (the wrist) at (42, 42)
+magick -size 168x112 xc:none \
+  -fill '#e6ebf2' -draw 'roundrectangle 60,2 106,38 6,6' \
+  -fill '#b8c3d1' -draw 'rectangle 92,6 104,36' \
+  -fill none -stroke '#e6ebf2' -strokewidth 6 -draw 'circle 114,18 114,28' -stroke none \
+  -fill '#af9360' -draw 'roundrectangle 6,36 162,52 6,6' \
+  -fill '#8f774c' -draw 'roundrectangle 6,46 162,52 3,3' \
+  -fill '#e05848' -draw 'circle 84,84 84,57' \
+  -fill '#bf493b' -draw 'path "M 58,92 A 27,27 0 0 0 110,92 Z"' \
+  -fill '#e05848' -draw 'roundrectangle 62,40 106,62 10,10' \
+  -filter Lanczos -resize 50% PNG32:hand.png
+
+# post.png: the stand, a steel pole on a wooden foot, 280 tall
+magick -size 120x560 xc:none \
+  -fill '#8f9bab' -draw 'rectangle 46,24 74,540' \
+  -fill '#b8c3d1' -draw 'rectangle 50,24 58,540' \
+  -fill '#af9360' -draw 'roundrectangle 4,524 116,559 10,10' \
+  -fill '#8f774c' -draw 'roundrectangle 4,546 116,559 6,6' \
+  -filter Lanczos -resize 50% PNG32:post.png
+
+# reacher.png: the arm's parts
+magick -size 262x296 xc:none \
+  upper.png -geometry +8+8 -composite \
+  fore.png -geometry +8+44 -composite \
+  hand.png -geometry +8+76 -composite \
+  hub.png -geometry +100+76 -composite \
+  elbow.png -geometry +156+76 -composite \
+  post.png -geometry +194+8 -composite \
+  PNG32:reacher.png
+
+# body.png: the walker's body, its hip at (48, 62) on its lower edge
+magick -size 192x144 xc:none \
+  -fill '#e05848' -draw 'roundrectangle 4,4 188,124 36,36' \
+  \( -size 192x144 xc:none -fill '#bf493b' -draw 'rectangle 0,94 192,144' \) \
+  -compose SrcAtop -composite -compose Over \
+  -fill '#f2b632' -draw 'roundrectangle 104,28 176,64 16,16' \
+  -fill '#f7d070' -draw 'roundrectangle 114,34 150,44 5,5' \
+  -fill '#8f9bab' -draw 'circle 96,124 96,104' \
+  -fill '#b8c3d1' -draw 'circle 96,124 96,114' \
+  -filter Lanczos -resize 50% PNG32:body.png
+
+# thigh.png: hip to knee 70 apart
+magick -size 188x48 xc:none \
+  -fill '#f2b632' -draw 'roundrectangle 0,0 187,47 24,24' \
+  \( -size 188x48 xc:none -fill '#e09f1f' -draw 'rectangle 0,31 188,48' \) \
+  -compose SrcAtop -composite \
+  -filter Lanczos -resize 50% PNG32:thigh.png
+
+# shin.png: the knee's end at (10, 12) and a round foot whose edge is 70
+# along from it
+magick -size 160x48 xc:none \
+  \( -size 160x48 xc:none -fill '#f2b632' -draw 'roundrectangle 0,4 140,43 20,20' \
+     \( -size 160x48 xc:none -fill '#e09f1f' -draw 'rectangle 0,32 160,48' \) \
+     -compose SrcAtop -composite \) -compose Over -composite \
+  -fill '#7a4f2a' -draw 'circle 136,24 136,0' \
+  -fill '#9a6a3e' -draw 'circle 130,16 130,8' \
+  -filter Lanczos -resize 50% PNG32:shin.png
+
+# joint.png: the cap over a hip or knee
+magick -size 44x44 xc:none \
+  -fill '#8f9bab' -draw 'circle 22,22 22,1' \
+  -fill '#b8c3d1' -draw 'circle 22,22 22,12' \
+  -filter Lanczos -resize 50% PNG32:joint.png
+
+# walker.png: the walker's parts
+magick -size 214x102 xc:none \
+  body.png -geometry +8+8 -composite \
+  thigh.png -geometry +112+8 -composite \
+  shin.png -geometry +112+40 -composite \
+  joint.png -geometry +112+72 -composite \
+  PNG32:walker.png
+```
+
+Each part sits on its bone as a limb of the hero does (Placing a part on its bone, below), with no turn: a bar's middle is half way between its joints, so the upper arm's `x` is 65 and the forearm's 60. The thigh's joints are 12 in from its ends (`x` 35); the shin's knee is 10 in from its end and the bottom of its foot 70 along from the knee, at the tip of its bone, so the IK puts the foot's edge on its target (`x` 30). The hand's palm is 14 below the image's middle (`y` -14), and the stand's image runs up from its foot (`y` -140).
 
 `hero.png` is the pack's own PNGs, unscaled, each laid at its place on a transparent sheet with 8 pixels between neighbours, and the cap. `PACK` is the pack's `PNG` folder:
 
