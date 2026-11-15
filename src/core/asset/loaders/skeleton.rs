@@ -1179,7 +1179,10 @@ impl SkeletonFile {
         .iter()
         .enumerate()
         .find(|(_, constraint)| constraint.name() == constraint_name);
-      let Some((constraint, setup)) = found.and_then(|(index, setup)| {
+      // As a bone's or a slot's id, none past the 255th, which the build
+      // refuses
+      let below = found.filter(|&(index, _)| index < crate::core::skeleton::MAX_CONSTRAINTS);
+      let Some((constraint, setup)) = below.and_then(|(index, setup)| {
         u8::try_from(index)
           .ok()
           .map(|index| (ConstraintId(index), setup))

@@ -104,7 +104,9 @@ impl BoneOverride {
 /// constraint's
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ConstraintOverride {
+  /// For an IK constraint: any of its mix, softness and switches
   Ik(IkOverride),
+  /// For a transform constraint: any of its six mixes
   Transform(TransformMixOverride),
 }
 
@@ -370,10 +372,10 @@ impl From<Affine2> for Stand {
 /// overrides) is its own, not the data's, and is kept by name. An
 /// attachment or an override shows from the skeleton's next step, and
 /// what it answers of its bones and slots (`bone_world`, `point`,
-/// `bounding_box`, `attachment`) is as its last step left it. A skin shows at once: the skins worn are looked
-/// up when the skeleton is drawn and when it is asked, so the next frame
-/// draws a skin just put on, with the game clock paused too, and `skins`
-/// gives what it wears.
+/// `bounding_box`, `attachment`) is as its last step left it. A skin
+/// shows at once: the skins worn are looked up when the skeleton is drawn
+/// and when it is asked, so the next frame draws a skin just put on, with
+/// the game clock paused too, and `skins` gives what it wears.
 ///
 /// It is drawn when its entity has a [`Renderable::skeleton`]: its regions
 /// where its bones are and its meshes skinned to them, in the shapes its
@@ -671,10 +673,17 @@ impl Skeleton {
   /// constraint with every mix at 0): how a game lets a foot go in the air.
   ///
   /// An IK mix is taken within 0 to 1 and a softness below 0 as 0. A value
-  /// that is not finite is ignored, with one warning per skeleton. A name
-  /// the data lacks, or a constraint of the other kind, warns once per
-  /// skeleton per name and does nothing. Until the data lands the override
-  /// is kept by name, and through a reload too
+  /// that is not finite is ignored, with one warning per skeleton. A switch
+  /// the constraint cannot have (`stretch` on a chain, `compress` on two
+  /// bones or a chain, `bend_positive` false or a `softness` on other than
+  /// two bones) is ignored in silence: the solve does not read it.
+  ///
+  /// A name the data lacks, or a constraint of the other kind, warns once
+  /// per skeleton per name and does nothing to the constraint, nor to an
+  /// override it already has. Until the data lands the override is kept by
+  /// name, and through a reload too: one kept for a name the data lacks, or
+  /// has as the other kind, is updated by a later call all the same, and
+  /// applies once data that has the constraint lands
   pub fn override_constraint(&mut self, name: &str, o: ConstraintOverride) {
     let (value, bad) = o.checked();
     if bad && !self.warned_constraint_value {
@@ -687,24 +696,29 @@ impl Skeleton {
       .constraint_overrides
       .iter()
       .position(|set| &*set.constraint == name);
-    let (constraint, id) = match &self.index {
-      // Kept by name until the data lands
-      None => (None, None),
+    // Kept by name until the data lands; after, found by name and kind
+    let (constraint, id, missing) = match &self.index {
+      None => (None, None, None),
       Some(index) => match index.constraint_names.get_key_value(name) {
-        Some((known, &id)) if self.fits(id, &value) => (Some(known.clone()), Some(id)),
-        Some(_) => {
-          self.warn_missing(Named::ConstraintKind, name);
-          return;
-        }
-        None => {
-          self.warn_missing(Named::Constraint, name);
-          return;
-        }
+        Some((known, &id)) if self.fits(id, &value) => (Some(known.clone()), Some(id), None),
+        Some(_) => (None, None, Some(Named::ConstraintKind)),
+        None => (None, None, Some(Named::Constraint)),
       },
     };
+    if let Some(missing) = missing {
+      self.warn_missing(missing, name);
+    }
     if let Some(set) = at.and_then(|at| self.constraint_overrides.get_mut(at)) {
-      set.value = value;
-      set.id = id;
+      // One the data has, of the right kind, is not replaced by a mistake;
+      // one kept for a later version (a name the data lacks, or has as
+      // the other kind) takes the new value for when that version lands
+      if missing.is_none() || set.id.is_none() {
+        set.value = value;
+        set.id = id;
+      }
+      return;
+    }
+    if missing.is_some() {
       return;
     }
     if !self.room(self.constraint_overrides.len(), MAX_CONSTRAINTS) {
@@ -979,22 +993,14 @@ impl Skeleton {
       });
     }
     self.pose.deforms_follow_slots();
-    // The constraints' values as the animations left them, with what the
-    // game set over them, for the constraint pass in `place`
-    for set in &self.constraint_overrides {
-      if let Some(values) = set
-        .id
-        .and_then(|constraint| self.pose.constraints.get_mut(constraint.index()))
-      {
-        set.value.apply(values);
-      }
-    }
+    // What animation left, for a placing again to start from
+    self.constrained.keep(&self.pose);
     for set in &mut self.overrides {
       set.animated = set
         .id
         .and_then(|bone| self.pose.bones.get(bone.index()).copied());
     }
-    self.constrained.keep(&self.pose);
+    self.apply_constraint_overrides();
     self.place(data, stand);
     if let Some(carried) = carried {
       // A bone with no transform from the pose before draws where it is
@@ -1010,15 +1016,31 @@ impl Skeleton {
     }
   }
 
+  /// Writes the game's constraint overrides over the constraints' values
+  /// as animation left them, for the constraint pass in `place`
+  fn apply_constraint_overrides(&mut self) {
+    for set in &self.constraint_overrides {
+      if let Some(values) = set
+        .id
+        .and_then(|constraint| self.pose.constraints.get_mut(constraint.index()))
+      {
+        set.value.apply(values);
+      }
+    }
+  }
+
   /// Computes the bones' world transforms again where it now stands, with
   /// the pose it has: the entity was moved after its skeleton's step (it
   /// sits on another skeleton's socket), or was flipped while no step
-  /// runs. The bone overrides and the constraints are applied afresh, from
-  /// the bones' own values as animation left them: a world-space override
-  /// depends on where it stands, and a constraint on where that puts its
-  /// target. So it gives the pose a step gives there, however often it runs
+  /// runs. The bone overrides, the constraint overrides and the
+  /// constraints are applied afresh, from the bones' own values and the
+  /// constraints' values as animation left them: a world-space override
+  /// depends on where it stands, a constraint on where that puts its
+  /// target, and an override set or cleared since the step shows at once.
+  /// So it gives the pose a step gives there, however often it runs
   pub(crate) fn place_again(&mut self, data: &SkeletonData, stand: Stand) {
     self.constrained.restore(&mut self.pose);
+    self.apply_constraint_overrides();
     for set in &mut self.overrides {
       // One set since the last step has no animated values yet: it takes
       // them from the pose as it stands, so it is applied once, and afresh
@@ -2163,6 +2185,13 @@ mod tests {
       self.skeleton.step(data, seen, animation, dt, stand, fired);
     }
 
+    /// Puts other data in the store, as a reload does
+    fn reload(&mut self, data: SkeletonData) {
+      let handle = self.skeleton.data().clone();
+      let mut assets = self.world.resource_mut::<Assets<SkeletonData>>();
+      *assets.get_mut(&handle).expect("the data") = data;
+    }
+
     /// The banner slot's offsets of the step before the last and of the
     /// last, each empty for none
     fn lists(&self) -> (&[f32], &[f32]) {
@@ -2362,6 +2391,13 @@ mod tests {
   /// the leg's mix 0.5, softness 1, bent the other way, and level's rotate
   /// and x mixes 0.5 and 0.25
   fn legged() -> SkeletonData {
+    legged_as(Some(true))
+  }
+
+  /// [`legged`] with "leg" an IK constraint (`Some(true)`), a transform
+  /// constraint on the thigh with every mix 0 (`Some(false)`), or not there
+  /// (`None`); "walk" keys "leg" only when it is the IK one
+  fn legged_as(leg: Option<bool>) -> SkeletonData {
     use crate::core::skeleton::{ConstraintId, Curve, IkSetup, IkValues, TransformMix};
     let long = |x: f32| BoneSetup {
       x,
@@ -2380,27 +2416,37 @@ mod tests {
       x: 0.25,
       ..TransformMix::default()
     };
-    SkeletonData::builder()
+    let builder = SkeletonData::builder()
       .bone("root", None, BoneSetup::default())
       .bone("thigh", Some("root"), long(0.0))
       .bone("shin", Some("thigh"), long(10.0))
       .bone("foot", Some("root"), BoneSetup::default())
-      .bone("pelvis", Some("root"), BoneSetup::default())
-      .ik("leg", &["thigh", "shin"], "foot", IkSetup::default())
+      .bone("pelvis", Some("root"), BoneSetup::default());
+    let builder = match leg {
+      Some(true) => builder.ik("leg", &["thigh", "shin"], "foot", IkSetup::default()),
+      Some(false) => builder.transform_constraint("leg", &["thigh"], "foot", Default::default()),
+      None => builder,
+    };
+    let level = ConstraintId(u8::from(leg.is_some()));
+    let mut timelines = vec![Timeline::TransformMix {
+      constraint: level,
+      frames: vec![(0.0, lean, Curve::Linear)],
+    }];
+    if leg == Some(true) {
+      timelines.insert(
+        0,
+        Timeline::Ik {
+          constraint: ConstraintId(0),
+          frames: vec![(0.0, ik, Curve::Linear)],
+        },
+      );
+    }
+    builder
       .transform_constraint("level", &["pelvis"], "foot", Default::default())
       .animation(Animation {
         name: Arc::from("walk"),
         duration: 1.0,
-        timelines: vec![
-          Timeline::Ik {
-            constraint: ConstraintId(0),
-            frames: vec![(0.0, ik, Curve::Linear)],
-          },
-          Timeline::TransformMix {
-            constraint: ConstraintId(1),
-            frames: vec![(0.0, lean, Curve::Linear)],
-          },
-        ],
+        timelines,
       })
       .build()
       .expect("a valid skeleton")
@@ -2585,6 +2631,62 @@ mod tests {
     let leg = leg_values(&played.skeleton);
     close(leg.mix, 1.0);
     close(leg.softness, 0.0);
+    assert_eq!(log.warnings().len(), 1, "{:?}", log.warnings());
+  }
+
+  fn leg_mix(mix: f32) -> ConstraintOverride {
+    ik_override(IkOverride {
+      mix: Some(mix),
+      ..IkOverride::default()
+    })
+  }
+
+  #[test]
+  fn an_override_kept_for_a_constraint_the_data_lacks_takes_a_later_call() {
+    let log = capture_log();
+    let mut played = walking();
+    played.skeleton.override_constraint("leg", leg_mix(0.25));
+    played.step(0.1);
+    close(leg_values(&played.skeleton).mix, 0.25);
+    // New data without "leg": the override is kept by name, and a call
+    // while the data lacks the name warns no more and changes what is kept
+    played.reload(legged_as(None));
+    played.step(0.1);
+    played.skeleton.override_constraint("leg", leg_mix(0.75));
+    played.step(0.1);
+    assert_eq!(log.containing("\"leg\""), 1, "{:?}", log.warnings());
+    // Data with "leg" again: the later call's value holds it
+    played.reload(legged());
+    played.step(0.1);
+    close(leg_values(&played.skeleton).mix, 0.75);
+    assert_eq!(log.warnings().len(), 1, "{:?}", log.warnings());
+  }
+
+  #[test]
+  fn an_override_through_a_reload_that_turns_its_constraint_s_kind_warns_once_and_is_kept() {
+    let log = capture_log();
+    let mut played = walking();
+    played.skeleton.override_constraint("leg", leg_mix(0.25));
+    played.step(0.1);
+    // New data in which "leg" is a transform constraint: the IK override
+    // warns once, does nothing to it, and stays kept
+    played.reload(legged_as(Some(false)));
+    for _ in 0..3 {
+      played.step(0.1);
+    }
+    assert_eq!(log.containing("\"leg\""), 1, "{:?}", log.warnings());
+    assert_eq!(log.containing("not of its override's kind"), 1);
+    let ConstraintValues::Transform(mix) = played.skeleton.pose.constraints[0] else {
+      panic!("{:?}", played.skeleton.pose.constraints);
+    };
+    assert_eq!(mix, crate::core::skeleton::TransformMix::default());
+    // A later call of the IK kind, while kept, is kept in its place
+    played.skeleton.override_constraint("leg", leg_mix(0.6));
+    // Back to IK: the kept override holds it again, and nothing more is
+    // said
+    played.reload(legged());
+    played.step(0.1);
+    close(leg_values(&played.skeleton).mix, 0.6);
     assert_eq!(log.warnings().len(), 1, "{:?}", log.warnings());
   }
 }

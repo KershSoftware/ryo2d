@@ -131,6 +131,9 @@ pub(crate) struct Constrained {
   /// The own values, as animation left them, of each bone a constraint
   /// changes
   animated: Vec<(BoneId, BonePose)>,
+  /// Each constraint's values as animation left them, before the game's
+  /// overrides, in the data's order
+  values: Vec<ConstraintValues>,
   /// The bones a constraint has changed so far in the pass under way
   changed: BoneSet,
   /// A chain's bones, copied out of the pose to be solved together
@@ -162,32 +165,41 @@ impl Constrained {
       ),
       None => (Vec::new(), Vec::new()),
     };
+    let values = data.constraints().iter().map(ConstraintValues::setup);
     Self {
       animated: changed.iter().filter_map(setup).collect(),
+      values: values.collect(),
       changed: BoneSet::default(),
       chain,
       joints,
     }
   }
 
-  /// Keeps the own values of the bones that constraints change, as
-  /// animation has just left them: before any override or constraint
-  /// writes them
+  /// Keeps the own values of the bones that constraints change, and the
+  /// constraints' values, as animation has just left them: before any
+  /// override or constraint writes them
   pub(super) fn keep(&mut self, pose: &Pose) {
     for (bone, animated) in &mut self.animated {
       if let Some(own) = pose.bones.get(bone.index()) {
         *animated = *own;
       }
     }
+    for (kept, values) in self.values.iter_mut().zip(&pose.constraints) {
+      *kept = *values;
+    }
   }
 
-  /// Puts those bones back as animation left them, for a pass to start
+  /// Puts those bones and the constraints' values back as animation left
+  /// them, for the game's overrides to be applied to and a pass to start
   /// from
   pub(super) fn restore(&self, pose: &mut Pose) {
     for (bone, animated) in &self.animated {
       if let Some(own) = pose.bones.get_mut(bone.index()) {
         *own = *animated;
       }
+    }
+    for (values, kept) in pose.constraints.iter_mut().zip(&self.values) {
+      *values = *kept;
     }
   }
 }
@@ -1551,6 +1563,48 @@ mod tests {
   }
 
   #[test]
+  fn a_constraint_override_set_or_cleared_between_steps_is_taken_up_when_placed_again() {
+    use crate::core::skeleton::{ConstraintOverride, IkOverride};
+    // The limb reaches its target at (0, 50) in a step. Turned off by an
+    // override between steps, a placing again (the skeleton rides a
+    // socket, or is flipped) frees it at once, to the bit as a step with
+    // that override places it: it lies along x, as its setup has it
+    let rig = built(limb(
+      BoneSetup::default(),
+      Vec2::new(0.0, 50.0),
+      IkSetup::default(),
+    ));
+    let mut skeleton = rig.posed(Affine2::IDENTITY, |_| {});
+    near(space(&skeleton, "hand").translation, Vec2::new(0.0, 50.0));
+    let kept = |skeleton: &Skeleton| {
+      let values = &skeleton.constrained.values;
+      (values.as_ptr() as usize, values.capacity())
+    };
+    let room = kept(&skeleton);
+    let off = ConstraintOverride::Ik(IkOverride {
+      mix: Some(0.0),
+      ..IkOverride::default()
+    });
+    skeleton.override_constraint("reach", off);
+    skeleton.place_again(rig.data(), Affine2::IDENTITY.into());
+    near(space(&skeleton, "hand").translation, Vec2::new(70.0, 0.0));
+    let freed = rig.posed(Affine2::IDENTITY, |skeleton| {
+      skeleton.override_constraint("reach", off);
+    });
+    assert_eq!(
+      bits(&skeleton.pose.skeleton_space),
+      bits(&freed.pose.skeleton_space)
+    );
+    // Cleared between steps, the next placing again has it reach again:
+    // the values animation left are put back first, and nothing is
+    // allocated for them
+    skeleton.clear_constraint_override("reach");
+    skeleton.place_again(rig.data(), Affine2::IDENTITY.into());
+    near(space(&skeleton, "hand").translation, Vec2::new(0.0, 50.0));
+    assert_eq!(kept(&skeleton), room);
+  }
+
+  #[test]
   fn a_skeleton_posed_in_the_frame_it_appears_has_its_constraints_applied() {
     // The limb lies straight, its target at its tip, (70, 0). An animation
     // keys the target to (0, 50) from its first moment
@@ -1633,16 +1687,17 @@ mod tests {
     assert_eq!(skeleton.pose.constraints, setup);
     assert_ne!(own(&skeleton, "upper").rotation, 0.0, "the limb reaches");
 
-    // The pass applies the values the pose holds: with the limb's mix
-    // there at 0, placing the bones again leaves the limb as animated
+    // The pass applies the values the pose holds: placing the bones again
+    // puts back the values animation left (kept as the step ends), and
+    // with the limb's mix there at 0 it leaves the limb as animated
     let off = ConstraintValues::Ik(IkValues {
       mix: 0.0,
       ..IkValues::of(&soft)
     });
     let all = ConstraintValues::Transform(TransformMix::ALL);
-    skeleton.pose.constraints[0] = off;
-    skeleton.pose.constraints[1] = all;
+    skeleton.constrained.values = vec![off, all];
     skeleton.place_again(rig.data(), Affine2::IDENTITY.into());
+    assert_eq!(skeleton.pose.constraints, [off, all]);
     assert_eq!(own(&skeleton, "upper").rotation, 0.0);
     // And with every mix of the transform constraint at 1 there, the hand
     // it names takes its target's place, the hips' at the origin
@@ -1680,6 +1735,7 @@ mod tests {
     let nothing_kept = |skeleton: &Skeleton| {
       let state = &skeleton.constrained;
       assert!(state.animated.is_empty() && state.animated.capacity() == 0);
+      assert_eq!(state.values.capacity(), 0);
       assert_eq!(state.chain.capacity(), 0);
       assert_eq!(state.joints.capacity(), 0);
       assert_eq!(skeleton.pose.constraints.capacity(), 0);
@@ -2159,6 +2215,24 @@ mod tests {
     let kept = 0.3 + (1.0 - 0.3) * 0.01;
     let off = shortest(heading(&skeleton, "eye") - (kept + FRAC_PI_2));
     assert!(off.abs() < 0.001, "at 0.01: off by {off}");
+
+    // The mixes are those the pose holds: at a setup's rotate mix of 1,
+    // the game's override of every mix 0 passes it over just the same
+    use crate::core::skeleton::{ConstraintOverride, TransformMixOverride};
+    let every = TransformMixOverride {
+      rotate: Some(0.0),
+      x: Some(0.0),
+      y: Some(0.0),
+      scale_x: Some(0.0),
+      scale_y: Some(0.0),
+      shear_y: Some(0.0),
+    };
+    let skeleton = rig(1.0).posed(Affine2::IDENTITY, |skeleton| {
+      hold_the_eye(skeleton);
+      skeleton.override_constraint("copy", ConstraintOverride::Transform(every));
+    });
+    let off = shortest(heading(&skeleton, "eye") - 0.3);
+    assert!(off.abs() < 0.001, "at 0 by override: off by {off}");
   }
 
   #[test]
