@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use super::animation::Animation;
 use super::builder::SkeletonDataBuilder;
+use super::constraint::{Constraint, ConstraintId};
 use super::skin::Skin;
 use crate::core::asset::{Asset, AssetId, Handle};
 use crate::core::graphics::Image;
@@ -154,6 +155,7 @@ pub struct SkeletonData {
   pub(super) bones: Vec<BoneData>,
   pub(super) slots: Vec<SlotData>,
   pub(super) regions: Vec<Region>,
+  pub(super) constraints: Vec<Constraint>,
   pub(super) animations: Vec<Animation>,
   pub(super) events: Vec<EventData>,
   /// The names and the skins, shared with every skeleton entity that uses
@@ -172,6 +174,7 @@ pub struct SkeletonData {
 pub(crate) struct SkeletonIndex {
   pub(super) bone_names: HashMap<Arc<str>, BoneId>,
   pub(super) slot_names: HashMap<Arc<str>, SlotId>,
+  pub(super) constraint_names: HashMap<Arc<str>, ConstraintId>,
   pub(super) skin_names: HashMap<Arc<str>, usize>,
   /// The default skin is always first
   pub(super) skins: Vec<Skin>,
@@ -272,6 +275,11 @@ impl SkeletonData {
     index.skin_names.get(name).map(|&skin| &index.skins[skin])
   }
 
+  /// The constraints, in the order they apply
+  pub fn constraints(&self) -> &[Constraint] {
+    &self.constraints
+  }
+
   pub fn animations(&self) -> &[Animation] {
     &self.animations
   }
@@ -289,6 +297,11 @@ impl SkeletonData {
   /// The slot called `name`
   pub fn slot(&self, name: &str) -> Option<SlotId> {
     self.index.slot_names.get(name).copied()
+  }
+
+  /// The constraint called `name`
+  pub fn constraint(&self, name: &str) -> Option<ConstraintId> {
+    self.index.constraint_names.get(name).copied()
   }
 
   /// The animation called `name`

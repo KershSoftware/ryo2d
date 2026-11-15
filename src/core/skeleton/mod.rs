@@ -15,7 +15,7 @@
 //! animations' deform keys, sorted, lit and shadowed as a sprite is, and
 //! between fixed steps as an interpolated entity is.
 //!
-//! Not built: IK, transform and path constraints, clipping, linked
+//! Not built: path constraints, clipping, linked
 //! meshes, and reading another tool's files.
 
 mod animation;
@@ -23,6 +23,7 @@ mod apply;
 mod attachment;
 mod builder;
 mod component;
+mod constraint;
 mod curve;
 mod data;
 pub(crate) mod debug;
@@ -44,6 +45,10 @@ pub use attachment::{
 };
 pub use builder::{BoneSetup, SkeletonDataBuilder, SlotSetup};
 pub use component::{BoneOverride, Skeleton, Space};
+pub use constraint::{
+  Constraint, ConstraintId, IkConstraint, IkSetup, MAX_CONSTRAINTS, MAX_IK_BONES,
+  TransformConstraint, TransformMix, TransformOffset, TransformSetup,
+};
 pub use curve::Curve;
 pub use data::{
   BoneData, BoneId, EventAudio, EventData, Inherit, Region, SkeletonData, SlotBlend, SlotData,

@@ -218,15 +218,16 @@ pub mod prelude {
   // and any other part of the prelude)
   pub use crate::core::skeleton::{
     Animation as SkeletonClip, Attachment as SkeletonAttachment, BoneData, BoneId, BoneOverride,
-    BoneSetup, BoneSocket, BoundingBoxAttachment, Curve as SkeletonCurve,
-    EventAudio as SkeletonEventAudio, EventData as SkeletonEventData,
-    EventValues as SkeletonEventValues, Influence as SkeletonInfluence, Inherit as BoneInherit,
-    MeshAttachment, MeshVertices, MixBlend as SkeletonMixBlend, PointAttachment,
-    Region as SkeletonRegion, RegionAttachment, Skeleton, SkeletonAnimation, SkeletonData,
-    SkeletonDataBuilder, SkeletonError, SkeletonEvent, SkeletonTrackEvent, Skin as SkeletonSkin,
-    SlotBlend, SlotData, SlotId, SlotSetup, Space as BoneSpace, Timeline as SkeletonTimeline,
-    TrackEntry as SkeletonTrackEntry, TrackEntryId as SkeletonTrackEntryId,
-    TrackEventKind as SkeletonTrackEventKind, WeightedVertices,
+    BoneSetup, BoneSocket, BoundingBoxAttachment, Constraint as SkeletonConstraint,
+    ConstraintId as SkeletonConstraintId, Curve as SkeletonCurve, EventAudio as SkeletonEventAudio,
+    EventData as SkeletonEventData, EventValues as SkeletonEventValues, IkConstraint, IkSetup,
+    Influence as SkeletonInfluence, Inherit as BoneInherit, MeshAttachment, MeshVertices,
+    MixBlend as SkeletonMixBlend, PointAttachment, Region as SkeletonRegion, RegionAttachment,
+    Skeleton, SkeletonAnimation, SkeletonData, SkeletonDataBuilder, SkeletonError, SkeletonEvent,
+    SkeletonTrackEvent, Skin as SkeletonSkin, SlotBlend, SlotData, SlotId, SlotSetup,
+    Space as BoneSpace, Timeline as SkeletonTimeline, TrackEntry as SkeletonTrackEntry,
+    TrackEntryId as SkeletonTrackEntryId, TrackEventKind as SkeletonTrackEventKind,
+    TransformConstraint, TransformMix, TransformOffset, TransformSetup, WeightedVertices,
   };
 
   // Tilemaps

@@ -14,9 +14,9 @@ use crate::core::ecs::Vec2;
 use crate::core::graphics::Image;
 use crate::core::skeleton::{
   Animation, Attachment, BoneSetup, BoundingBoxAttachment, Curve, EventAudio, EventData,
-  EventValues, Frame, Influence, Inherit, MeshAttachment, MeshVertices, PointAttachment, Region,
-  RegionAttachment, SkeletonData, SkeletonError, SlotBlend, SlotId, SlotSetup, Timeline,
-  WeightedVertices,
+  EventValues, Frame, IkSetup, Influence, Inherit, MeshAttachment, MeshVertices, PointAttachment,
+  Region, RegionAttachment, SkeletonData, SkeletonError, SlotBlend, SlotId, SlotSetup, Timeline,
+  TransformMix, TransformOffset, TransformSetup, WeightedVertices,
 };
 use crate::core::ui::Color;
 
@@ -45,7 +45,8 @@ use crate::core::ui::Color;
 ///      inherit: Normal),                                      // Normal, OnlyTranslation,
 ///                                                             // NoRotationOrReflection,
 ///                                                             // NoScale, NoScaleOrReflection
-///     (name: "arm", parent: "torso"),
+///     (name: "arm", parent: "torso", length: 30),
+///     (name: "aim", parent: "root"),                          // a target for the constraints
 ///   ],
 ///   // Slots in setup draw order, back to front
 ///   slots: [
@@ -90,6 +91,25 @@ use crate::core::ui::Color;
 ///     },
 ///     "red": { "gear": { "gear": Region(region: "gear") } },
 ///   },
+///   // Constraints, in the order they apply: a bone's rule for where it ends up after
+///   // animation. Each names its bones (an IK chain runs from parent to child), a target
+///   // bone that is not one of them nor below one, and settings, each with its default
+///   constraints: [
+///     // IK turns one bone, two bones or a chain (up to 16) so the last one's tip reaches the
+///     // target. The last bone needs a length, and so does a lone bone that stretches or compresses
+///     Ik(name: "reach", bones: ["torso", "arm"], target: "aim",
+///        mix: 1,                                             // 0 (animated) to 1 (solved)
+///        softness: 0,                                        // two bones, a distance
+///        bend_positive: true,                                // two bones only
+///        compress: false, stretch: false, uniform: false),   // compress: one bone; the
+///                                                            // others: not a chain
+///     // A transform constraint copies the target's rotation, place, scale and shear by a
+///     // mix each (0 leaves it, 1 copies it; outside 0 to 1 is allowed) plus an offset
+///     Transform(name: "level", bones: ["arm"], target: "aim",
+///               mix: (rotate: 1, x: 0, y: 0, scale_x: 0, scale_y: 0, shear_y: 0),   // all 0
+///               offset: (rotation: 0, x: 0, y: 0, scale_x: 0, scale_y: 0, shear_y: 0), // all 0
+///               local: false, relative: false),              // false, false
+///   ],
 ///   // Events with default values, and a sound the game plays
 ///   events: {
 ///     "step": (int: 1, float: 2.5, string: "left",            // 0, 0, ""
@@ -156,7 +176,7 @@ use crate::core::ui::Color;
 /// by name. A bone or slot of an animation, a
 /// region's image, an attachment's region, a mesh influence's bone, a
 /// deform's attachment (in its slot, in some skin) and an event key's event
-/// are names the file declares. Unknown fields are refused, so a
+/// are names the file declares, and so are a constraint's bones and target. Unknown fields are refused, so a
 /// misspelt one fails rather than doing nothing, and so is a name written
 /// twice in one map.
 ///
@@ -391,6 +411,10 @@ fn one() -> f32 {
   1.0
 }
 
+fn yes() -> bool {
+  true
+}
+
 fn white() -> ColorFile {
   ColorFile(Color::WHITE)
 }
@@ -412,6 +436,65 @@ enum BlendFile {
   Additive,
   Multiply,
   Screen,
+}
+
+/// A constraint, as written: `Ik(..)` or `Transform(..)`
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+enum ConstraintFile {
+  Ik {
+    name: String,
+    bones: Vec<String>,
+    target: String,
+    #[serde(default = "one")]
+    mix: f32,
+    #[serde(default)]
+    softness: f32,
+    #[serde(default = "yes")]
+    bend_positive: bool,
+    #[serde(default)]
+    compress: bool,
+    #[serde(default)]
+    stretch: bool,
+    #[serde(default)]
+    uniform: bool,
+  },
+  Transform {
+    name: String,
+    bones: Vec<String>,
+    target: String,
+    #[serde(default)]
+    mix: TransformMixFile,
+    #[serde(default)]
+    offset: TransformOffsetFile,
+    #[serde(default)]
+    local: bool,
+    #[serde(default)]
+    relative: bool,
+  },
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields, default)]
+struct TransformMixFile {
+  rotate: f32,
+  x: f32,
+  y: f32,
+  scale_x: f32,
+  scale_y: f32,
+  shear_y: f32,
+}
+
+/// The offsets' angles are degrees
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields, default)]
+struct TransformOffsetFile {
+  rotation: f32,
+  x: f32,
+  y: f32,
+  scale_x: f32,
+  scale_y: f32,
+  shear_y: f32,
 }
 
 #[derive(Deserialize)]
@@ -661,6 +744,8 @@ struct SkeletonFile {
   #[serde(default)]
   slots: Vec<SlotFile>,
   #[serde(default)]
+  constraints: Vec<ConstraintFile>,
+  #[serde(default)]
   skins: Ordered<Ordered<Ordered<AttachmentFile>>>,
   #[serde(default)]
   events: Ordered<EventFile>,
@@ -755,6 +840,66 @@ impl SkeletonFile {
           },
         },
       );
+    }
+    for constraint in &self.constraints {
+      builder = match constraint {
+        ConstraintFile::Ik {
+          name,
+          bones,
+          target,
+          mix,
+          softness,
+          bend_positive,
+          compress,
+          stretch,
+          uniform,
+        } => builder.ik(
+          name.as_str(),
+          &bones.iter().map(String::as_str).collect::<Vec<_>>(),
+          target,
+          IkSetup {
+            mix: *mix,
+            softness: *softness,
+            bend_positive: *bend_positive,
+            compress: *compress,
+            stretch: *stretch,
+            uniform: *uniform,
+          },
+        ),
+        ConstraintFile::Transform {
+          name,
+          bones,
+          target,
+          mix,
+          offset,
+          local,
+          relative,
+        } => builder.transform_constraint(
+          name.as_str(),
+          &bones.iter().map(String::as_str).collect::<Vec<_>>(),
+          target,
+          TransformSetup {
+            mix: TransformMix {
+              rotate: mix.rotate,
+              x: mix.x,
+              y: mix.y,
+              scale_x: mix.scale_x,
+              scale_y: mix.scale_y,
+              shear_y: mix.shear_y,
+            },
+            offset: TransformOffset {
+              rotation: offset.rotation.to_radians(),
+              x: offset.x,
+              y: offset.y,
+              scale_x: offset.scale_x,
+              scale_y: offset.scale_y,
+              shear_y: offset.shear_y.to_radians(),
+            },
+            local: *local,
+            relative: *relative,
+          },
+        ),
+      };
     }
     for (skin, _) in &self.skins.0 {
       if skin != SkeletonData::DEFAULT_SKIN {
@@ -1037,8 +1182,9 @@ mod tests {
   use crate::core::graphics::Image;
   use crate::core::skeleton::{
     Animation, Attachment, BoneId, BoneSetup, BoundingBoxAttachment, Curve, EventAudio, EventData,
-    EventValues, Influence, Inherit, MeshAttachment, MeshVertices, PointAttachment, Region,
-    RegionAttachment, SkeletonData, SlotBlend, SlotId, SlotSetup, Timeline, WeightedVertices,
+    EventValues, IkSetup, Influence, Inherit, MeshAttachment, MeshVertices, PointAttachment,
+    Region, RegionAttachment, SkeletonData, SlotBlend, SlotId, SlotSetup, Timeline, TransformMix,
+    TransformOffset, TransformSetup, WeightedVertices,
   };
   use crate::core::ui::Color;
 
@@ -1268,6 +1414,9 @@ mod tests {
       (name: "head", parent: "torso", inherit: OnlyTranslation),
       (name: "arm", parent: "torso", inherit: NoRotationOrReflection),
       (name: "leg", parent: "root", inherit: NoScaleOrReflection),
+      (name: "thigh", parent: "root", length: 10),
+      (name: "shin", parent: "thigh", x: 10, length: 10),
+      (name: "aim", parent: "root"),
     ],
     slots: [
       (name: "torso", bone: "torso", attachment: "torso", color: "#ff8000"),
@@ -1307,6 +1456,14 @@ mod tests {
       "red": { "gear": { "gear": Region(region: "gear") } },
       "blue": {},
     },
+    constraints: [
+      Ik(name: "limb", bones: ["thigh", "shin"], target: "aim", mix: 0.75, softness: 2.5,
+         bend_positive: false, stretch: true, uniform: true),
+      Transform(name: "copy", bones: ["head", "arm"], target: "aim",
+                mix: (rotate: 0.5, x: 0.25, y: -0.5, scale_x: 1, scale_y: 2, shear_y: 0.1),
+                offset: (rotation: 45, x: 1, y: 2, scale_x: 0.5, scale_y: -0.5, shear_y: 30),
+                local: true, relative: true),
+    ],
     events: {
       "step": (int: 1, float: 2.5, string: "left", audio: Some((path: "audio/step.ogg", volume: 0.8, balance: -0.5))),
       "hit": (),
@@ -1432,6 +1589,24 @@ mod tests {
           ..origin()
         },
       )
+      .bone(
+        "thigh",
+        Some("root"),
+        BoneSetup {
+          length: 10.0,
+          ..origin()
+        },
+      )
+      .bone(
+        "shin",
+        Some("thigh"),
+        BoneSetup {
+          x: 10.0,
+          length: 10.0,
+          ..origin()
+        },
+      )
+      .bone("aim", Some("root"), origin())
       .slot(
         "torso",
         "torso",
@@ -1469,6 +1644,44 @@ mod tests {
       )
       .skin("red")
       .skin("blue")
+      .ik(
+        "limb",
+        &["thigh", "shin"],
+        "aim",
+        IkSetup {
+          mix: 0.75,
+          softness: 2.5,
+          bend_positive: false,
+          compress: false,
+          stretch: true,
+          uniform: true,
+        },
+      )
+      .transform_constraint(
+        "copy",
+        &["head", "arm"],
+        "aim",
+        TransformSetup {
+          mix: TransformMix {
+            rotate: 0.5,
+            x: 0.25,
+            y: -0.5,
+            scale_x: 1.0,
+            scale_y: 2.0,
+            shear_y: 0.1,
+          },
+          offset: TransformOffset {
+            rotation: deg(45.0),
+            x: 1.0,
+            y: 2.0,
+            scale_x: 0.5,
+            scale_y: -0.5,
+            shear_y: deg(30.0),
+          },
+          local: true,
+          relative: true,
+        },
+      )
       .attachment(
         "default",
         "torso",
@@ -1731,6 +1944,8 @@ mod tests {
     assert_eq!(data.slots(), expected.slots());
     assert_eq!(data.regions(), expected.regions());
     assert_eq!(data.events(), expected.events());
+    assert_eq!(data.constraints(), expected.constraints());
+    assert_eq!(data.constraints().len(), 2);
     assert_eq!(data.animations(), expected.animations());
     assert_eq!(data.skins(), expected.skins());
     assert_eq!(data.default_mix(), expected.default_mix());
@@ -1738,6 +1953,92 @@ mod tests {
       assert_eq!(data.mix(from, to), expected.mix(from, to), "{from} {to}");
     }
     assert_eq!(data.skins().len(), 3, "default, red and blue");
+  }
+
+  #[test]
+  fn a_file_s_constraints_load_and_match_the_builder_s() {
+    let data = loaded(
+      r#"(
+        bones: [
+          (name: "root"),
+          (name: "pelvis", parent: "root"),
+          (name: "thigh", parent: "pelvis", length: 10),
+          (name: "shin", parent: "thigh", x: 10, length: 10),
+          (name: "head", parent: "pelvis", length: 8),
+          (name: "torso", parent: "root"),
+          (name: "foot_target", parent: "root"),
+          (name: "look_target", parent: "root"),
+        ],
+        constraints: [
+          Ik(name: "leg", bones: ["thigh", "shin"], target: "foot_target", bend_positive: false, softness: 6),
+          Ik(name: "look", bones: ["head"], target: "look_target", mix: 0.5, stretch: true, uniform: true),
+          Transform(name: "level", bones: ["pelvis"], target: "torso", mix: (rotate: 0.6), offset: (rotation: 90), local: true),
+        ],
+      )"#,
+    );
+    let long = BoneSetup {
+      length: 10.0,
+      ..BoneSetup::default()
+    };
+    let expected = SkeletonData::builder()
+      .bone("root", None, BoneSetup::default())
+      .bone("pelvis", Some("root"), BoneSetup::default())
+      .bone("thigh", Some("pelvis"), long)
+      .bone("shin", Some("thigh"), BoneSetup { x: 10.0, ..long })
+      .bone(
+        "head",
+        Some("pelvis"),
+        BoneSetup {
+          length: 8.0,
+          ..BoneSetup::default()
+        },
+      )
+      .bone("torso", Some("root"), BoneSetup::default())
+      .bone("foot_target", Some("root"), BoneSetup::default())
+      .bone("look_target", Some("root"), BoneSetup::default())
+      .ik(
+        "leg",
+        &["thigh", "shin"],
+        "foot_target",
+        IkSetup {
+          bend_positive: false,
+          softness: 6.0,
+          ..IkSetup::default()
+        },
+      )
+      .ik(
+        "look",
+        &["head"],
+        "look_target",
+        IkSetup {
+          mix: 0.5,
+          stretch: true,
+          uniform: true,
+          ..IkSetup::default()
+        },
+      )
+      .transform_constraint(
+        "level",
+        &["pelvis"],
+        "torso",
+        TransformSetup {
+          mix: TransformMix {
+            rotate: 0.6,
+            ..TransformMix::default()
+          },
+          offset: TransformOffset {
+            rotation: deg(90.0),
+            ..TransformOffset::default()
+          },
+          local: true,
+          relative: false,
+        },
+      )
+      .build()
+      .expect("valid skeleton");
+    assert_eq!(data.constraints(), expected.constraints());
+    assert_eq!(data.constraints().len(), 3);
+    assert_eq!(data.constraint("level"), expected.constraint("level"));
   }
 
   /// A file with a torso and a head bone, a slot "s" on the torso and the
@@ -2119,6 +2420,16 @@ mod tests {
         "not an animation",
       ),
       (
+        r#"(bones: [(name: "a", length: 5), (name: "b", parent: "a", length: 5)], constraints: [Ik(name: "c", bones: ["a", "b"], target: "z")])"#,
+        r#"constraint "c""#,
+        r#"its target "z" is not a bone"#,
+      ),
+      (
+        r#"(bones: [(name: "a"), (name: "t")], constraints: [Transform(name: "c", bones: ["a"], target: "t", mix: (rotate: inf))])"#,
+        r#"constraint "c""#,
+        "mix rotate is inf",
+      ),
+      (
         r#"(bones: [(name: "a")], slots: [(name: "s", bone: "a")], skins: { "default": { "s": { "flag": Point() } } }, animations: { "w": (duration: 1.0, slots: { "s": (deform: { "flagg": [(0.0, [])] }) }) })"#,
         r#"animation "w" timeline 0 (deform)"#,
         r#"no skin has an attachment "flagg" in slot "s""#,
@@ -2129,6 +2440,13 @@ mod tests {
       assert!(error.contains(item), "{item} in {error}");
       assert!(error.contains(reason), "{reason} in {error}");
     }
+    // A misspelt setting is a mistake in the text, at its line and column
+    let error = failure(
+      r#"(bones: [(name: "a", length: 5), (name: "t")], constraints: [Ik(name: "c", bones: ["a"], target: "t", strech: true)])"#,
+    );
+    assert!(error.contains(PATH), "{error}");
+    assert!(error.contains("strech"), "{error}");
+    assert!(error.contains("line 1"), "{error}");
   }
 
   #[test]
@@ -2179,6 +2497,7 @@ mod tests {
     assert_eq!(data.animations().len(), 2);
     assert_eq!(data.skins().len(), 2);
     assert_eq!(data.mix("walk", "run"), 0.2);
+    assert_eq!(data.constraints().len(), 2);
     // Its deform keys are for the flag it declares: three positions
     let walk = data.animation("walk").expect("walk");
     let deforms: Vec<_> = walk

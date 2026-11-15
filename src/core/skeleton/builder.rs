@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use super::animation::Animation;
 use super::attachment::Attachment;
+use super::constraint::{IkSetup, TransformSetup};
 use super::data::{BoneId, EventData, Inherit, Region, SkeletonData, SlotBlend, SlotId};
 use super::validate::{self, MAX_BONES, MAX_SLOTS, SkeletonError};
 use crate::core::ui::Color;
@@ -83,6 +84,21 @@ pub(super) struct PendingAttachment {
   pub attachment: Attachment,
 }
 
+/// A constraint's settings, by kind, while its bones are still names
+#[derive(Debug, Clone)]
+pub(super) enum PendingKind {
+  Ik(IkSetup),
+  Transform(TransformSetup),
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct PendingConstraint {
+  pub name: Arc<str>,
+  pub bones: Vec<Arc<str>>,
+  pub target: Arc<str>,
+  pub kind: PendingKind,
+}
+
 /// Builds a [`SkeletonData`] in code: bones (parents first), slots (in draw
 /// order), image regions, skins and their attachments, animations, events
 /// and mixes. Bones, slots and skins are referred to by name; animations
@@ -97,6 +113,7 @@ pub struct SkeletonDataBuilder {
   pub(super) regions: Vec<Region>,
   pub(super) skins: Vec<Arc<str>>,
   pub(super) attachments: Vec<PendingAttachment>,
+  pub(super) constraints: Vec<PendingConstraint>,
   pub(super) animations: Vec<Animation>,
   pub(super) events: Vec<EventData>,
   pub(super) mixes: Vec<(Arc<str>, Arc<str>, f32)>,
@@ -156,6 +173,43 @@ impl SkeletonDataBuilder {
       slot: Arc::from(slot),
       name: name.into(),
       attachment,
+    });
+    self
+  }
+
+  /// Adds an IK constraint turning `bones` (first to last) so the last
+  /// one's tip reaches `target`. Constraints apply in the order added;
+  /// names resolve at [`build`](Self::build)
+  pub fn ik(
+    mut self,
+    name: impl Into<Arc<str>>,
+    bones: &[&str],
+    target: &str,
+    setup: IkSetup,
+  ) -> Self {
+    self.constraints.push(PendingConstraint {
+      name: name.into(),
+      bones: bones.iter().map(|&bone| Arc::from(bone)).collect(),
+      target: Arc::from(target),
+      kind: PendingKind::Ik(setup),
+    });
+    self
+  }
+
+  /// Adds a transform constraint making `bones` copy `target`. Constraints
+  /// apply in the order added; names resolve at [`build`](Self::build)
+  pub fn transform_constraint(
+    mut self,
+    name: impl Into<Arc<str>>,
+    bones: &[&str],
+    target: &str,
+    setup: TransformSetup,
+  ) -> Self {
+    self.constraints.push(PendingConstraint {
+      name: name.into(),
+      bones: bones.iter().map(|&bone| Arc::from(bone)).collect(),
+      target: Arc::from(target),
+      kind: PendingKind::Transform(setup),
     });
     self
   }

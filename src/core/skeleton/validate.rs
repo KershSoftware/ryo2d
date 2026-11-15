@@ -6,10 +6,14 @@ use std::sync::Arc;
 
 use super::animation::{EMPTY_NAME, Target, Timeline};
 use super::attachment::{Attachment, MeshAttachment, MeshVertices};
-use super::builder::SkeletonDataBuilder;
+use super::builder::{PendingConstraint, PendingKind, SkeletonDataBuilder};
+use super::constraint::{
+  Constraint, ConstraintId, IkConstraint, IkSetup, MAX_CONSTRAINTS, MAX_IK_BONES,
+  TransformConstraint,
+};
 use super::curve::Curve;
 use super::data::{
-  AnimationCatalogue, BoneData, BoneId, SkeletonData, SkeletonIndex, SlotData, SlotId,
+  AnimationCatalogue, BoneData, BoneId, Inherit, SkeletonData, SkeletonIndex, SlotData, SlotId,
 };
 use super::skin::Skin;
 use crate::core::ecs::Vec2;
@@ -81,6 +85,7 @@ pub(super) fn build(builder: SkeletonDataBuilder) -> Result<SkeletonData, Skelet
     regions,
     skins: declared_skins,
     attachments,
+    constraints: pending_constraints,
     animations,
     events,
     mixes: pending_mixes,
@@ -330,6 +335,28 @@ pub(super) fn build(builder: SkeletonDataBuilder) -> Result<SkeletonData, Skelet
     map.insert(pending.name, pending.attachment);
   }
 
+  // Constraints: unique, on bones that exist, with settings that can apply
+  let mut constraints = Vec::with_capacity(pending_constraints.len());
+  let mut constraint_names: HashMap<Arc<str>, ConstraintId> = HashMap::new();
+  for (index, pending) in pending_constraints.iter().enumerate() {
+    let item = || format!("constraint {:?}", &*pending.name);
+    let id = match u8::try_from(index) {
+      Ok(index) if usize::from(index) < MAX_CONSTRAINTS => ConstraintId(index),
+      _ => {
+        return Err(error(
+          item(),
+          format!("a skeleton has at most {MAX_CONSTRAINTS} constraints"),
+        ));
+      }
+    };
+    if constraint_names.contains_key(&pending.name) {
+      return Err(error(item(), "another constraint has the same name"));
+    }
+    let constraint = constraint_ok(item, pending, &bones, &bone_names)?;
+    constraint_names.insert(pending.name.clone(), id);
+    constraints.push(constraint);
+  }
+
   // Animations: unique, finite, keys in time order, references resolve
   let mut animation_names: HashMap<Arc<str>, usize> = HashMap::new();
   for (index, animation) in animations.iter().enumerate() {
@@ -403,6 +430,7 @@ pub(super) fn build(builder: SkeletonDataBuilder) -> Result<SkeletonData, Skelet
   let index = Arc::new(SkeletonIndex {
     bone_names,
     slot_names,
+    constraint_names,
     skin_names,
     skins,
     slot_bones: slots.iter().map(|slot| slot.bone).collect(),
@@ -411,11 +439,221 @@ pub(super) fn build(builder: SkeletonDataBuilder) -> Result<SkeletonData, Skelet
     bones,
     slots,
     regions,
+    constraints,
     animations,
     events,
     index,
     catalogue,
   })
+}
+
+/// Checks a constraint's bones, target and settings, and resolves them
+fn constraint_ok(
+  item: impl Fn() -> String,
+  pending: &PendingConstraint,
+  bones: &[BoneData],
+  bone_names: &HashMap<Arc<str>, BoneId>,
+) -> Result<Constraint, SkeletonError> {
+  let mut ids = Vec::with_capacity(pending.bones.len());
+  for name in &pending.bones {
+    let Some(&id) = bone_names.get(name) else {
+      return Err(error(
+        item(),
+        format!("its bone {:?} is not a bone", &**name),
+      ));
+    };
+    if ids.contains(&id) {
+      return Err(error(item(), format!("it lists bone {:?} twice", &**name)));
+    }
+    ids.push(id);
+  }
+  let Some(&target) = bone_names.get(&pending.target) else {
+    return Err(error(
+      item(),
+      format!("its target {:?} is not a bone", &*pending.target),
+    ));
+  };
+  let name_of = |bone: BoneId| bones.get(bone.index()).map_or("", |bone| &*bone.name);
+  if ids.contains(&target) {
+    return Err(error(
+      item(),
+      format!("its target {:?} is one of its bones", name_of(target)),
+    ));
+  }
+  for &bone in &ids {
+    if descends_from(bones, target, bone) {
+      return Err(error(
+        item(),
+        format!(
+          "its target {:?} is below its bone {:?}; a bone cannot follow what it carries",
+          name_of(target),
+          name_of(bone)
+        ),
+      ));
+    }
+  }
+  match &pending.kind {
+    PendingKind::Ik(setup) => ik_ok(&item, &ids, setup, bones)?,
+    PendingKind::Transform(setup) => {
+      if ids.is_empty() {
+        return Err(error(item(), "it has no bones; it needs at least one"));
+      }
+      let mix = &setup.mix;
+      finite(
+        &item,
+        &[
+          ("mix rotate", mix.rotate),
+          ("mix x", mix.x),
+          ("mix y", mix.y),
+          ("mix scale_x", mix.scale_x),
+          ("mix scale_y", mix.scale_y),
+          ("mix shear_y", mix.shear_y),
+        ],
+      )?;
+      let offset = &setup.offset;
+      finite(
+        &item,
+        &[
+          ("offset rotation", offset.rotation),
+          ("offset x", offset.x),
+          ("offset y", offset.y),
+          ("offset scale_x", offset.scale_x),
+          ("offset scale_y", offset.scale_y),
+          ("offset shear_y", offset.shear_y),
+        ],
+      )?;
+    }
+  }
+  let name = pending.name.clone();
+  Ok(match pending.kind {
+    PendingKind::Ik(setup) => Constraint::Ik(IkConstraint {
+      name,
+      bones: ids,
+      target,
+      setup,
+    }),
+    PendingKind::Transform(setup) => Constraint::Transform(TransformConstraint {
+      name,
+      bones: ids,
+      target,
+      setup,
+    }),
+  })
+}
+
+/// Whether `bone` is below `ancestor`: walking its parents reaches it
+fn descends_from(bones: &[BoneData], bone: BoneId, ancestor: BoneId) -> bool {
+  let mut at = bones.get(bone.index()).and_then(|bone| bone.parent);
+  while let Some(parent) = at {
+    if parent == ancestor {
+      return true;
+    }
+    at = bones.get(parent.index()).and_then(|bone| bone.parent);
+  }
+  false
+}
+
+/// Checks an IK constraint's chain and settings
+fn ik_ok(
+  item: &impl Fn() -> String,
+  ids: &[BoneId],
+  setup: &IkSetup,
+  bones: &[BoneData],
+) -> Result<(), SkeletonError> {
+  let count = ids.len();
+  if count == 0 {
+    return Err(error(item(), "it has no bones; it needs at least one"));
+  }
+  if count > MAX_IK_BONES {
+    return Err(error(
+      item(),
+      format!("it has {count} bones; at most {MAX_IK_BONES}"),
+    ));
+  }
+  let bone = |id: BoneId| bones.get(id.index());
+  for pair in ids.windows(2) {
+    if let (Some(before), Some(after)) = (bone(pair[0]), bone(pair[1]))
+      && after.parent != Some(pair[0])
+    {
+      return Err(error(
+        item(),
+        format!(
+          "bone {:?} is not a child of {:?}; each bone after the first must be an immediate child of the one before",
+          &*after.name, &*before.name
+        ),
+      ));
+    }
+  }
+  if let Some(bone) = ids
+    .iter()
+    .filter_map(|&id| bone(id))
+    .find(|bone| bone.inherit != Inherit::Normal)
+  {
+    return Err(error(
+      item(),
+      format!(
+        "bone {:?} does not inherit normally; an IK constraint turns only bones that do",
+        &*bone.name
+      ),
+    ));
+  }
+  finite(item, &[("mix", setup.mix), ("softness", setup.softness)])?;
+  if !(0.0..=1.0).contains(&setup.mix) {
+    return Err(error(
+      item(),
+      format!("mix is {}; it must be within 0 to 1", setup.mix),
+    ));
+  }
+  if setup.softness < 0.0 {
+    return Err(error(
+      item(),
+      format!("softness is {}; it must not be negative", setup.softness),
+    ));
+  }
+  if count != 2 && !setup.bend_positive {
+    return Err(error(
+      item(),
+      "bend_positive false applies only to two bones",
+    ));
+  }
+  if count != 2 && setup.softness > 0.0 {
+    return Err(error(item(), "softness applies only to two bones"));
+  }
+  if count != 1 && setup.compress {
+    return Err(error(item(), "compress applies only to one bone"));
+  }
+  if count > 2 && setup.stretch {
+    return Err(error(item(), "stretch applies only to one or two bones"));
+  }
+  if count > 2 && setup.uniform {
+    return Err(error(item(), "uniform applies only to one or two bones"));
+  }
+  if let Some(&last) = ids
+    .last()
+    .filter(|_| count > 1 || setup.stretch || setup.compress)
+    && let Some(tip) = bone(last)
+    && tip.length <= 0.0
+  {
+    let reason = if count > 1 {
+      "its tip is what reaches the target, so the length must be above 0"
+    } else {
+      "stretch and compress need a length above 0"
+    };
+    return Err(error(
+      item(),
+      format!(
+        "{} {:?} has a length of {}; {reason}",
+        if count > 1 {
+          "its last bone"
+        } else {
+          "its bone"
+        },
+        &*tip.name,
+        tip.length
+      ),
+    ));
+  }
+  Ok(())
 }
 
 /// The most vertices a mesh has: its triangle indices are `u16`
@@ -774,8 +1012,12 @@ mod tests {
     RegionAttachment, WeightedVertices,
   };
   use super::super::builder::{BoneSetup, SkeletonDataBuilder, SlotSetup};
+  use super::super::constraint::{
+    Constraint, ConstraintId, IkSetup, MAX_CONSTRAINTS, MAX_IK_BONES, TransformMix,
+    TransformOffset, TransformSetup,
+  };
   use super::super::curve::Curve;
-  use super::super::data::{BoneId, EventData, Region, SkeletonData, SlotId};
+  use super::super::data::{BoneId, EventData, Inherit, Region, SkeletonData, SlotId};
   use crate::core::asset::Handle;
   use crate::core::ecs::Vec2;
 
@@ -1368,6 +1610,468 @@ mod tests {
       idle_and_run().mix("idle", "walk", 0.2),
       r#"mix "idle" to "walk""#,
       r#""walk" is not an animation"#,
+    );
+  }
+
+  // Constraints
+
+  /// A root with a thigh, a shin (1 below the thigh, 10 long) and a foot
+  /// target, for the limb's constraints
+  fn limb() -> SkeletonDataBuilder {
+    let long = BoneSetup {
+      length: 10.0,
+      ..BoneSetup::default()
+    };
+    SkeletonData::builder()
+      .bone("root", None, BoneSetup::default())
+      .bone("thigh", Some("root"), long)
+      .bone("shin", Some("thigh"), BoneSetup { x: 10.0, ..long })
+      .bone("foot_target", Some("root"), BoneSetup::default())
+  }
+
+  fn leg(setup: IkSetup) -> SkeletonDataBuilder {
+    limb().ik("leg", &["thigh", "shin"], "foot_target", setup)
+  }
+
+  #[test]
+  fn constraints_keep_the_order_they_were_added_in() {
+    let data = limb()
+      .transform_constraint(
+        "pelvis",
+        &["thigh"],
+        "foot_target",
+        TransformSetup::default(),
+      )
+      .ik("leg", &["thigh", "shin"], "foot_target", IkSetup::default())
+      .build()
+      .expect("valid skeleton");
+    let names: Vec<&str> = data.constraints().iter().map(|c| &**c.name()).collect();
+    assert_eq!(names, ["pelvis", "leg"]);
+    assert_eq!(data.constraint("leg"), Some(ConstraintId(1)));
+    assert_eq!(data.constraint("pelvis").map(ConstraintId::index), Some(0));
+    assert_eq!(data.constraint("nothing"), None);
+    let leg = &data.constraints()[1];
+    assert_eq!(leg.bones(), [BoneId(1), BoneId(2)]);
+    assert_eq!(leg.target(), BoneId(3));
+    assert!(matches!(leg, Constraint::Ik(_)));
+  }
+
+  #[test]
+  fn a_constraint_name_used_twice_fails() {
+    fails(
+      leg(IkSetup::default()).transform_constraint(
+        "leg",
+        &["root"],
+        "foot_target",
+        TransformSetup::default(),
+      ),
+      r#"constraint "leg""#,
+      "another constraint has the same name",
+    );
+  }
+
+  #[test]
+  fn a_constraint_s_unknown_bone_or_target_fails() {
+    fails(
+      limb().ik("leg", &["thigh", "calf"], "foot_target", IkSetup::default()),
+      r#"constraint "leg""#,
+      r#"its bone "calf" is not a bone"#,
+    );
+    fails(
+      limb().ik("leg", &["thigh", "shin"], "floor", IkSetup::default()),
+      r#"constraint "leg""#,
+      r#"its target "floor" is not a bone"#,
+    );
+    fails(
+      limb().transform_constraint("pelvis", &["hips"], "root", TransformSetup::default()),
+      r#"constraint "pelvis""#,
+      r#"its bone "hips" is not a bone"#,
+    );
+    fails(
+      limb().transform_constraint("pelvis", &["root"], "torso", TransformSetup::default()),
+      r#"constraint "pelvis""#,
+      r#"its target "torso" is not a bone"#,
+    );
+  }
+
+  #[test]
+  fn a_constraint_s_bones_must_be_distinct() {
+    fails(
+      limb().transform_constraint(
+        "pelvis",
+        &["thigh", "shin", "thigh"],
+        "foot_target",
+        TransformSetup::default(),
+      ),
+      r#"constraint "pelvis""#,
+      r#"it lists bone "thigh" twice"#,
+    );
+  }
+
+  #[test]
+  fn a_constraint_s_target_among_or_below_its_bones_fails() {
+    fails(
+      limb().ik("leg", &["thigh", "shin"], "shin", IkSetup::default()),
+      r#"constraint "leg""#,
+      r#"its target "shin" is one of its bones"#,
+    );
+    // A bone below a constrained bone, not itself constrained
+    let below = limb().bone("toe", Some("shin"), BoneSetup::default());
+    fails(
+      below.ik("leg", &["thigh", "shin"], "toe", IkSetup::default()),
+      r#"constraint "leg""#,
+      r#"its target "toe" is below its bone "thigh""#,
+    );
+    fails(
+      limb().transform_constraint("pelvis", &["thigh"], "shin", TransformSetup::default()),
+      r#"constraint "pelvis""#,
+      r#"its target "shin" is below its bone "thigh""#,
+    );
+  }
+
+  #[test]
+  fn an_ik_bone_that_is_not_its_predecessor_s_child_fails() {
+    fails(
+      limb().ik("leg", &["shin", "thigh"], "foot_target", IkSetup::default()),
+      r#"constraint "leg""#,
+      r#"bone "thigh" is not a child of "shin"; each bone after the first must be an immediate child of the one before"#,
+    );
+    // A grandchild is not an immediate child
+    let long = BoneSetup {
+      length: 10.0,
+      ..BoneSetup::default()
+    };
+    fails(
+      limb().bone("toe", Some("shin"), long).ik(
+        "leg",
+        &["thigh", "toe"],
+        "foot_target",
+        IkSetup::default(),
+      ),
+      r#"constraint "leg""#,
+      r#"bone "toe" is not a child of "thigh""#,
+    );
+  }
+
+  #[test]
+  fn an_ik_bone_that_does_not_inherit_normally_fails() {
+    let rig = |inherit| {
+      let long = BoneSetup {
+        length: 10.0,
+        ..BoneSetup::default()
+      };
+      SkeletonData::builder()
+        .bone("root", None, BoneSetup::default())
+        .bone("thigh", Some("root"), long)
+        .bone("shin", Some("thigh"), BoneSetup { inherit, ..long })
+        .bone("foot_target", Some("root"), BoneSetup::default())
+        .ik("leg", &["thigh", "shin"], "foot_target", IkSetup::default())
+    };
+    fails(
+      rig(Inherit::NoScale),
+      r#"constraint "leg""#,
+      r#"bone "shin" does not inherit normally"#,
+    );
+    rig(Inherit::Normal).build().expect("valid skeleton");
+  }
+
+  #[test]
+  fn an_ik_mix_or_softness_out_of_range_fails() {
+    for mix in [-0.1, 1.5, f32::NAN] {
+      fails(
+        leg(IkSetup {
+          mix,
+          ..IkSetup::default()
+        }),
+        r#"constraint "leg""#,
+        "mix is",
+      );
+    }
+    fails(
+      leg(IkSetup {
+        mix: 2.0,
+        ..IkSetup::default()
+      }),
+      r#"constraint "leg""#,
+      "mix is 2; it must be within 0 to 1",
+    );
+    fails(
+      leg(IkSetup {
+        softness: -1.0,
+        ..IkSetup::default()
+      }),
+      r#"constraint "leg""#,
+      "softness is -1; it must not be negative",
+    );
+    fails(
+      leg(IkSetup {
+        softness: f32::INFINITY,
+        ..IkSetup::default()
+      }),
+      r#"constraint "leg""#,
+      "softness is inf, not a finite number",
+    );
+  }
+
+  #[test]
+  fn an_ik_setting_that_cannot_apply_fails() {
+    let one = |setup| limb().ik("look", &["thigh"], "foot_target", setup);
+    let chain = |setup| {
+      limb()
+        .bone(
+          "foot",
+          Some("shin"),
+          BoneSetup {
+            length: 5.0,
+            ..BoneSetup::default()
+          },
+        )
+        .ik("tail", &["thigh", "shin", "foot"], "foot_target", setup)
+    };
+    let item = |name| format!("constraint {name:?}");
+    fails(
+      one(IkSetup {
+        bend_positive: false,
+        ..IkSetup::default()
+      }),
+      &item("look"),
+      "bend_positive false applies only to two bones",
+    );
+    fails(
+      one(IkSetup {
+        softness: 2.0,
+        ..IkSetup::default()
+      }),
+      &item("look"),
+      "softness applies only to two bones",
+    );
+    fails(
+      chain(IkSetup {
+        bend_positive: false,
+        ..IkSetup::default()
+      }),
+      &item("tail"),
+      "bend_positive false applies only to two bones",
+    );
+    fails(
+      chain(IkSetup {
+        softness: 2.0,
+        ..IkSetup::default()
+      }),
+      &item("tail"),
+      "softness applies only to two bones",
+    );
+    fails(
+      leg(IkSetup {
+        compress: true,
+        ..IkSetup::default()
+      }),
+      &item("leg"),
+      "compress applies only to one bone",
+    );
+    fails(
+      chain(IkSetup {
+        compress: true,
+        ..IkSetup::default()
+      }),
+      &item("tail"),
+      "compress applies only to one bone",
+    );
+    fails(
+      chain(IkSetup {
+        stretch: true,
+        ..IkSetup::default()
+      }),
+      &item("tail"),
+      "stretch applies only to one or two bones",
+    );
+    fails(
+      chain(IkSetup {
+        uniform: true,
+        ..IkSetup::default()
+      }),
+      &item("tail"),
+      "uniform applies only to one or two bones",
+    );
+    // What is allowed
+    leg(IkSetup {
+      bend_positive: false,
+      softness: 3.0,
+      stretch: true,
+      uniform: true,
+      ..IkSetup::default()
+    })
+    .build()
+    .expect("valid skeleton");
+    one(IkSetup {
+      compress: true,
+      stretch: true,
+      uniform: true,
+      ..IkSetup::default()
+    })
+    .build()
+    .expect("valid skeleton");
+    chain(IkSetup {
+      mix: 0.5,
+      ..IkSetup::default()
+    })
+    .build()
+    .expect("valid skeleton");
+  }
+
+  #[test]
+  fn an_ik_tip_without_a_length_fails() {
+    let rig = |last: f32, setup| {
+      SkeletonData::builder()
+        .bone("root", None, BoneSetup::default())
+        .bone(
+          "thigh",
+          Some("root"),
+          BoneSetup {
+            length: 10.0,
+            ..BoneSetup::default()
+          },
+        )
+        .bone(
+          "shin",
+          Some("thigh"),
+          BoneSetup {
+            x: 10.0,
+            length: last,
+            ..BoneSetup::default()
+          },
+        )
+        .bone("foot_target", Some("root"), BoneSetup::default())
+        .ik("leg", &["thigh", "shin"], "foot_target", setup)
+    };
+    fails(
+      rig(0.0, IkSetup::default()),
+      r#"constraint "leg""#,
+      r#"its last bone "shin" has a length of 0; its tip is what reaches the target, so the length must be above 0"#,
+    );
+    rig(0.5, IkSetup::default())
+      .build()
+      .expect("valid skeleton");
+
+    // One bone: pointing needs no length, stretch and compress do
+    let one = |setup| {
+      SkeletonData::builder()
+        .bone("root", None, BoneSetup::default())
+        .bone("head", Some("root"), BoneSetup::default())
+        .bone("look_target", Some("root"), BoneSetup::default())
+        .ik("look", &["head"], "look_target", setup)
+    };
+    one(IkSetup::default()).build().expect("valid skeleton");
+    fails(
+      one(IkSetup {
+        stretch: true,
+        ..IkSetup::default()
+      }),
+      r#"constraint "look""#,
+      r#"its bone "head" has a length of 0; stretch and compress need a length above 0"#,
+    );
+    fails(
+      one(IkSetup {
+        compress: true,
+        ..IkSetup::default()
+      }),
+      r#"constraint "look""#,
+      "stretch and compress need a length above 0",
+    );
+  }
+
+  #[test]
+  fn a_transform_constraint_without_bones_or_with_a_value_not_finite_fails() {
+    let transform = |setup| limb().transform_constraint("pelvis", &["thigh"], "root", setup);
+    fails(
+      limb().transform_constraint("pelvis", &[], "root", TransformSetup::default()),
+      r#"constraint "pelvis""#,
+      "it has no bones",
+    );
+    fails(
+      transform(TransformSetup {
+        mix: TransformMix {
+          rotate: f32::NAN,
+          ..TransformMix::default()
+        },
+        ..TransformSetup::default()
+      }),
+      r#"constraint "pelvis""#,
+      "mix rotate is NaN, not a finite number",
+    );
+    fails(
+      transform(TransformSetup {
+        offset: TransformOffset {
+          shear_y: f32::INFINITY,
+          ..TransformOffset::default()
+        },
+        ..TransformSetup::default()
+      }),
+      r#"constraint "pelvis""#,
+      "offset shear_y is inf, not a finite number",
+    );
+    // Mixes outside 0 to 1 are allowed
+    transform(TransformSetup {
+      mix: TransformMix {
+        rotate: -1.0,
+        x: 2.0,
+        ..TransformMix::default()
+      },
+      ..TransformSetup::default()
+    })
+    .build()
+    .expect("valid skeleton");
+  }
+
+  #[test]
+  fn too_many_constraints_or_ik_bones_fail() {
+    let mut many = limb();
+    for number in 0..=MAX_CONSTRAINTS {
+      many = many.transform_constraint(
+        format!("c{number}"),
+        &["thigh"],
+        "foot_target",
+        TransformSetup::default(),
+      );
+    }
+    fails(
+      many,
+      r#"constraint "c255""#,
+      "a skeleton has at most 255 constraints",
+    );
+
+    let chain = |count: usize| {
+      let mut builder = SkeletonData::builder()
+        .bone("root", None, BoneSetup::default())
+        .bone("target", Some("root"), BoneSetup::default());
+      let mut names = Vec::new();
+      let mut parent = String::from("root");
+      for number in 0..count {
+        let name = format!("b{number}");
+        builder = builder.bone(
+          name.as_str(),
+          Some(parent.as_str()),
+          BoneSetup {
+            length: 5.0,
+            ..BoneSetup::default()
+          },
+        );
+        names.push(name.clone());
+        parent = name;
+      }
+      let bones: Vec<&str> = names.iter().map(String::as_str).collect();
+      builder.ik("tail", &bones, "target", IkSetup::default())
+    };
+    fails(
+      chain(MAX_IK_BONES + 1),
+      r#"constraint "tail""#,
+      "it has 17 bones; at most 16",
+    );
+    chain(MAX_IK_BONES).build().expect("valid skeleton");
+    fails(
+      limb().ik("leg", &[], "foot_target", IkSetup::default()),
+      r#"constraint "leg""#,
+      "it has no bones",
     );
   }
 
