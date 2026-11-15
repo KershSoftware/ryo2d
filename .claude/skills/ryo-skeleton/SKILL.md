@@ -18,7 +18,7 @@ A skeleton's **data** (`SkeletonData`, an asset) is the rig: its bones, the part
 | On the entity | What it does |
 |---------------|--------------|
 | `Transform` | Where the skeleton's origin stands (put a rig's origin at its feet), its turn and its scale |
-| `Skeleton::new(data)` | Shows the data there, in its setup pose and default skin; holds the skins, attachments and bone overrides the game sets |
+| `Skeleton::new(data)` | Shows the data there, in its setup pose and default skin; holds the skins, attachments, bone overrides and constraint overrides the game sets |
 | `SkeletonAnimation::new()` | Plays the data's animations on tracks. Without one the skeleton holds its setup pose |
 | `Renderable::skeleton()` | Draws it, sorted, lit and shadowed as a sprite is. Without one it is posed and not drawn |
 | `Interpolated` | Added by `Skeleton`, so nothing to write: the entity, its bones and its sockets are drawn between fixed steps, smooth on any display. **Remove it for a skeleton that animates at the step rate** (60 a second) |
@@ -1211,7 +1211,7 @@ A chain also settles steeply into its nearest shape (its joints move fast for a 
 
 A transform constraint names its bones (one or more), its target, and:
 
-- **six mixes** (`rotate`, `x`, `y`, `scale_x`, `scale_y`, `shear_y`), each how far that property goes: 0 leaves it, 1 copies it fully. A mix may be below 0 or above 1: a gear that turns the other way at twice the speed is a rotate mix of -2;
+- **six mixes** (`rotate`, `x`, `y`, `scale_x`, `scale_y`, `shear_y`), each how far that property goes: 0 leaves it, 1 copies it fully. **Each defaults to 0**, so a `Transform` in a file with no `mix`, or one built from `TransformConstraintSetup::default()`, does nothing: give the mixes wanted, as `mix: (rotate: 1)`, or `TransformConstraintMix::ALL` in code to copy everything. A mix may be below 0 or above 1: a gear that turns the other way at twice the speed is a rotate mix of -2;
 - **six offsets** (`rotation`, `x`, `y`, `scale_x`, `scale_y`, `shear_y`), added to the target's values before they are copied: a bone held a quarter turn off its target, or 10 to its side. Angles are degrees in files and radians in code;
 - **two switches**, `local` and `relative`, that make four modes:
 
@@ -1269,7 +1269,7 @@ Relative adds the target's whole own rotation, its setup rotation with it: give 
   ],
 ```
 
-In code, `TransformSetup { mix: TransformMix, offset: TransformOffset, local: bool, relative: bool }` (`Default`: every mix and offset 0, the world mode), with `TransformMix::ALL` for every mix at 1:
+In code, `TransformConstraintSetup { mix: TransformConstraintMix, offset: TransformConstraintOffset, local: bool, relative: bool }` (`Default`: every mix and offset 0, the world mode), with `TransformConstraintMix::ALL` for every mix at 1. Every mix at 0 does nothing, so give the mixes wanted (or `ALL`) whenever you start from the default:
 
 ```rust
 fn pelvis_follows_torso(builder: SkeletonDataBuilder) -> SkeletonDataBuilder {
@@ -1329,7 +1329,7 @@ if let Some(mut skeleton) = ctx.world.get_mut::<Skeleton>(hero) {
 
 - `SkeletonConstraintOverride::Ik(IkConstraintOverride { mix, softness, bend_positive, compress, stretch })` and `SkeletonConstraintOverride::Transform(TransformConstraintOverride { rotate, x, y, scale_x, scale_y, shear_y })`, every field an `Option` (`Default`: nothing set). Each value given replaces what the animations key, or the setup's where none does, a switch included; each left `None` is the animated one. Its kind must be the constraint's.
 - It shows from the skeleton's next step, as a bone override does. Setting a constraint again replaces its override.
-- An IK `mix` is taken within 0 to 1 and a `softness` below 0 as 0; a transform mix outside 0 to 1 is kept. A value that is not finite is ignored, with one warning per skeleton.
+- An IK `mix` is taken within 0 to 1 and a `softness` below 0 as 0; a transform mix outside 0 to 1 is kept. A value that is not finite is ignored, with one warning per skeleton. A switch the constraint cannot have, which would fail to load in a file (`stretch` on a chain, `compress` on two bones or a chain, `bend_positive: Some(false)` or a `softness` on other than two bones), is ignored without a warning.
 - A name the data lacks warns once per skeleton per name (`skeleton constraint "leg" is not in the skeleton's data; its override is ignored`), and so does a constraint of the other kind (`skeleton constraint "leg" is not of its override's kind (IK or transform); the override is ignored`); either does nothing. Before the data has loaded the override is kept by name, and it is kept by name through a reload.
 - **Limit: an override on an IK bone changes hands as the mix leaves 0**, where a later constraint moves a bone above that bone. At a mix of 0 the override is the bone's, applied afresh; above 0 the constraint has the last word and the bone is carried round by the bone above it (an eye held at 0.3 rad in the world under a hip a later constraint turns a quarter turn points at 0.3 at a mix of 0, and about 1.6 rad further round at 0.01).
 
@@ -1354,7 +1354,7 @@ An animation can key a constraint's values, and they blend through layers and cr
 - **An IK key holds the five values** a game can override: `mix`, `softness`, `bend_positive`, `compress` and `stretch`. **A transform key holds the six mixes** (`rotate`, `x`, `y`, `scale_x`, `scale_y`, `shear_y`). Offsets, `local`, `relative` and `uniform` are the setup's alone.
 - **A value a key leaves out is the constraint's setup value**, not the previous key's: a key is always whole. One animation keys one constraint at most once, as an `ik` or a `transform` list of its kind.
 - **The numbers** (`mix`, `softness`, the six mixes) ease to the next key by the key's curve, and blend between animations as bone values do: a higher track replaces by its alpha or adds; a crossfade between two animations that key the constraint moves each number in a straight line from one to the other, with no dip; a crossfade to an animation that keys none fades the values back to the setup's (or the tracks below's), so a limb leaves its target without a pop.
-- **The switches** (`bend_positive`, `compress`, `stretch`) are stepped: they change at their key, whatever the curve, and follow the rule for attachment keys. In a crossfade the newest animation with any weight decides; if it keys none for the constraint, the setup's (or the tracks below's) stand from its first step with weight, though the outgoing animation still has most of the weight.
+- **The switches** (`bend_positive`, `compress`, `stretch`) are stepped: they change at their key, whatever the curve, and follow the rule for attachment keys. In a crossfade the newest animation with any weight decides; if it keys none for the constraint, the setup's (or the tracks below's) stand from its first step with weight, though the outgoing animation still has most of the weight. So a crossfade to an animation that keys none pops the switch at the start of the crossfade (a knee flips to the setup's side at once): key the switch in the incoming animation too, or set it in the setup so no animation has to key it.
 - **An IK mix is held within 0 to 1 and its softness at 0 or more once every track has applied**, not after each, so an additive layer or a bezier's overshoot cannot carry them out of range. A transform constraint's mixes are not clamped.
 - The game's `override_constraint` is written over whatever the keys leave.
 
@@ -1547,7 +1547,7 @@ ctx.world.entity_mut(hero).remove::<Interpolated>();
 
 ## debug:skeletons
 
-In a development build, the console command `debug:skeletons` (`ryo-console`) draws over every posed skeleton: each bone as an amber line its length along it, with a white ring at its origin; the blue outline of each region drawn; each mesh as its triangles (a darker blue) with its hull over them in the regions' blue, where the skinning and the deform have put them; each bounding box its slots show, in green; each point as a magenta cross with a line the way it faces; and each constraint in orange: an IK constraint as a cross at its target with a line from its last bone's tip (its `length` along it) to the target, so a gap shows how far the tip falls short, and a transform constraint as a line from each of its bones' origins to its target. It is drawn where the frame draws the skeleton (between steps, lifted, flipped), so the lines lie on the art. Use it to place parts, to see how a mesh's vertices sit and bend, to see a hit box switch on, and to see where a constraint's target is. A mesh with no `hull` shows its triangles alone. A bone with a `length` of 0 shows as its ring alone. A game built with `ryo2d build` has no console and no overlay, and there is no switch for it in a scene.
+In a development build, the console command `debug:skeletons` (`ryo-console`) draws over every posed skeleton: each bone as an amber line its length along it, with a white ring at its origin; the blue outline of each region drawn; each mesh as its triangles (a darker blue) with its hull over them in the regions' blue, where the skinning and the deform have put them; each bounding box its slots show, in green; each point as a magenta cross with a line the way it faces; and each constraint in rose: an IK constraint as a cross at its target with a line from its last bone's tip (its `length` along it) to the target, so a gap shows how far the tip falls short, and a transform constraint as a line from each of its bones' origins to its target. It is drawn where the frame draws the skeleton (between steps, lifted, flipped), so the lines lie on the art. Use it to place parts, to see how a mesh's vertices sit and bend, to see a hit box switch on, and to see where a constraint's target is. A mesh with no `hull` shows its triangles alone. A bone with a `length` of 0 shows as its ring alone. A game built with `ryo2d build` has no console and no overlay, and there is no switch for it in a scene.
 
 ## Limits
 
@@ -1580,7 +1580,7 @@ In a development build, the console command `debug:skeletons` (`ryo-console`) dr
   - `Complete` comes only from the playing entry, never from one mixing out;
   - `clear` returns the track's properties to what is under it, since every step starts from the setup pose;
   - an entry mixing out applies its attachment and draw-order keys only until the entry replacing it has weight, and an entry with no weight applies none;
-  - two-bone IK leaves the second bone where it is and the first bone's shear as it is (an uneven or sheared first bone misses instead), an IK chain is the engine's own, and no constraint is bound to a skin;
+  - two-bone IK does not move the second bone onto the first bone's axis, nor clear the first bone's shear, as Spine's guide says its two-bone IK does: a second bone off the axis is solved where it sits, and an unevenly scaled or sheared first bone makes the tip miss instead; an IK chain is the engine's own, and no constraint is bound to a skin;
   - not offered: a track end time, a part of an animation to loop, queued empty animations, the attachment and draw-order thresholds, and the rotation-direction calls.
 
 ## Testing

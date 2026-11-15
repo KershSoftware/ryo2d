@@ -161,7 +161,7 @@ fn register(ctx: &mut SceneContext) {
 | `debug:origins` | F4 | Toggle entity origin points |
 | `debug:ui` | | Outline every UI widget with its id: hot yellow, active orange, focused green |
 | `debug:ui-rebuilds` | | Outline the UI nodes rebuilt each frame (fading orange), with counters of nodes rebuilt and replayed, fragments kept and the render line, updated once a second (`ryo-ui`) |
-| `debug:skeletons` | | Draw every skeleton's bones (amber, a white ring at each origin), the outlines of the regions it draws (blue), the triangles of each mesh (darker blue) with its hull over them (the regions' blue), its bounding boxes (green), its points (magenta) and its constraints (orange: a cross at an IK constraint's target with a line from its last bone's tip, a line from each bone of a transform constraint to its target), where the frame draws it (`ryo-skeleton`) |
+| `debug:skeletons` | | Draw every skeleton's bones (amber, a white ring at each origin), the outlines of the regions it draws (blue), the triangles of each mesh (darker blue) with its hull over them (the regions' blue), its bounding boxes (green), its points (magenta) and its constraints (rose: a cross at an IK constraint's target with a line from its last bone's tip, a line from each bone of a transform constraint to its target), where the frame draws it (`ryo-skeleton`) |
 | `debug:capture [path]` | F12 | Save the next frame as a PNG (default `captures/`, or `RYO_CAPTURE_DIR`) |
 | `ui:cache [on\|off]` | | Show or set UI node tree caching; off builds every node every frame (the same UI, slower), to rule caching in or out of a UI bug |
 | `ui:fragments [on\|off]` | | Show or set UI fragments; off replays and lays out every unchanged subtree each frame (needs `ui:cache on`) |

@@ -470,7 +470,7 @@ A `constraints` list at the top of the file, in the order they apply, each `Ik(.
   - an arm of two parts that reaches for the pointer, with settings for the bend, softness, stretch and mix;
   - a walker whose two-part legs plant their feet on uneven ground as it crosses it;
   - a part held level by a transform constraint while the arm carrying it turns.
-- **The hero's pelvis** follows its trunk through a transform constraint (it is keyed by hand in three animations today), so every animation gets it.
+- **The hero's pelvis** follows its trunk through a transform constraint (it was keyed by hand in three animations until this work, which replaced those keys), so every animation gets it.
 
 ### Acceptance (stage 3)
 

@@ -115,9 +115,13 @@ pub struct TransformConstraint {
   pub setup: TransformSetup,
 }
 
-/// A transform constraint's settings
+/// A transform constraint's settings. The default is every mix and offset
+/// 0, in the world mode: at every mix 0 the constraint does nothing, so
+/// set the mixes wanted, or [`TransformMix::ALL`] to copy every property
+/// fully
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct TransformSetup {
+  /// How far each property moves toward the target's (all 0 by default)
   pub mix: TransformMix,
   /// Added to the target's values
   pub offset: TransformOffset,
