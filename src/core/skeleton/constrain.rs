@@ -1235,7 +1235,7 @@ mod tests {
     let mut skeleton = rig.posed(root, hold_the_eye);
     skeleton.pose.constraints[0] = ConstraintValues::Ik(IkValues {
       mix: f32::NAN,
-      ..IkValues::of(&IkSetup::default())
+      ..IkValues::of(&IkSetup::default(), 1)
     });
     skeleton.place_again(rig.data(), root.into());
     let off = shortest(heading(&skeleton, "eye") - 0.3);
@@ -1681,7 +1681,7 @@ mod tests {
     // A pose starts with each constraint's setup values, in the data's
     // order
     let setup = [
-      ConstraintValues::Ik(IkValues::of(&soft)),
+      ConstraintValues::Ik(IkValues::of(&soft, 2)),
       ConstraintValues::Transform(level.mix),
     ];
     assert_eq!(Pose::setup(rig.data()).constraints, setup);
@@ -1694,7 +1694,7 @@ mod tests {
     // with the limb's mix there at 0 it leaves the limb as animated
     let off = ConstraintValues::Ik(IkValues {
       mix: 0.0,
-      ..IkValues::of(&soft)
+      ..IkValues::of(&soft, 2)
     });
     let all = ConstraintValues::Transform(TransformMix::ALL);
     skeleton.constrained.values = vec![off, all];
@@ -2309,10 +2309,13 @@ mod tests {
       constraint: ConstraintId(constraint),
       frames: vec![(
         0.0,
-        IkValues::of(&IkSetup {
-          mix,
-          ..IkSetup::default()
-        }),
+        IkValues::of(
+          &IkSetup {
+            mix,
+            ..IkSetup::default()
+          },
+          2,
+        ),
         Curve::Linear,
       )],
     }

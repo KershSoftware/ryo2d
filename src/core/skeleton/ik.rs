@@ -86,14 +86,16 @@ pub struct IkValues {
 }
 
 impl IkValues {
-  /// The values a constraint starts each step with: its setup's. A setup
-  /// that leaves `bend` out gives [`IkBend::Positive`]; the built data's
-  /// setups hold the default for their bone count
-  pub fn of(setup: &IkSetup) -> Self {
+  /// The values a constraint of `bones` bones starts each step with: its
+  /// setup's. A setup that leaves `bend` out gives the default for that
+  /// many bones, as the built data holds it: [`IkBend::Pose`] for a chain,
+  /// [`IkBend::Positive`] for one bone or two. So a key built from a setup
+  /// bends as the setup does
+  pub fn of(setup: &IkSetup, bones: usize) -> Self {
     Self {
       mix: setup.mix,
       softness: setup.softness,
-      bend: setup.bend.unwrap_or(IkBend::Positive),
+      bend: setup.bend_for(bones),
       compress: setup.compress,
       stretch: setup.stretch,
       max_stretch: setup.max_stretch,
@@ -891,7 +893,7 @@ mod tests {
   /// A constraint's default values: a mix of 1, bending the positive way,
   /// and nothing else
   fn values() -> IkValues {
-    IkValues::of(&IkSetup::default())
+    IkValues::of(&IkSetup::default(), 2)
   }
 
   /// The way two bones bend: the positive way or the negative
@@ -1023,7 +1025,7 @@ mod tests {
       uniform: true,
     };
     assert_eq!(
-      IkValues::of(&setup),
+      IkValues::of(&setup, 2),
       IkValues {
         mix: 0.25,
         softness: 3.0,
@@ -1038,11 +1040,11 @@ mod tests {
       stretch: true,
       ..setup
     };
-    let values = IkValues::of(&setup);
+    let values = IkValues::of(&setup, 2);
     assert!(values.stretch && !values.compress, "{values:?}");
     assert_eq!(values.max_stretch, Some(1.5));
     assert_eq!(
-      IkValues::of(&IkSetup::default()),
+      IkValues::of(&IkSetup::default(), 2),
       IkValues {
         mix: 1.0,
         softness: 0.0,
@@ -1052,6 +1054,24 @@ mod tests {
         max_stretch: None,
       }
     );
+  }
+
+  #[test]
+  fn a_chain_key_built_from_its_setup_follows_its_pose() {
+    // A setup that leaves its bend out means the default for its bone
+    // count, in a key built from it as in the built data: a chain closes
+    // the way its pose bends, and one bone or two bend the positive way
+    let setup = IkSetup::default();
+    assert_eq!(IkValues::of(&setup, 3).bend, IkBend::Pose);
+    assert_eq!(IkValues::of(&setup, 16).bend, IkBend::Pose);
+    assert_eq!(IkValues::of(&setup, 2).bend, IkBend::Positive);
+    assert_eq!(IkValues::of(&setup, 1).bend, IkBend::Positive);
+    // A bend set is kept, whatever the count
+    let negative = IkSetup {
+      bend: Some(IkBend::Negative),
+      ..setup
+    };
+    assert_eq!(IkValues::of(&negative, 3).bend, IkBend::Negative);
   }
 
   #[test]
@@ -2910,7 +2930,9 @@ mod tests {
   }
 
   /// The chain solve as it stood before a chain could keep a side, kept to
-  /// hold the pose's family to it, bit for bit
+  /// hold the pose's family to it, bit for bit. It calls the live `fall`,
+  /// `rise`, `reached` and the other helpers, so what it guards is
+  /// `chain`'s own body
   fn chain_as_it_stood(
     bones: &mut [BonePose],
     length: f32,
@@ -3104,10 +3126,10 @@ mod tests {
     // travelling down the chain. Each is swayed through two cycles while
     // its target walks from 0.3 of the length out to 0.995 and back,
     // crossing the animated tip's distance, so the pose passed in changes
-    // at every step. Kept to a side, the chain never leaves it: every
-    // middle joint stays on that side of the line from the first joint to
-    // the target, the tip stays on the target, and the not-pop test's rule
-    // finds no jump
+    // at every step. Kept to a side, the chain never leaves it: every turn
+    // bends the side's way, and on these walks every middle joint stays on
+    // that side of the line from the first joint to the target; the tip
+    // stays on the target, and the not-pop test's rule finds no jump
     for (rig, lengths, amplitude) in [
       ("4 of 25", vec![25.0; 4], 0.4),
       ("30, 25, 25, 20", vec![30.0, 25.0, 25.0, 20.0], 0.4),
@@ -3138,6 +3160,7 @@ mod tests {
           let what = format!("{rig}, swayed {sway}, side {side}");
           let (mut work, mut scratch) = (Vec::new(), Vec::new());
           let (mut off, mut missed, mut nearer, mut farther) = (0, 0, false, false);
+          let mut against = 0;
           let solve = |along: f32, joints: &mut Vec<Vec2>| {
             let (bones, target) = (pose(along), place(along));
             let tip = chain_tip(&bones, length).distance(ORIGIN);
@@ -3148,6 +3171,12 @@ mod tests {
             chain(&mut work, length, target, 1.0, Some(side), &mut scratch);
             chain_joints_into(&work, length, joints);
             off += off_side(joints, target, side);
+            // Every turn bends the side's way
+            for three in joints.windows(3) {
+              if side * (three[1] - three[0]).perp_dot(three[2] - three[1]) <= 0.0 {
+                against += 1;
+              }
+            }
             if joints[count].distance(target) > CHAIN_NEAR * total + COMPOSED {
               missed += 1;
             }
@@ -3157,6 +3186,7 @@ mod tests {
             nearer && farther,
             "{what}: the target never crosses the tip"
           );
+          assert_eq!(against, 0, "{what}: turns against their side");
           assert_eq!(off, 0, "{what}: joints off their side");
           assert_eq!(missed, 0, "{what}: steps off the target");
           assert!(jump < 0.01, "{what}: a joint jumps {jump} of the length");

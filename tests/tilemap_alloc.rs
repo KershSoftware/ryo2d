@@ -1573,7 +1573,7 @@ fn crowd_rig(image: Handle<Image>, extra: Extra) -> SkeletonData {
     if extra == Extra::Constraints && deform.is_some() {
       let mix = |mix: f32| IkValues {
         mix,
-        ..IkValues::of(&IkSetup::default())
+        ..IkValues::of(&IkSetup::default(), 2)
       };
       timelines.push(SkeletonTimeline::Ik {
         constraint: SkeletonConstraintId(0),

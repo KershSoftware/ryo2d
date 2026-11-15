@@ -605,11 +605,14 @@ fn ik_ok(
       ),
     ));
   }
-  let values = IkValues {
-    bend: setup.bend_for(count),
-    ..IkValues::of(setup)
-  };
-  ik_values_ok(item, "", ids, bones, &values, setup.uniform)
+  ik_values_ok(
+    item,
+    "",
+    ids,
+    bones,
+    &IkValues::of(setup, count),
+    setup.uniform,
+  )
 }
 
 /// Checks an IK constraint's keyed values, a setup's or a key's (`whose`
@@ -2441,7 +2444,7 @@ mod tests {
   }
 
   fn ik_value(change: impl FnOnce(&mut IkValues)) -> IkValues {
-    let mut values = IkValues::of(&IkSetup::default());
+    let mut values = IkValues::of(&IkSetup::default(), 2);
     change(&mut values);
     values
   }

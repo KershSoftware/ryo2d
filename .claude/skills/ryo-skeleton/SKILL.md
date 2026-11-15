@@ -1371,8 +1371,8 @@ In code, `SkeletonTimeline::Ik { constraint: SkeletonConstraintId, frames: Vec<(
 let lift = SkeletonTimeline::Ik {
   constraint: SkeletonConstraintId(0),
   frames: vec![
-    (0.0, IkValues::of(&setup), SkeletonCurve::Linear),
-    (0.1, IkValues { mix: 0.0, ..IkValues::of(&setup) }, SkeletonCurve::Linear),
+    (0.0, IkValues::of(&setup, 2), SkeletonCurve::Linear),
+    (0.1, IkValues { mix: 0.0, ..IkValues::of(&setup, 2) }, SkeletonCurve::Linear),
   ],
 };
 ```

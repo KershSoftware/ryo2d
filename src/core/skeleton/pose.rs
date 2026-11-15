@@ -80,7 +80,7 @@ impl ConstraintValues {
   /// The values a constraint starts each pose with: its setup's
   pub(crate) fn setup(constraint: &Constraint) -> Self {
     match constraint {
-      Constraint::Ik(ik) => Self::Ik(IkValues::of(&ik.setup)),
+      Constraint::Ik(ik) => Self::Ik(IkValues::of(&ik.setup, ik.bones.len())),
       Constraint::Transform(transform) => Self::Transform(transform.setup.mix),
     }
   }

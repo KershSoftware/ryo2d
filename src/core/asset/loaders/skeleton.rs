@@ -1236,7 +1236,7 @@ impl SkeletonFile {
             stretch: *stretch,
             max_stretch: *max_stretch,
           },
-          ConstraintFile::Transform { .. } => IkValues::of(&IkSetup::default()),
+          ConstraintFile::Transform { .. } => IkValues::of(&IkSetup::default(), 1),
         };
         timelines.push(Timeline::Ik {
           constraint,
@@ -2318,8 +2318,8 @@ mod tests {
           (name: "thigh", parent: "root", length: 10),
           (name: "shin", parent: "thigh", x: 10, length: 10),
           (name: "tail_1", parent: "root", x: -10, length: 10),
-          (name: "tail_2", parent: "tail_1", x: 10, length: 10),
-          (name: "tail_3", parent: "tail_2", x: 10, length: 10),
+          (name: "tail_2", parent: "tail_1", x: 10, rotation: -10, length: 10),
+          (name: "tail_3", parent: "tail_2", x: 10, rotation: -10, length: 10),
           (name: "neck", parent: "root", y: 40, length: 5),
           (name: "foot_target", parent: "root", x: 12),
           (name: "tail_target", parent: "root", x: 5),
@@ -2381,15 +2381,16 @@ mod tests {
 
     // An override bends it: the knee and the tail's middle joint, on the
     // line along x to their targets, go to the side asked for (y below 0
-    // the positive side, above it the negative). A bend the constraint
-    // cannot have is passed over
+    // the positive side, above it the negative). The tail's pose bends the
+    // negative way, so its default, the pose's way, puts it on the side
+    // `Positive` does not. A bend the constraint cannot have is passed over
     let mut skeleton = Skeleton::new(handle.clone());
     let sides = |skeleton: &mut Skeleton| {
       skeleton.appear(data, (handle.id(), version), None, Affine2::IDENTITY.into());
       let y = |bone: &str| skeleton.bone_world(bone).map_or(0.0, |at| at.translation.y);
       (y("shin").signum(), y("tail_2").signum())
     };
-    assert_eq!(sides(&mut skeleton), (1.0, -1.0));
+    assert_eq!(sides(&mut skeleton), (1.0, 1.0));
     let bent = |bend| {
       ConstraintOverride::Ik(IkOverride {
         bend: Some(bend),
@@ -2397,11 +2398,11 @@ mod tests {
       })
     };
     skeleton.override_constraint("leg", bent(IkBend::Positive));
-    skeleton.override_constraint("tail", bent(IkBend::Negative));
-    assert_eq!(sides(&mut skeleton), (-1.0, 1.0));
-    skeleton.override_constraint("leg", bent(IkBend::Pose));
     skeleton.override_constraint("tail", bent(IkBend::Positive));
-    assert_eq!(sides(&mut skeleton), (1.0, -1.0));
+    assert_eq!(sides(&mut skeleton), (-1.0, -1.0));
+    skeleton.override_constraint("leg", bent(IkBend::Pose));
+    skeleton.override_constraint("tail", bent(IkBend::Negative));
+    assert_eq!(sides(&mut skeleton), (1.0, 1.0));
   }
 
   #[test]
@@ -2466,7 +2467,7 @@ mod tests {
       ..TransformMix::default()
     };
     let torso = builder.bone_id("torso").expect("a bone");
-    let setup = IkValues::of(&leg);
+    let setup = IkValues::of(&leg, 2);
     let walk = animation(
       "walk",
       0.5,
