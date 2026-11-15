@@ -7,6 +7,8 @@
 //! a pose or a skeleton: bringing the target into that space, and placing
 //! the bones again afterwards, is the caller's.
 
+use std::f32::consts::PI;
+
 use glam::Vec2;
 
 use super::apply::shortest;
@@ -63,7 +65,8 @@ impl IkValues {
 }
 
 /// Turns `bone` to point its x axis at `target`, a point in the space of
-/// the bone's parent, by `values.mix` the short way round.
+/// the bone's parent, by `values.mix` the short way round. A mix above 1 is
+/// taken as 1.
 ///
 /// With `values.stretch` and a target beyond the bone's reach
 /// (`length × |scale_x|`), or `values.compress` and one nearer, the bone's
@@ -96,12 +99,13 @@ pub(crate) fn one_bone(
   if distance <= NO_LENGTH {
     return;
   }
-  let rotation = turned(bone.rotation, pointing(bone, to_target), values.mix);
+  let mix = values.mix.min(1.0);
+  let rotation = turned(bone.rotation, pointing(bone, to_target), mix);
   let reach = length * bone.scale_x.abs();
   let scales = reach > NO_LENGTH
     && ((values.stretch && distance > reach) || (values.compress && distance < reach));
   let factor = if scales {
-    scale_factor(distance, reach, values.mix)
+    scale_factor(distance, reach, mix)
   } else {
     1.0
   };
@@ -121,7 +125,8 @@ pub(crate) fn one_bone(
 
 /// Turns `first` and its child `second` so that the tip of `second`
 /// (`length` along its x axis) reaches for `target`, a point in the space
-/// of `first`'s parent, by `values.mix` the short way round.
+/// of `first`'s parent, by `values.mix` the short way round. A mix above 1
+/// is taken as 1.
 ///
 /// The limb is a triangle of two rigid parts, both measured in that space
 /// in the pose passed in. Part one runs from `first`'s origin to
@@ -190,7 +195,7 @@ pub(crate) fn two_bones(
   if !(finite(first) && finite(second) && given(length, target, values)) || values.mix <= 0.0 {
     return;
   }
-  let mix = values.mix;
+  let mix = values.mix.min(1.0);
   let to_target = target - Vec2::new(first.x, first.y);
   let distance = to_target.length();
   // The first bone's linear part less its rotation: turning the bone turns
@@ -350,11 +355,13 @@ fn scale_factor(distance: f32, reach: f32, mix: f32) -> f32 {
 }
 
 /// Whether a bone scales every direction alike: its axes as long as each
-/// other and square to each other. Equal shears turn a bone and do not skew
-/// it
+/// other and square to each other. Equal shears turn a bone, and shears
+/// half a turn apart turn it and flip one axis, as a negative scale does:
+/// neither skews it
 fn even(bone: &BonePose) -> bool {
+  let skew = bone.shear_x - bone.shear_y;
   (bone.scale_x.abs() - bone.scale_y.abs()).abs() <= EVEN
-    && shortest(bone.shear_x - bone.shear_y).abs() <= EVEN
+    && (skew - PI * (skew / PI).round()).abs() <= EVEN
 }
 
 fn finite(bone: &BonePose) -> bool {
@@ -378,7 +385,7 @@ fn given(length: f32, target: Vec2, values: IkValues) -> bool {
 
 #[cfg(test)]
 mod tests {
-  use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI};
+  use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU};
 
   use super::*;
 
@@ -403,6 +410,20 @@ mod tests {
   fn limb() -> (BonePose, BonePose) {
     (bone(ORIGIN.x, ORIGIN.y, 0.3), bone(40.0, 0.0, 0.9))
   }
+
+  /// A first bone at `ORIGIN` scaled (2, 2), and a second at (20, 6) in it
+  /// whose length is `SCALED_LENGTH`: parts of sqrt(1744) = 41.7612 and 30,
+  /// the second off the first's axis
+  fn scaled_limb() -> (BonePose, BonePose) {
+    let first = BonePose {
+      scale_x: 2.0,
+      scale_y: 2.0,
+      ..bone(ORIGIN.x, ORIGIN.y, 2.0)
+    };
+    (first, bone(20.0, 6.0, -1.0))
+  }
+
+  const SCALED_LENGTH: f32 = 15.0;
 
   /// A constraint's default values: a mix of 1, bending the positive way,
   /// and nothing else
@@ -495,6 +516,14 @@ mod tests {
   fn assert_close(actual: f32, expected: f32, what: &str) {
     assert!(
       (actual - expected).abs() < 1e-4,
+      "{what}: expected {expected}, got {actual}"
+    );
+  }
+
+  #[track_caller]
+  fn assert_close_to(actual: f32, expected: f32, within: f32, what: &str) {
+    assert!(
+      (actual - expected).abs() < within,
       "{what}: expected {expected}, got {actual}"
     );
   }
@@ -925,6 +954,26 @@ mod tests {
       ORIGIN + toward * (part + 30.0),
       "off the axis",
     );
+    // And the same parts under a first bone scaled (2, 2)
+    let (a, b) = solved(
+      scaled_limb(),
+      SCALED_LENGTH,
+      ORIGIN + toward * 300.0,
+      values(),
+      false,
+    );
+    assert_near(
+      joint(&a, &b),
+      ORIGIN + toward * part,
+      "off the axis, scaled",
+    );
+    assert_near(
+      tip(&a, &b, SCALED_LENGTH),
+      ORIGIN + toward * (part + 30.0),
+      "off the axis, scaled",
+    );
+    assert_only_turned(&scaled_limb().0, &a, "off the axis, scaled");
+    assert_only_turned(&scaled_limb().1, &b, "off the axis, scaled");
     // No jump as the target passes out of reach: a hair inside, the tip is
     // on the target, and a hair outside it is at full reach, 0.01 on
     let inside = solved(limb(), 30.0, ORIGIN + toward * 69.99, values(), false);
@@ -962,6 +1011,25 @@ mod tests {
         assert_only_turned(&rig.0, &a, &what);
         assert_only_turned(&rig.1, &b, &what);
       }
+    }
+    // Off the axis under a first bone scaled (2, 2), parts of 41.7612 and
+    // 30 fold to 11.7612. The first part is the longer, so it points at the
+    // target: the joint 41.7612 right, the tip 11.7612
+    for bend_positive in [true, false] {
+      let what = format!("off the axis, scaled, bend positive: {bend_positive}");
+      let values = IkValues {
+        bend_positive,
+        ..values()
+      };
+      let (a, b) = solved(scaled_limb(), SCALED_LENGTH, near, values, false);
+      assert_near(joint(&a, &b), ORIGIN + Vec2::new(41.7612, 0.0), &what);
+      assert_near(
+        tip(&a, &b, SCALED_LENGTH),
+        ORIGIN + Vec2::new(11.7612, 0.0),
+        &what,
+      );
+      assert_only_turned(&scaled_limb().0, &a, &what);
+      assert_only_turned(&scaled_limb().1, &b, &what);
     }
     // No jump as the target comes inside the fold: a hair outside, the tip
     // is on the target, and a hair inside it stays 10 away, 0.01 back
@@ -1019,13 +1087,39 @@ mod tests {
     }
     // Far out of reach the tip is still short of 70, 60 + 10 x (1 - e^-9) =
     // 69.9988, and the joint still bent to its side
-    let (tip, bend) = reached(soft, 150.0);
-    let from_origin = tip.distance(ORIGIN);
+    let (far, bend) = reached(soft, 150.0);
+    let from_origin = far.distance(ORIGIN);
     assert!(
       (69.99..70.0).contains(&from_origin),
       "150 away: {from_origin}"
     );
     assert!(bend > 1.0, "150 away: a cross of {bend}");
+    // Farther out than an f32 can tell the softened distance from 70 (20
+    // softnesses past where it begins, e^-20 of 10 is 2e-8), the tip is at
+    // the full reach
+    let from_origin = reached(soft, 260.0).0.distance(ORIGIN);
+    assert!(
+      (from_origin - 70.0).abs() < 0.001,
+      "260 away: {from_origin}"
+    );
+
+    // Off the axis under a first bone scaled (2, 2), parts of 41.7612 and
+    // 30 reach 71.7612, so a softness of 10 begins at 61.7612. A target 70
+    // away is reached for at 61.7612 + 10 x (1 - e^-0.823877) = 67.3740,
+    // and one 90 away at 61.7612 + 10 x (1 - e^-2.823877) = 71.1675
+    for (distance, softened) in [(50.0, 50.0), (61.0, 61.0), (70.0, 67.3740), (90.0, 71.1675)] {
+      let what = format!("off the axis, scaled, {distance} away");
+      let (a, b) = solved(
+        scaled_limb(),
+        SCALED_LENGTH,
+        ORIGIN + toward * distance,
+        soft,
+        false,
+      );
+      let reached = tip(&a, &b, SCALED_LENGTH);
+      assert_near(reached, ORIGIN + toward * softened, &what);
+      assert!(reached.distance(ORIGIN) < 71.7612, "{what}");
+    }
 
     // A softness above the reach is taken as the reach: it begins at the
     // origin, and a target d away is reached for as if 70 x (1 - e^(-d / 70))
@@ -1254,11 +1348,217 @@ mod tests {
     let (a, b) = solved((turned, second), 30.0, target, stretch, false);
     assert_near(tip(&a, &b, 30.0), target, "equal shears");
     assert_close(a.scale_x, 1.5, "equal shears");
+    // So do shears half a turn apart: they flip one axis, as a scale of
+    // (1, -1) does, and leave the two square
+    let flipped = BonePose {
+      shear_y: PI,
+      ..first
+    };
+    let (a, b) = solved((flipped, second), 30.0, target, stretch, false);
+    assert_near(tip(&a, &b, 30.0), target, "shears half a turn apart");
+    assert_close(a.scale_x, 1.5, "shears half a turn apart");
     // A target within reach is reached without stretching
     let within = ORIGIN + Vec2::new(0.0, 50.0);
     let (a, b) = solved((first, second), 30.0, within, stretch, true);
     assert_only_turned(&first, &a, "within reach");
     assert_near(tip(&a, &b, 30.0), within, "within reach");
+  }
+
+  #[test]
+  fn a_mix_above_one_is_taken_as_one() {
+    // One bone of length 30 scaled (2, 3), compressed with uniform toward a
+    // target 12 away, a fifth of its reach of 60. At a mix of 1 its scales
+    // are a fifth of what they were. Were a mix of 1.5 taken as written,
+    // the factor would be 1 + (0.2 - 1) x 1.5 = -0.2, and the bone mirrored
+    let start = BonePose {
+      scale_x: 2.0,
+      scale_y: 3.0,
+      ..bone(ORIGIN.x, ORIGIN.y, 0.4)
+    };
+    let near = ORIGIN + Vec2::new(0.0, 12.0);
+    let compress = IkValues {
+      compress: true,
+      ..values()
+    };
+    let full = pointed(start, 30.0, near, compress, true);
+    assert_close(full.scale_x, 0.4, "one bone, mix 1");
+    assert_close(full.scale_y, 0.6, "one bone, mix 1");
+    let mixes = [1.5, 4.0, 1.0e30, f32::MAX];
+    for mix in mixes {
+      let over = pointed(start, 30.0, near, IkValues { mix, ..compress }, true);
+      assert_eq!(bits(&over), bits(&full), "one bone, mix {mix}");
+    }
+
+    // Two bones, stretched toward a target 105 away, 1.5 times their reach:
+    // the rotations and the first bone's scales are those of a mix of 1
+    let far = ORIGIN + Vec2::new(63.0, 84.0);
+    let stretch = IkValues {
+      stretch: true,
+      ..values()
+    };
+    let full = solved(limb(), 30.0, far, stretch, true);
+    assert_close(full.0.scale_x, 1.5, "two bones, mix 1");
+    for mix in mixes {
+      let over = solved(limb(), 30.0, far, IkValues { mix, ..stretch }, true);
+      assert_eq!(
+        (bits(&over.0), bits(&over.1)),
+        (bits(&full.0), bits(&full.1)),
+        "two bones, mix {mix}"
+      );
+    }
+    // And where the second bone sits on the first's origin
+    let on_origin = (limb().0, bone(0.0, 0.0, 0.9));
+    let full = solved(on_origin, 30.0, far, values(), false);
+    for mix in mixes {
+      let over = solved(on_origin, 30.0, far, IkValues { mix, ..values() }, false);
+      assert_eq!(
+        bits(&over.1),
+        bits(&full.1),
+        "joint on the origin, mix {mix}"
+      );
+    }
+  }
+
+  #[test]
+  fn the_bend_side_holds_and_nothing_jumps_as_the_target_moves() {
+    // Three walks of a target, each given from the first bone's origin:
+    // - across the line at 0.3 rad, which the unit limb's first bone lies
+    //   along as it starts: 50 along it, from 20 to one side of it to 20 to
+    //   the other;
+    // - round a full circle 50 away, half a degree a step;
+    // - straight out along (0.6, 0.8) from 2 away to 100 away, through the
+    //   fold (10 away, or 11.76) and the full reach (70, or 71.76).
+    let line = Vec2::from_angle(0.3);
+    let across: Vec<Vec2> = (0..=160)
+      .map(|step| line * 50.0 + line.perp() * (step as f32 * 0.25 - 20.0))
+      .collect();
+    let round: Vec<Vec2> = (0..=720)
+      .map(|step| Vec2::from_angle((step as f32 * 0.5).to_radians()) * 50.0)
+      .collect();
+    let out: Vec<Vec2> = (0..=392)
+      .map(|step| Vec2::new(0.6, 0.8) * (2.0 + step as f32 * 0.25))
+      .collect();
+    // On two limbs: the unit limb (parts of 40 and 30), and the limb off
+    // the axis under a first bone scaled (2, 2) (parts of 41.76 and 30)
+    let rigs = [
+      ("the unit limb", limb(), 30.0, 10.0, 70.0),
+      (
+        "the scaled limb",
+        scaled_limb(),
+        SCALED_LENGTH,
+        11.7612,
+        71.7612,
+      ),
+    ];
+    for (rig, bones, length, fold, reach) in rigs {
+      for (walk, path) in [("across", &across), ("round", &round), ("out", &out)] {
+        for bend_positive in [true, false] {
+          for softness in [0.0, 8.0] {
+            let values = IkValues {
+              bend_positive,
+              softness,
+              ..values()
+            };
+            let side = if bend_positive { 1.0 } else { -1.0 };
+            let mut last: Option<(Vec2, Vec2)> = None;
+            for &from_origin in path {
+              let what = format!(
+                "{rig}, {walk}, bend positive: {bend_positive}, softness {softness}, target {from_origin}"
+              );
+              let target = ORIGIN + from_origin;
+              let (a, b) = solved(bones, length, target, values, false);
+              let tip = tip(&a, &b, length);
+              // The joint is never on the other side of the limb; and it is
+              // well on its own side wherever the limb is neither folded
+              // nor straight
+              let turn = bend(&a, &b, length) * side;
+              assert!(turn > -0.05, "{what}: a cross of {turn}");
+              let distance = from_origin.length();
+              if distance > fold + 1.0 && (softness > 0.0 || distance < reach - 1.0) {
+                assert!(turn > 1.0, "{what}: a cross of {turn}");
+              }
+              // The tip moves no farther than its target did
+              if let Some((target_before, tip_before)) = last {
+                let (moved, step) = (tip.distance(tip_before), target.distance(target_before));
+                assert!(
+                  moved <= step + 0.001,
+                  "{what}: the tip moved {moved} for a step of {step}"
+                );
+              }
+              last = Some((target, tip));
+            }
+          }
+        }
+      }
+    }
+  }
+
+  #[test]
+  fn a_part_mix_jumps_when_the_solved_turn_passes_half_a_turn() {
+    // The recorded limit. A bone at 0 rad whose target passes behind it:
+    // 0.01 rad short of half a turn, the short way to it is the positive
+    // way; 0.01 rad past it, the negative way. At a mix of 1 the two poses
+    // are 0.02 rad apart. At a part mix the bone goes part of each way, so
+    // the two are (2 pi - 0.02) x mix apart: the bone jumps
+    let start = bone(ORIGIN.x, ORIGIN.y, 0.0);
+    let before = ORIGIN + Vec2::from_angle(PI - 0.01) * 50.0;
+    let after = ORIGIN + Vec2::from_angle(0.01 - PI) * 50.0;
+    for mix in [0.25, 0.5, 0.75] {
+      let values = IkValues { mix, ..values() };
+      let short = pointed(start, 30.0, before, values, false).rotation;
+      let past = pointed(start, 30.0, after, values, false).rotation;
+      assert_close_to(
+        short,
+        (PI - 0.01) * mix,
+        0.001,
+        &format!("mix {mix}, short"),
+      );
+      assert_close_to(past, (0.01 - PI) * mix, 0.001, &format!("mix {mix}, past"));
+      assert_close_to(
+        short - past,
+        (TAU - 0.02) * mix,
+        0.002,
+        &format!("mix {mix}, the jump"),
+      );
+    }
+    // At a mix of 1 nothing jumps: the two tips are 0.02 rad apart on a
+    // circle of 30, 0.6
+    let short = pointed(start, 30.0, before, values(), false);
+    let past = pointed(start, 30.0, after, values(), false);
+    let apart = end(&short, 30.0).distance(end(&past, 30.0));
+    assert_close_to(apart, 0.6, 0.01, "mix 1");
+
+    // Two bones the same. The unit limb's first bone starts at 0 rad, and
+    // solved toward a target 50 away it lies 0.6435 rad (the 3-4-5
+    // triangle's small angle) back from the line to it. So it passes half a
+    // turn from where it started as the target passes pi + 0.6435 rad
+    let bones = (bone(ORIGIN.x, ORIGIN.y, 0.0), bone(40.0, 0.0, 0.9));
+    let before = ORIGIN + Vec2::from_angle(PI + 0.6435 - 0.01) * 50.0;
+    let after = ORIGIN + Vec2::from_angle(PI + 0.6435 + 0.01) * 50.0;
+    let half = IkValues {
+      mix: 0.5,
+      ..values()
+    };
+    let short = solved(bones, 30.0, before, half, false);
+    let past = solved(bones, 30.0, after, half, false);
+    assert_close_to(
+      short.0.rotation,
+      (PI - 0.01) * 0.5,
+      0.001,
+      "two bones, short",
+    );
+    assert_close_to(past.0.rotation, (0.01 - PI) * 0.5, 0.001, "two bones, past");
+    // The joints are 40 from the origin and nearly opposite: nearly 80 apart
+    let apart = joint(&short.0, &short.1).distance(joint(&past.0, &past.1));
+    assert!(
+      apart > 79.0,
+      "two bones, mix 0.5: the joints are {apart} apart"
+    );
+    // At a mix of 1 the joints are 0.02 rad apart on a circle of 40, 0.8
+    let short = solved(bones, 30.0, before, values(), false);
+    let past = solved(bones, 30.0, after, values(), false);
+    let apart = joint(&short.0, &short.1).distance(joint(&past.0, &past.1));
+    assert_close_to(apart, 0.8, 0.01, "two bones, mix 1");
   }
 
   #[test]

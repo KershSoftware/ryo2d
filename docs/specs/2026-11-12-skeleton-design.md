@@ -442,6 +442,7 @@ A constraint that cannot work fails to load, naming the constraint and the reaso
 - **A chain** assumes each of its bones has an even scale and no shear; otherwise its tip may miss.
 - **Stretch on two bones** falls a little short or long when the second bone is off the first's axis and `uniform` is not set.
 - **A world mode with a mix that is not a whole number** jumps when its target passes half a turn, since the way an axis points is only known within a turn. A local mode does not.
+- **An IK constraint with a mix strictly between 0 and 1** jumps the same way. Each bone is turned part of the short way from its animated rotation to its solved one, and when the solved one passes half a turn from the animated one the short way changes sides: the bone jumps by a full turn times the mix. At a mix of 1 nothing jumps.
 - **A target moved from frame-rate input** (the pointer) is read in the fixed step, so the bones follow at the step's rate and are drawn blended between steps, as every bone is.
 - **A game cannot read where animation puts a bone in the step under way**, only where the last step left it. So lifting a keyed foot target to the ground reads that target a step late (a step's travel, at most), or the game computes the target itself, as the demo's walker does. An override that adds to the animated place, or a read of the animated pose, is the lever if a game needs better.
 - **Path and physics constraints** stay in the backlog.
