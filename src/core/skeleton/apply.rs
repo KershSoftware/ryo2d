@@ -8,8 +8,10 @@ use glam::{Vec2, Vec4};
 
 use super::animation::{Animation, EventValues, Frame, Timeline, deform_width};
 use super::attachment::Attachment;
+use super::constraint::{Constraint, ConstraintId, TransformMix};
 use super::data::{BoneData, BoneId, SkeletonData, SlotId};
-use super::pose::{BonePose, Pose, setup_order, srgb};
+use super::ik::IkValues;
+use super::pose::{BonePose, ConstraintValues, Pose, setup_order, srgb};
 use crate::core::ui::Color;
 
 /// How an animation's values combine with the pose under it
@@ -279,6 +281,60 @@ pub(crate) fn apply_layer(
           }
         }
       }
+      Timeline::Ik { constraint, frames } => {
+        if let Some((key, mix_key, softness_key)) = sample_ik(frames, time)
+          && let Some((Constraint::Ik(ik), ConstraintValues::Ik(values))) =
+            constraint_mut(data, pose, *constraint)
+        {
+          let setup = &ik.setup;
+          mix(&mut values.mix, setup.mix, mix_key, alpha, blend);
+          mix(
+            &mut values.softness,
+            setup.softness,
+            softness_key,
+            alpha,
+            blend,
+          );
+          // The switches are stepped, as attachment keys are
+          if direction == MixDirection::In {
+            values.bend_positive = key.bend_positive;
+            values.compress = key.compress;
+            values.stretch = key.stretch;
+          }
+        }
+      }
+      Timeline::TransformMix { constraint, frames } => {
+        if let Some(key) = sample_transform_mix(frames, time)
+          && let Some((Constraint::Transform(transform), ConstraintValues::Transform(values))) =
+            constraint_mut(data, pose, *constraint)
+        {
+          let setup = &transform.setup.mix;
+          mix(&mut values.rotate, setup.rotate, key.rotate, alpha, blend);
+          mix(&mut values.x, setup.x, key.x, alpha, blend);
+          mix(&mut values.y, setup.y, key.y, alpha, blend);
+          mix(
+            &mut values.scale_x,
+            setup.scale_x,
+            key.scale_x,
+            alpha,
+            blend,
+          );
+          mix(
+            &mut values.scale_y,
+            setup.scale_y,
+            key.scale_y,
+            alpha,
+            blend,
+          );
+          mix(
+            &mut values.shear_y,
+            setup.shear_y,
+            key.shear_y,
+            alpha,
+            blend,
+          );
+        }
+      }
       Timeline::Deform { .. } => {
         if alpha > 0.0 {
           deforms.push(DeformStep {
@@ -517,8 +573,20 @@ fn bone_mut<'a>(
   ))
 }
 
-/// Blends one bone property: replace moves it toward `target` by alpha, add
-/// adds the target's change from setup, times alpha
+/// A constraint's data and its values in the pose
+fn constraint_mut<'a>(
+  data: &'a SkeletonData,
+  pose: &'a mut Pose,
+  constraint: ConstraintId,
+) -> Option<(&'a Constraint, &'a mut ConstraintValues)> {
+  Some((
+    data.constraints().get(constraint.index())?,
+    pose.constraints.get_mut(constraint.index())?,
+  ))
+}
+
+/// Blends one bone or constraint value: replace moves it toward `target` by
+/// alpha, add adds the target's change from setup, times alpha
 fn mix(value: &mut f32, setup: f32, target: f32, alpha: f32, blend: MixBlend) {
   *value += match blend {
     MixBlend::Replace => (target - *value) * alpha,
@@ -566,6 +634,43 @@ fn sample_vec2(frames: &[Frame<Vec2>], time: f32) -> Option<Vec2> {
   })
 }
 
+/// An IK key at `time`: the key at or before it, whose switches hold until
+/// the next key, and its `mix` and `softness` eased toward the next key's
+fn sample_ik(frames: &[Frame<IkValues>], time: f32) -> Option<(IkValues, f32, f32)> {
+  Some(match locate(frames, time)? {
+    Sample::Hold(index) => {
+      let key = frames[index].1;
+      (key, key.mix, key.softness)
+    }
+    Sample::Between(index, eased) => {
+      let (from, to) = (frames[index].1, frames[index + 1].1);
+      let mix = from.mix + (to.mix - from.mix) * eased;
+      let softness = from.softness + (to.softness - from.softness) * eased;
+      (from, mix, softness)
+    }
+  })
+}
+
+/// A transform constraint's mixes at `time`, each eased toward the next
+/// key's
+fn sample_transform_mix(frames: &[Frame<TransformMix>], time: f32) -> Option<TransformMix> {
+  Some(match locate(frames, time)? {
+    Sample::Hold(index) => frames[index].1,
+    Sample::Between(index, eased) => {
+      let (from, to) = (frames[index].1, frames[index + 1].1);
+      let lerp = |a: f32, b: f32| a + (b - a) * eased;
+      TransformMix {
+        rotate: lerp(from.rotate, to.rotate),
+        x: lerp(from.x, to.x),
+        y: lerp(from.y, to.y),
+        scale_x: lerp(from.scale_x, to.scale_x),
+        scale_y: lerp(from.scale_y, to.scale_y),
+        shear_y: lerp(from.shear_y, to.shear_y),
+      }
+    }
+  })
+}
+
 /// A colour key's value, 0 to 1 per component, interpolated in sRGB
 fn sample_color(frames: &[Frame<Color>], time: f32) -> Option<Vec4> {
   Some(match locate(frames, time)? {
@@ -588,7 +693,9 @@ mod tests {
 
   use super::*;
   use crate::core::ecs::Vec2;
-  use crate::core::skeleton::{BoneSetup, Curve, EventData, SlotId, SlotSetup, Timeline};
+  use crate::core::skeleton::{
+    BoneSetup, Curve, EventData, IkSetup, SlotId, SlotSetup, Timeline, TransformSetup,
+  };
   use crate::core::ui::Color;
 
   /// A root bone at (1, 2), turned 0.1, scaled (2, 1), sheared (0.2, 0.3),
@@ -1532,5 +1639,224 @@ mod tests {
     let mut pose = Pose::setup(&data);
     apply(&wave, &data, &mut pose, 0.0, 0.5, blend, direction);
     close_all(offsets(&pose), KEY.map(|k| k * 0.5));
+  }
+
+  /// A limb of two bones, "thigh" and "shin", whose IK constraint "leg"
+  /// (setup: mix 0.5, softness 2, bend positive) reaches for "foot", and a
+  /// "pelvis" whose transform constraint "level" (setup: a rotate mix of
+  /// 0.2, the other mixes 0) copies the foot
+  fn constrained() -> SkeletonData {
+    let long = |x: f32| BoneSetup {
+      x,
+      length: 10.0,
+      ..BoneSetup::default()
+    };
+    SkeletonData::builder()
+      .bone("root", None, BoneSetup::default())
+      .bone("thigh", Some("root"), long(0.0))
+      .bone("shin", Some("thigh"), long(10.0))
+      .bone("foot", Some("root"), BoneSetup::default())
+      .bone("pelvis", Some("root"), BoneSetup::default())
+      .ik(
+        "leg",
+        &["thigh", "shin"],
+        "foot",
+        IkSetup {
+          mix: 0.5,
+          softness: 2.0,
+          ..IkSetup::default()
+        },
+      )
+      .transform_constraint(
+        "level",
+        &["pelvis"],
+        "foot",
+        TransformSetup {
+          mix: TransformMix {
+            rotate: 0.2,
+            ..TransformMix::default()
+          },
+          ..TransformSetup::default()
+        },
+      )
+      .build()
+      .expect("a valid skeleton")
+  }
+
+  const LEG: ConstraintId = ConstraintId(0);
+  const LEVEL: ConstraintId = ConstraintId(1);
+
+  fn ik_values(pose: &Pose) -> IkValues {
+    match pose.constraints[LEG.index()] {
+      ConstraintValues::Ik(values) => values,
+      other => panic!("{other:?}"),
+    }
+  }
+
+  fn mixes(pose: &Pose) -> TransformMix {
+    match pose.constraints[LEVEL.index()] {
+      ConstraintValues::Transform(mix) => mix,
+      other => panic!("{other:?}"),
+    }
+  }
+
+  fn ik_key(mix: f32, softness: f32, bend_positive: bool, stretch: bool) -> IkValues {
+    IkValues {
+      mix,
+      softness,
+      bend_positive,
+      compress: false,
+      stretch,
+    }
+  }
+
+  #[test]
+  fn an_ik_key_sets_its_constraint_s_values_by_alpha() {
+    let data = constrained();
+    // From mix 1, softness 4, bent the other way and stretching, to mix 0,
+    // softness 0, bent the positive way and not stretching, over a second
+    let reach = animation(
+      1.0,
+      vec![Timeline::Ik {
+        constraint: LEG,
+        frames: linear(vec![
+          (0.0, ik_key(1.0, 4.0, false, true)),
+          (1.0, ik_key(0.0, 0.0, true, false)),
+        ]),
+      }],
+    );
+    let apply_at = |time: f32, alpha: f32, direction: MixDirection| {
+      let mut pose = Pose::setup(&data);
+      apply(
+        &reach,
+        &data,
+        &mut pose,
+        time,
+        alpha,
+        MixBlend::Replace,
+        direction,
+      );
+      ik_values(&pose)
+    };
+    // A quarter of the way: the key is mix 0.75 and softness 3, and the
+    // switches are the first key's until the second
+    let full = apply_at(0.25, 1.0, MixDirection::In);
+    close(full.mix, 0.75);
+    close(full.softness, 3.0);
+    assert!(!full.bend_positive && full.stretch && !full.compress);
+    // At half alpha the numbers move half way from the setup's (0.5 and 2)
+    let half = apply_at(0.25, 0.5, MixDirection::In);
+    close(half.mix, 0.625);
+    close(half.softness, 2.5);
+    assert!(!half.bend_positive && half.stretch);
+    // The switches change at their key and not before it
+    let before = apply_at(0.999, 1.0, MixDirection::In);
+    assert!(!before.bend_positive && before.stretch);
+    let at = apply_at(1.0, 1.0, MixDirection::In);
+    assert!(at.bend_positive && !at.stretch);
+    close(at.mix, 0.0);
+    // Mixing out, the switches stay the setup's
+    let out = apply_at(0.25, 1.0, MixDirection::Out);
+    close(out.mix, 0.75);
+    assert!(out.bend_positive && !out.stretch);
+  }
+
+  #[test]
+  fn a_transform_key_sets_its_mixes_by_alpha() {
+    let data = constrained();
+    let key = TransformMix {
+      rotate: 1.0,
+      x: 0.5,
+      y: -1.0,
+      scale_x: 2.0,
+      scale_y: 0.0,
+      shear_y: 0.4,
+    };
+    // A stepped key holds until the next, which sets every mix to 0
+    let lean = animation(
+      1.0,
+      vec![Timeline::TransformMix {
+        constraint: LEVEL,
+        frames: vec![
+          (0.0, key, Curve::Stepped),
+          (1.0, TransformMix::default(), Curve::Linear),
+        ],
+      }],
+    );
+    let apply_at = |time: f32, alpha: f32| {
+      let mut pose = Pose::setup(&data);
+      apply(
+        &lean,
+        &data,
+        &mut pose,
+        time,
+        alpha,
+        MixBlend::Replace,
+        MixDirection::Out,
+      );
+      mixes(&pose)
+    };
+    assert_eq!(apply_at(0.5, 1.0), key);
+    // At half alpha each mix moves half way from the setup's
+    let half = apply_at(0.5, 0.5);
+    for (actual, expected) in [
+      (half.rotate, 0.6),
+      (half.x, 0.25),
+      (half.y, -0.5),
+      (half.scale_x, 1.0),
+      (half.scale_y, 0.0),
+      (half.shear_y, 0.2),
+    ] {
+      close(actual, expected);
+    }
+    assert_eq!(apply_at(1.0, 1.0), TransformMix::default());
+  }
+
+  #[test]
+  fn an_add_layer_adds_a_constraint_s_difference_from_setup() {
+    let data = constrained();
+    let keys = animation(
+      1.0,
+      vec![
+        Timeline::Ik {
+          constraint: LEG,
+          frames: linear(vec![(0.0, ik_key(1.0, 4.0, false, false))]),
+        },
+        Timeline::TransformMix {
+          constraint: LEVEL,
+          frames: linear(vec![(
+            0.0,
+            TransformMix {
+              rotate: 1.0,
+              x: -0.5,
+              ..TransformMix::default()
+            },
+          )]),
+        },
+      ],
+    );
+    // What the layers below left: mix 0.1 and softness 1, a rotate mix of 0
+    let mut pose = Pose::setup(&data);
+    pose.constraints[LEG.index()] = ConstraintValues::Ik(ik_key(0.1, 1.0, true, false));
+    pose.constraints[LEVEL.index()] = ConstraintValues::Transform(TransformMix::default());
+    apply(
+      &keys,
+      &data,
+      &mut pose,
+      0.0,
+      0.5,
+      MixBlend::Add,
+      MixDirection::In,
+    );
+    // Each adds half its difference from the setup (mix 0.5 to 1, softness
+    // 2 to 4, rotate 0.2 to 1, x 0 to -0.5)
+    let values = ik_values(&pose);
+    close(values.mix, 0.35);
+    close(values.softness, 2.0);
+    let mix = mixes(&pose);
+    close(mix.rotate, 0.4);
+    close(mix.x, -0.25);
+    // The switches are stepped whatever the blend
+    assert!(!values.bend_positive);
   }
 }

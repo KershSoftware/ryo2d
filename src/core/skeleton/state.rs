@@ -801,13 +801,15 @@ impl SkeletonAnimation {
   }
 
   /// Resets `pose` to the setup pose and applies the tracks from the
-  /// lowest up, keeping the deform timelines they apply
+  /// lowest up, keeping the deform timelines they apply, then holds the
+  /// constraints' keyed values in their ranges
   fn apply_tracks(&mut self, data: &SkeletonData, pose: &mut Pose) {
     pose.reset(data);
     self.deforms.clear();
     for track in &mut self.tracks {
       apply_track(track, data, pose, &mut self.deforms);
     }
+    pose.clamp_constraints();
   }
 
   /// Applies the deform keys of the tracks as they were last posed
@@ -1445,8 +1447,9 @@ fn end_mixes(
   }
 }
 
-/// Whether a timeline keys values that blend by alpha (bone and colour
-/// timelines), as opposed to stepped keys and events
+/// Whether a timeline keys values that blend by alpha (bone, colour,
+/// deform and constraint timelines; an IK timeline's switches are stepped,
+/// and follow its numbers' cover), as opposed to stepped keys and events
 fn blends(timeline: &Timeline) -> bool {
   !matches!(
     timeline,
@@ -1483,7 +1486,8 @@ fn applied_alpha(entry: &TrackEntry, position: usize) -> f32 {
 
 /// Whether `newer`, a timeline of the entry replacing another's, keys
 /// every property `older` keys, and so replaces what `older` sets wherever
-/// both apply. A deform timeline's property is its slot's attachment by
+/// both apply. A constraint's timeline keys the constraint as one
+/// property. A deform timeline's property is its slot's attachment by
 /// name, and it covers only one whose keys are as long as its own (or
 /// where either's are all empty, which fit any mesh): keys of another
 /// length are for a mesh the other cannot move, and replace nothing of it
@@ -4762,5 +4766,231 @@ mod tests {
     assert_eq!(rig.state.deforms.len(), 2);
     rig.deform();
     close_all(moved(&rig), RIPPLE);
+  }
+
+  /// A leg of two bones whose IK constraint "leg" (setup: mix 0, softness
+  /// 2, bend positive, not stretching) reaches for "foot", and a "pelvis"
+  /// whose transform constraint "level" (setup: every mix 0) copies the
+  /// foot. The animations key them as named; "free" keys nothing. The
+  /// default mix is 0.2 s
+  fn constrained() -> SkeletonData {
+    use crate::core::skeleton::{ConstraintId, IkSetup, IkValues, TransformMix, TransformSetup};
+    let leg = ConstraintId(0);
+    let level = ConstraintId(1);
+    let long = |x: f32| BoneSetup {
+      x,
+      length: 10.0,
+      ..BoneSetup::default()
+    };
+    let ik = |mix: f32, softness: f32, bend_positive: bool, stretch: bool| IkValues {
+      mix,
+      softness,
+      bend_positive,
+      compress: false,
+      stretch,
+    };
+    let ik_keys = |keys: Vec<(f32, IkValues)>| Timeline::Ik {
+      constraint: leg,
+      frames: keys
+        .into_iter()
+        .map(|(time, key)| (time, key, Curve::Linear))
+        .collect(),
+    };
+    let lean = |rotate: f32, x: f32| Timeline::TransformMix {
+      constraint: level,
+      frames: vec![(
+        0.0,
+        TransformMix {
+          rotate,
+          x,
+          ..TransformMix::default()
+        },
+        Curve::Linear,
+      )],
+    };
+    SkeletonData::builder()
+      .bone("root", None, BoneSetup::default())
+      .bone("thigh", Some("root"), long(0.0))
+      .bone("shin", Some("thigh"), long(10.0))
+      .bone("foot", Some("root"), BoneSetup::default())
+      .bone("pelvis", Some("root"), BoneSetup::default())
+      .ik(
+        "leg",
+        &["thigh", "shin"],
+        "foot",
+        IkSetup {
+          mix: 0.0,
+          softness: 2.0,
+          ..IkSetup::default()
+        },
+      )
+      .transform_constraint("level", &["pelvis"], "foot", TransformSetup::default())
+      .animation(clip(
+        "bend",
+        1.0,
+        vec![ik_keys(vec![
+          (0.0, ik(1.0, 2.0, true, false)),
+          (0.5, ik(1.0, 2.0, false, true)),
+        ])],
+      ))
+      .animation(clip(
+        "bent",
+        1.0,
+        vec![ik_keys(vec![(0.0, ik(1.0, 2.0, false, true))])],
+      ))
+      .animation(clip("free", 1.0, Vec::new()))
+      .animation(clip(
+        "strong",
+        1.0,
+        vec![
+          ik_keys(vec![(0.0, ik(1.0, 2.0, true, false))]),
+          lean(1.0, 1.0),
+        ],
+      ))
+      .animation(clip(
+        "weak",
+        1.0,
+        vec![
+          ik_keys(vec![(0.0, ik(0.6, 2.0, true, false))]),
+          lean(0.5, -1.0),
+        ],
+      ))
+      .animation(clip(
+        "over",
+        1.0,
+        vec![
+          ik_keys(vec![(0.0, ik(1.0, 0.0, true, false))]),
+          lean(1.0, 0.0),
+        ],
+      ))
+      .default_mix(0.2)
+      .build()
+      .expect("a valid skeleton")
+  }
+
+  fn leg(rig: &Rig) -> crate::core::skeleton::IkValues {
+    match rig.pose.constraints[0] {
+      crate::core::skeleton::pose::ConstraintValues::Ik(values) => values,
+      other => panic!("{other:?}"),
+    }
+  }
+
+  fn level(rig: &Rig) -> crate::core::skeleton::TransformMix {
+    match rig.pose.constraints[1] {
+      crate::core::skeleton::pose::ConstraintValues::Transform(mix) => mix,
+      other => panic!("{other:?}"),
+    }
+  }
+
+  /// The leg's switches: bent the positive way, stretching
+  fn switches(rig: &Rig) -> (bool, bool) {
+    let values = leg(rig);
+    (values.bend_positive, values.stretch)
+  }
+
+  #[test]
+  fn a_constraint_s_switches_change_at_their_key_and_follow_the_attachment_rule_in_a_crossfade() {
+    // They change at their key, whatever the curve between the keys
+    let mut rig = Rig::of(constrained());
+    rig.set(0, "bend", true);
+    rig.step(0.25);
+    assert_eq!(switches(&rig), (true, false));
+    rig.step(0.24);
+    assert_eq!(switches(&rig), (true, false));
+    rig.step(0.01);
+    assert_eq!(switches(&rig), (false, true));
+
+    // A crossfade to an animation that keys none: at 0% of the mix the
+    // outgoing entry's switches show; from the first step the incoming
+    // entry has weight, the setup's do, though the outgoing entry still
+    // weighs nine tenths
+    let mut rig = Rig::of(constrained());
+    rig.set(0, "bent", true);
+    rig.step(0.1);
+    assert_eq!(switches(&rig), (false, true));
+    rig.set(0, "free", true);
+    rig.step(0.0);
+    assert_eq!(switches(&rig), (false, true));
+    close(leg(&rig).mix, 1.0);
+    rig.step(0.02);
+    assert_eq!(switches(&rig), (true, false));
+    close(leg(&rig).mix, 0.9);
+    rig.step(0.3);
+    assert_eq!(switches(&rig), (true, false));
+
+    // The other way, the incoming entry's switches show from its first
+    // step with weight
+    let mut rig = Rig::of(constrained());
+    rig.set(0, "free", true);
+    rig.step(0.1);
+    rig.set(0, "bent", true);
+    rig.step(0.0);
+    assert_eq!(switches(&rig), (true, false));
+    rig.step(0.02);
+    assert_eq!(switches(&rig), (false, true));
+    close(leg(&rig).mix, 0.1);
+
+    // A layer whose entry keys none leaves the track below its switches
+    let mut rig = Rig::of(constrained());
+    rig.set(0, "bent", true);
+    rig.set(1, "free", true);
+    rig.step(0.1);
+    assert_eq!(switches(&rig), (false, true));
+  }
+
+  #[test]
+  fn a_crossfade_between_two_keyed_mixes_has_no_dip() {
+    // From "strong" (an IK mix of 1, rotate and x mixes of 1) to "weak"
+    // (0.6; 0.5 and -1), over setup values of 0: each mix moves in a
+    // straight line from one key to the other, never toward the setup's
+    let mut rig = Rig::of(constrained());
+    rig.set(0, "strong", true);
+    rig.step(0.1);
+    rig.set(0, "weak", true);
+    rig.step(0.0);
+    for step in 0..=5 {
+      let m = (step as f32 * 0.25).min(1.0);
+      close(leg(&rig).mix, 1.0 - 0.4 * m);
+      close(level(&rig).rotate, 1.0 - 0.5 * m);
+      close(level(&rig).x, 1.0 - 2.0 * m);
+      rig.step(0.05);
+    }
+    // On a layer at half alpha over a track keying the setup's values, the
+    // same, halved
+    let mut rig = Rig::of(constrained());
+    rig.set(0, "free", true);
+    let first = rig.set(1, "strong", true);
+    rig.entry(first).alpha = 0.5;
+    rig.step(0.1);
+    let second = rig.set(1, "weak", true);
+    rig.entry(second).alpha = 0.5;
+    rig.step(0.1);
+    close(leg(&rig).mix, 0.5 * (1.0 - 0.4 * 0.5));
+    close(level(&rig).rotate, 0.5 * (1.0 - 0.5 * 0.5));
+  }
+
+  #[test]
+  fn an_ik_mix_is_clamped_after_the_tracks() {
+    // Track 0 keys an IK mix of 1 and a softness of 0; track 1 adds the
+    // same again (mix 1 over a setup of 0, softness 0 under a setup of 2),
+    // to 2 and -2; track 2 replaces half way toward "weak"'s mix of 0.6
+    let mut rig = Rig::of(constrained());
+    rig.set(0, "over", true);
+    let add = rig.set(1, "over", true);
+    rig.entry(add).mix_blend = MixBlend::Add;
+    let half = rig.set(2, "weak", true);
+    rig.entry(half).alpha = 0.5;
+    rig.step(0.1);
+    // Clamped after the last track (2 + (0.6 - 2) / 2 = 1.3, to 1), not
+    // after each (1 + (0.6 - 1) / 2 = 0.8)
+    close(leg(&rig).mix, 1.0);
+    // Transform mixes are not clamped: 1 + 1, then half way to 0.5
+    close(level(&rig).rotate, 1.25);
+    // Without the third track the softness comes to -2, held at 0
+    rig.state.clear(2);
+    rig.step(0.1);
+    close(leg(&rig).mix, 1.0);
+    close(leg(&rig).softness, 0.0);
+    close(level(&rig).rotate, 2.0);
   }
 }

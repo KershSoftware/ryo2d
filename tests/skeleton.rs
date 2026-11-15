@@ -1304,6 +1304,177 @@ fn a_reload_that_removes_a_socket_s_bone_warns_once_and_keeps_playing() {
   assert!(log.from_target("ryo2d::core::skeleton::state").is_empty());
 }
 
+/// A rig with constraints as a file: a leg of two bones that reaches for
+/// its target "foot", an arm that points at "goal", a pelvis that copies
+/// the torso's turn (30 degrees), with the constraints written in
+/// `constraints`, and the animation "walk", which turns nothing and keys
+/// the pelvis's rotate mix to 1
+fn constrained_file(constraints: &str) -> String {
+  format!(
+    r#"(
+      bones: [
+        (name: "root"),
+        (name: "thigh", parent: "root", length: 10),
+        (name: "shin", parent: "thigh", x: 10, length: 10),
+        (name: "arm", parent: "root", length: 10),
+        (name: "pelvis", parent: "root"),
+        (name: "torso", parent: "root", rotation: 30),
+        (name: "foot", parent: "root", x: 12, y: 8),
+        (name: "other_foot", parent: "root", x: 8, y: -12),
+        (name: "goal", parent: "root", y: 30),
+      ],
+      constraints: [{constraints}],
+      animations: {{ "walk": (duration: 1.0, constraints: {{ "level": (transform: [(0.0, (rotate: 1))]) }}) }},
+    )"#
+  )
+}
+
+const LEG: &str = r#"Ik(name: "leg", bones: ["thigh", "shin"], target: "foot")"#;
+const LEG_RETARGETED: &str = r#"Ik(name: "leg", bones: ["thigh", "shin"], target: "other_foot")"#;
+const AIM: &str = r#"Ik(name: "aim", bones: ["arm"], target: "goal")"#;
+const LEVEL: &str = r#"Transform(name: "level", bones: ["pelvis"], target: "torso")"#;
+
+/// Where the tip of a bone 10 long is in the world
+fn tip_of(engine: &HeadlessEngine, entity: Entity, name: &str) -> Vec2 {
+  bone(engine, entity, name).transform_point2(Vec2::new(10.0, 0.0))
+}
+
+#[test]
+fn a_reload_that_removes_or_reorders_constraints_keeps_playing() {
+  let log = capture_log();
+  let files = MemorySource::new();
+  files.insert(PATH, constrained_file(&format!("{LEG}, {AIM}, {LEVEL}")));
+  let Some((mut engine, data)) = engine_over(&files) else {
+    return;
+  };
+  let body = spawn(&mut engine, &data, Transform::from_xy(8.0, 4.0));
+  let walk = play(&mut engine, body, 0, "walk", true);
+  // The game turns the arm's constraint off: the arm lies as animated,
+  // along x, and does not point at its goal straight above it
+  let off = SkeletonConstraintOverride::Ik(IkOverride {
+    mix: Some(0.0),
+    ..IkOverride::default()
+  });
+  skeleton_mut(&mut engine, body).override_constraint("aim", off);
+  engine.step_frames(4).expect("frames");
+  let entity = Vec2::new(8.0, 4.0);
+  // What each reload must keep: the leg reaches its target, the arm is
+  // left alone by name, the pelvis turns with the torso by the key, and
+  // the animation's time goes on
+  let mut last = track_time(&engine, body, walk);
+  let mut check = |engine: &mut HeadlessEngine, foot: Vec2, arm: Option<f32>, what: &str| {
+    engine.step_frames(2).expect("frames");
+    let at = track_time(engine, body, walk);
+    assert!(
+      at > last,
+      "{what}: the animation's time went from {last} to {at}"
+    );
+    last = at;
+    let reached = tip_of(engine, body, "shin");
+    assert!(
+      reached.distance(entity + foot) < 0.01,
+      "{what}: the leg's tip is at {reached}"
+    );
+    if let Some(arm) = arm {
+      close(heading(bone(engine, body, "arm")), arm);
+    }
+    close(heading(bone(engine, body, "pelvis")), 30f32.to_radians());
+  };
+  let (foot, other_foot) = (Vec2::new(12.0, 8.0), Vec2::new(8.0, -12.0));
+  check(&mut engine, foot, Some(0.0), "first");
+
+  // Reordered: every constraint's place in the list moves
+  save(
+    &mut engine,
+    &files,
+    &data,
+    constrained_file(&format!("{LEVEL}, {AIM}, {LEG}")),
+  );
+  check(&mut engine, foot, Some(0.0), "reordered");
+  // The leg given another target
+  save(
+    &mut engine,
+    &files,
+    &data,
+    constrained_file(&format!("{AIM}, {LEVEL}, {LEG_RETARGETED}")),
+  );
+  check(&mut engine, other_foot, Some(0.0), "retargeted");
+  // The overridden constraint removed, twice: said once, and kept by name
+  let without = constrained_file(&format!("{LEVEL}, {LEG}"));
+  save(&mut engine, &files, &data, without.clone());
+  check(&mut engine, foot, Some(0.0), "removed");
+  save(&mut engine, &files, &data, without);
+  check(&mut engine, foot, Some(0.0), "removed again");
+  assert_eq!(log.containing("\"aim\""), 1, "{:?}", log.warnings());
+  // Brought back, the override holds it again, with nothing more said
+  save(
+    &mut engine,
+    &files,
+    &data,
+    constrained_file(&format!("{LEG}, {LEVEL}, {AIM}")),
+  );
+  check(&mut engine, foot, Some(0.0), "brought back");
+  // Taken off, the arm points at its goal
+  skeleton_mut(&mut engine, body).clear_constraint_override("aim");
+  check(&mut engine, foot, Some(FRAC_PI_2), "cleared");
+  assert_eq!(
+    log.from_target("ryo2d::core::skeleton").len(),
+    1,
+    "{:?}",
+    log.warnings()
+  );
+}
+
+#[test]
+fn turning_foot_ik_off_with_an_override_frees_the_leg_in_the_same_step() {
+  let Some(mut engine) = engine() else {
+    return;
+  };
+  let data = engine.assets().add(reaching());
+  let stand = Transform::from_xy(40.0, 30.0).with_rotation(0.3);
+  let body = spawn(&mut engine, &data, stand);
+  // The target 50 from the shoulder, within reach: the tip is on it
+  let target = Vec2::new(30.0, 40.0);
+  let put = BoneOverride {
+    translation: Some(target),
+    ..BoneOverride::default()
+  };
+  skeleton_mut(&mut engine, body).override_bone("goal", put);
+  let affine = stand.to_affine();
+  engine.step_frames(2).expect("frames");
+  let tip =
+    |engine: &HeadlessEngine| bone(engine, body, "hand").transform_point2(Vec2::new(30.0, 0.0));
+  near(tip(&engine), affine.transform_point2(target));
+  // In one step the game turns the constraint off (the foot leaves the
+  // ground) and swings the leg itself: the step that follows has the leg
+  // as the game set it, its tip where its own values put it
+  let off = SkeletonConstraintOverride::Ik(IkOverride {
+    mix: Some(0.0),
+    ..IkOverride::default()
+  });
+  let swing = BoneOverride {
+    rotation: Some(0.5),
+    ..BoneOverride::default()
+  };
+  {
+    let mut skeleton = skeleton_mut(&mut engine, body);
+    skeleton.override_constraint("reach", off);
+    skeleton.override_bone("arm", swing);
+  }
+  engine.step().expect("a frame");
+  close(heading(bone(&engine, body, "arm")), 0.3 + 0.5);
+  let free = Vec2::from_angle(0.5) * 70.0;
+  near(tip(&engine), affine.transform_point2(free));
+  // Landing, the game hands it back: the next step reaches the target
+  {
+    let mut skeleton = skeleton_mut(&mut engine, body);
+    skeleton.clear_constraint_override("reach");
+    skeleton.clear_override("arm");
+  }
+  engine.step().expect("a frame");
+  near(tip(&engine), affine.transform_point2(target));
+}
+
 /// A source that holds every read until it is opened, so a load stays on
 /// its way for as long as a test wants
 #[derive(Clone)]

@@ -84,7 +84,10 @@ pub struct IkSetup {
   /// One or two bones: scale the first along its length when the target
   /// is beyond reach
   pub stretch: bool,
-  /// With stretch or compress, scale across the length by the same factor
+  /// Scale across the length by the same factor whenever stretch or
+  /// compress is on, by the setup, an animation's key or the game's
+  /// override. A setup may set it with neither: it is not keyed or
+  /// overridden, so it is the setup's alone
   pub uniform: bool,
 }
 

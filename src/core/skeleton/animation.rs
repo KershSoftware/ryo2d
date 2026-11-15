@@ -1,10 +1,12 @@
 //! Animations: timelines of keyed values for bones, slots and the meshes
-//! slots show, the draw order and events.
+//! slots show, constraints, the draw order and events.
 
 use std::sync::Arc;
 
+use super::constraint::{ConstraintId, TransformMix};
 use super::curve::Curve;
 use super::data::{BoneId, SlotId};
+use super::ik::IkValues;
 use crate::core::ecs::Vec2;
 use crate::core::ui::Color;
 
@@ -111,6 +113,21 @@ pub enum Timeline {
     attachment: Arc<str>,
     frames: Vec<Frame<Vec<f32>>>,
   },
+  /// An IK constraint's values. `mix` and `softness` ease to the next key
+  /// by the key's curve; `bend_positive`, `compress` and `stretch` are
+  /// stepped, changing at their key. A key sets no switch its constraint
+  /// could not have, and its `mix` is 0 to 1 and its `softness` not
+  /// negative, or the data does not build
+  Ik {
+    constraint: ConstraintId,
+    frames: Vec<Frame<IkValues>>,
+  },
+  /// A transform constraint's six mixes, each easing to the next key by the
+  /// key's curve. A mix may be below 0 or above 1
+  TransformMix {
+    constraint: ConstraintId,
+    frames: Vec<Frame<TransformMix>>,
+  },
   /// The draw order: every slot once, back to front, or `None` for the
   /// setup order; keys are stepped
   DrawOrder {
@@ -132,6 +149,8 @@ pub(super) enum Target<'a> {
   /// The attachment a slot shows under a name: what a deform timeline
   /// keys, so two of one slot for different names key different things
   Attachment(SlotId, &'a str),
+  /// A constraint: its timeline keys all its values as one property
+  Constraint(ConstraintId),
   Skeleton,
 }
 
@@ -159,13 +178,15 @@ impl Timeline {
       Self::Attachment { .. } => "attachment",
       Self::Color { .. } => "color",
       Self::Deform { .. } => "deform",
+      Self::Ik { .. } => "ik",
+      Self::TransformMix { .. } => "transform mix",
       Self::DrawOrder { .. } => "draw order",
       Self::Event { .. } => "event",
     }
   }
 
-  /// The bone, slot, slot's attachment or (for draw order and events)
-  /// whole skeleton it keys
+  /// The bone, slot, slot's attachment, constraint or (for draw order and
+  /// events) whole skeleton it keys
   pub(super) fn target(&self) -> Target<'_> {
     match self {
       Self::Rotate { bone, .. }
@@ -182,12 +203,16 @@ impl Timeline {
       Self::Deform {
         slot, attachment, ..
       } => Target::Attachment(*slot, attachment),
+      Self::Ik { constraint, .. } | Self::TransformMix { constraint, .. } => {
+        Target::Constraint(*constraint)
+      }
       Self::DrawOrder { .. } | Self::Event { .. } => Target::Skeleton,
     }
   }
 
   /// The properties of its target it keys: a combined timeline keys both
-  /// axes, so it clashes with a per-axis timeline of either
+  /// axes, so it clashes with a per-axis timeline of either. A constraint's
+  /// timeline keys one property, the constraint
   pub(super) fn properties(&self) -> &'static [&'static str] {
     match self {
       Self::Translate { .. } => &["translate x", "translate y"],
@@ -203,6 +228,7 @@ impl Timeline {
       Self::Attachment { .. } => &["attachment"],
       Self::Color { .. } => &["color"],
       Self::Deform { .. } => &["deform"],
+      Self::Ik { .. } | Self::TransformMix { .. } => &["values"],
       Self::DrawOrder { .. } => &["draw order"],
       Self::Event { .. } => &["event"],
     }
@@ -223,6 +249,8 @@ impl Timeline {
       }
       Self::Color { frames, .. } => frames.first().map(|frame| frame.0),
       Self::Deform { frames, .. } => frames.first().map(|frame| frame.0),
+      Self::Ik { frames, .. } => frames.first().map(|frame| frame.0),
+      Self::TransformMix { frames, .. } => frames.first().map(|frame| frame.0),
       Self::Attachment { frames, .. } => frames.first().map(|frame| frame.0),
       Self::DrawOrder { frames } => frames.first().map(|frame| frame.0),
       Self::Event { frames } => frames.first().map(|frame| frame.0),
@@ -247,6 +275,8 @@ impl Timeline {
       }
       Self::Color { frames, .. } => of(frames),
       Self::Deform { frames, .. } => of(frames),
+      Self::Ik { frames, .. } => of(frames),
+      Self::TransformMix { frames, .. } => of(frames),
       Self::Attachment { frames, .. } => frames.iter().map(|frame| frame.0).collect(),
       Self::DrawOrder { frames } => frames.iter().map(|frame| frame.0).collect(),
       Self::Event { frames } => frames.iter().map(|frame| frame.0).collect(),

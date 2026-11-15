@@ -438,8 +438,9 @@ mod tests {
   use crate::core::skeleton::ik::{CHAIN_NEAR, IkValues};
   use crate::core::skeleton::pose::ConstraintValues;
   use crate::core::skeleton::{
-    Animation, BoneOverride, BoneSetup, Curve, IkSetup, Inherit, Skeleton, SkeletonAnimation,
-    SkeletonDataBuilder, Timeline, TransformMix, TransformOffset, TransformSetup,
+    Animation, BoneOverride, BoneSetup, ConstraintId, Curve, IkSetup, Inherit, Skeleton,
+    SkeletonAnimation, SkeletonDataBuilder, Timeline, TransformMix, TransformOffset,
+    TransformSetup,
   };
   use crate::testing::asset_world;
 
@@ -2181,5 +2182,147 @@ mod tests {
         "placed again {again} times: {turned}"
       );
     }
+  }
+
+  /// One key of `constraint`'s IK values at time 0
+  fn ik_key(constraint: u8, mix: f32) -> Timeline {
+    Timeline::Ik {
+      constraint: ConstraintId(constraint),
+      frames: vec![(
+        0.0,
+        IkValues::of(&IkSetup {
+          mix,
+          ..IkSetup::default()
+        }),
+        Curve::Linear,
+      )],
+    }
+  }
+
+  fn clip(name: &str, timelines: Vec<Timeline>) -> Animation {
+    Animation {
+      name: Arc::from(name),
+      duration: 1.0,
+      timelines,
+    }
+  }
+
+  fn playing(name: &str) -> SkeletonAnimation {
+    let mut animation = SkeletonAnimation::new();
+    animation.set_animation(0, name, true);
+    animation
+  }
+
+  #[test]
+  fn a_keyed_mix_fades_with_its_animation_without_a_pop() {
+    // The limb's setup mix is 0: it lies along x, its tip at (70, 0).
+    // "reach" keys a mix of 1, which brings the tip to the target at
+    // (30, 40); "rest" keys nothing, and a crossfade to it takes half a
+    // second
+    let rig = built(
+      limb(
+        at(0.0, 0.0),
+        Vec2::new(30.0, 40.0),
+        IkSetup {
+          mix: 0.0,
+          ..IkSetup::default()
+        },
+      )
+      .animation(clip("reach", vec![ik_key(0, 1.0)]))
+      .animation(clip("rest", Vec::new()))
+      .default_mix(0.5),
+    );
+    let target = Vec2::new(30.0, 40.0);
+    let mut skeleton = rig.skeleton();
+    let mut animation = playing("reach");
+    for _ in 0..5 {
+      rig.step_playing(&mut skeleton, &mut animation, Affine2::IDENTITY);
+    }
+    near(world(&skeleton, "hand"), target);
+    animation.set_animation(0, "rest", true);
+    // The tip leaves the target as the keyed mix fades with the mix, 30
+    // steps of a sixtieth of a second: its distance grows each step from 0
+    // to the whole way, and no step moves it more than a twentieth of that
+    // and 0.01
+    let whole = Vec2::new(70.0, 0.0).distance(target);
+    let mut last = 0.0;
+    for step in 1..=31 {
+      rig.step_playing(&mut skeleton, &mut animation, Affine2::IDENTITY);
+      let distance = world(&skeleton, "hand").distance(target);
+      assert!(
+        distance >= last - 1e-4,
+        "step {step}: {distance} after {last}"
+      );
+      assert!(
+        distance - last <= whole / 20.0 + 0.01,
+        "step {step}: {distance} after {last}"
+      );
+      last = distance;
+    }
+    assert!((last - whole).abs() < 0.01, "{last} of {whole}");
+  }
+
+  #[test]
+  fn a_keyed_mix_of_0_turns_a_constraint_off() {
+    // The limb reaches for its target at a mix of 1, and "pin" puts the
+    // hand on the target, by the setups. An animation turns the limb's
+    // first bone by 0.3; "off" also keys the IK mix and every one of pin's
+    // mixes to 0. The game holds the limb's second bone at 1 in the world
+    let turn = Timeline::Rotate {
+      bone: BoneId(1),
+      frames: vec![(0.0, 0.3, Curve::Linear)],
+    };
+    let pinned = TransformSetup {
+      mix: TransformMix::ALL,
+      ..TransformSetup::default()
+    };
+    let goal = Vec2::new(0.0, 50.0);
+    let rig = built(
+      limb(at(0.0, 0.0), goal, IkSetup::default())
+        .transform_constraint("pin", &["hand"], "goal", pinned)
+        .animation(clip("on", vec![turn.clone()]))
+        .animation(clip(
+          "off",
+          vec![
+            turn.clone(),
+            ik_key(0, 0.0),
+            Timeline::TransformMix {
+              constraint: ConstraintId(1),
+              frames: vec![(0.0, TransformMix::default(), Curve::Linear)],
+            },
+          ],
+        )),
+    );
+    // The same bones, animation and override with no constraints
+    let bare = built(limb_bones(at(0.0, 0.0), goal).animation(clip("on", vec![turn])));
+    let hold = |skeleton: &mut Skeleton| {
+      let aimed = BoneOverride {
+        rotation: Some(1.0),
+        space: Space::World,
+        ..BoneOverride::default()
+      };
+      skeleton.override_bone("lower", aimed);
+    };
+    let stand = Affine2::from_angle_translation(0.2, Vec2::new(5.0, 6.0));
+    let posed = |rig: &Rig, name: &str| {
+      let mut skeleton = rig.skeleton();
+      hold(&mut skeleton);
+      rig.step_playing(&mut skeleton, &mut playing(name), stand);
+      skeleton
+    };
+    // Keyed on, the constraints have the last word
+    let on = posed(&rig, "on");
+    near(world(&on, "hand"), stand.transform_point2(goal));
+    assert!((own(&on, "upper").rotation - 0.3).abs() > 0.1);
+    // Keyed off, they are passed over: the bones are as animation and the
+    // game's override leave them, to the bit
+    let off = posed(&rig, "off");
+    let free = posed(&bare, "on");
+    assert_eq!(
+      bits(&off.pose.skeleton_space),
+      bits(&free.pose.skeleton_space)
+    );
+    assert_eq!(bits(&off.pose.world), bits(&free.pose.world));
+    assert!((heading(&off, "lower") - 1.0).abs() < 0.001);
   }
 }

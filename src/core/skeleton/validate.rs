@@ -16,6 +16,7 @@ use super::curve::Curve;
 use super::data::{
   AnimationCatalogue, BoneData, BoneId, Inherit, SkeletonData, SkeletonIndex, SlotData, SlotId,
 };
+use super::ik::IkValues;
 use super::skin::Skin;
 use crate::core::ecs::Vec2;
 
@@ -388,6 +389,7 @@ pub(super) fn build(builder: SkeletonDataBuilder) -> Result<SkeletonData, Skelet
         bones: &bones,
         slots: &slots,
         skins: &skins,
+        constraints: &constraints,
         events: events.len(),
       };
       timeline_ok(item, timeline, animation.duration, counts, &mut keyed)?;
@@ -599,40 +601,75 @@ fn ik_ok(
       ),
     ));
   }
-  finite(item, &[("mix", setup.mix), ("softness", setup.softness)])?;
-  if !(0.0..=1.0).contains(&setup.mix) {
+  ik_values_ok(item, "", ids, bones, &IkValues::of(setup), setup.uniform)
+}
+
+/// Checks an IK constraint's keyed values, a setup's or a key's (`whose`
+/// begins each reason: empty for a setup, `key 2's ` for a key): `mix` 0 to
+/// 1 and `softness` finite and not negative, and no setting its bones could
+/// not have. `uniform` is the setup's alone, and is checked only for one
+fn ik_values_ok(
+  item: &impl Fn() -> String,
+  whose: &str,
+  ids: &[BoneId],
+  bones: &[BoneData],
+  values: &IkValues,
+  uniform: bool,
+) -> Result<(), SkeletonError> {
+  let count = ids.len();
+  let bone = |id: BoneId| bones.get(id.index());
+  finite(
+    item,
+    &[
+      (&format!("{whose}mix"), values.mix),
+      (&format!("{whose}softness"), values.softness),
+    ],
+  )?;
+  if !(0.0..=1.0).contains(&values.mix) {
     return Err(error(
       item(),
-      format!("mix is {}; it must be within 0 to 1", setup.mix),
+      format!("{whose}mix is {}; it must be within 0 to 1", values.mix),
     ));
   }
-  if setup.softness < 0.0 {
+  if values.softness < 0.0 {
     return Err(error(
       item(),
-      format!("softness is {}; it must not be negative", setup.softness),
+      format!(
+        "{whose}softness is {}; it must not be negative",
+        values.softness
+      ),
     ));
   }
-  if count != 2 && !setup.bend_positive {
+  if count != 2 && !values.bend_positive {
     return Err(error(
       item(),
-      "bend_positive false applies only to two bones",
+      format!("{whose}bend_positive false applies only to two bones"),
     ));
   }
-  if count != 2 && setup.softness > 0.0 {
-    return Err(error(item(), "softness applies only to two bones"));
+  if count != 2 && values.softness > 0.0 {
+    return Err(error(
+      item(),
+      format!("{whose}softness applies only to two bones"),
+    ));
   }
-  if count != 1 && setup.compress {
-    return Err(error(item(), "compress applies only to one bone"));
+  if count != 1 && values.compress {
+    return Err(error(
+      item(),
+      format!("{whose}compress applies only to one bone"),
+    ));
   }
-  if count > 2 && setup.stretch {
-    return Err(error(item(), "stretch applies only to one or two bones"));
+  if count > 2 && values.stretch {
+    return Err(error(
+      item(),
+      format!("{whose}stretch applies only to one or two bones"),
+    ));
   }
-  if count > 2 && setup.uniform {
+  if count > 2 && uniform {
     return Err(error(item(), "uniform applies only to one or two bones"));
   }
   if let Some(&last) = ids
     .last()
-    .filter(|_| count > 1 || setup.stretch || setup.compress)
+    .filter(|_| count > 1 || values.stretch || values.compress)
     && let Some(tip) = bone(last)
     && tip.length <= 0.0
   {
@@ -641,10 +678,15 @@ fn ik_ok(
     } else {
       "stretch and compress need a length above 0"
     };
+    let switched = if count == 1 && !whose.is_empty() {
+      format!("{whose}stretch or compress is on, and ")
+    } else {
+      String::new()
+    };
     return Err(error(
       item(),
       format!(
-        "{} {:?} has a length of {}; {reason}",
+        "{switched}{} {:?} has a length of {}; {reason}",
         if count > 1 {
           "its last bone"
         } else {
@@ -775,18 +817,20 @@ fn mix_duration(item: impl Fn() -> String, duration: f32) -> Result<(), Skeleton
   Ok(())
 }
 
-/// The bones and slots a timeline may refer to, the skins (whose
-/// attachments a deform names), and how many events
+/// The bones, slots and constraints a timeline may refer to, the skins
+/// (whose attachments a deform names), and how many events
 #[derive(Clone, Copy)]
 struct Counts<'a> {
   bones: &'a [BoneData],
   slots: &'a [SlotData],
   skins: &'a [Skin],
+  constraints: &'a [Constraint],
   events: usize,
 }
 
-/// Checks one timeline: its bone, slot or events exist, and a deform's
-/// attachment is a name some skin has in its slot; no earlier timeline of
+/// Checks one timeline: its bone, slot, constraint or events exist, a
+/// constraint's timeline is of its kind, and a deform's attachment is a
+/// name some skin has in its slot; no earlier timeline of
 /// the animation keys the same property of the same target (`keyed`
 /// collects them); it has keys, at finite times from 0 to the animation's
 /// duration, in order (strictly, but event keys may share a time); and its
@@ -820,6 +864,16 @@ fn timeline_ok<'a>(
         ),
       ));
     }
+    Target::Constraint(constraint) if constraint.index() >= counts.constraints.len() => {
+      return Err(error(
+        item(),
+        format!(
+          "constraint {} is out of range; there are {} constraints",
+          constraint.0,
+          counts.constraints.len()
+        ),
+      ));
+    }
     // A deform moves what its slot shows under a name, and a slot can only
     // show what a skin has in it: under a name no skin has there, the
     // deform could never apply
@@ -846,6 +900,12 @@ fn timeline_ok<'a>(
         Target::Slot(slot) => format!("slot {:?}'s", &*counts.slots[slot.index()].name),
         Target::Attachment(slot, name) => {
           format!("slot {:?}'s {name:?}", &*counts.slots[slot.index()].name)
+        }
+        Target::Constraint(constraint) => {
+          format!(
+            "constraint {:?}'s",
+            &**counts.constraints[constraint.index()].name()
+          )
         }
         Target::Skeleton => "the skeleton's".to_owned(),
       };
@@ -924,6 +984,48 @@ fn timeline_ok<'a>(
       }
     }
     Timeline::Attachment { .. } => {}
+    Timeline::Ik { constraint, frames } => {
+      let Some(Constraint::Ik(ik)) = counts.constraints.get(constraint.index()) else {
+        return Err(error(
+          item(),
+          format!(
+            "constraint {:?} is a transform constraint; an ik timeline keys an IK constraint",
+            name_of_constraint(counts.constraints, *constraint)
+          ),
+        ));
+      };
+      for (frame, (_, values, key_curve)) in frames.iter().enumerate() {
+        let whose = format!("key {frame}'s ");
+        ik_values_ok(&item, &whose, &ik.bones, counts.bones, values, false)?;
+        curve(&item, frame, key_curve)?;
+      }
+    }
+    Timeline::TransformMix { constraint, frames } => {
+      let Some(Constraint::Transform(_)) = counts.constraints.get(constraint.index()) else {
+        return Err(error(
+          item(),
+          format!(
+            "constraint {:?} is an IK constraint; a transform mix timeline keys a transform constraint",
+            name_of_constraint(counts.constraints, *constraint)
+          ),
+        ));
+      };
+      for (frame, (_, mix, key_curve)) in frames.iter().enumerate() {
+        let name = |what: &str| format!("key {frame}'s {what}");
+        finite(
+          &item,
+          &[
+            (&name("rotate"), mix.rotate),
+            (&name("x"), mix.x),
+            (&name("y"), mix.y),
+            (&name("scale_x"), mix.scale_x),
+            (&name("scale_y"), mix.scale_y),
+            (&name("shear_y"), mix.shear_y),
+          ],
+        )?;
+        curve(&item, frame, key_curve)?;
+      }
+    }
     Timeline::Deform { frames, .. } => {
       // The first key that holds offsets sets the length of the rest
       let mut first: Option<(usize, usize)> = None;
@@ -1004,6 +1106,13 @@ fn timeline_ok<'a>(
   Ok(())
 }
 
+/// A constraint's name, for messages
+fn name_of_constraint(constraints: &[Constraint], constraint: ConstraintId) -> &str {
+  constraints
+    .get(constraint.index())
+    .map_or("", |constraint| constraint.name())
+}
+
 #[cfg(test)]
 mod tests {
   use std::sync::Arc;
@@ -1020,6 +1129,7 @@ mod tests {
   };
   use super::super::curve::Curve;
   use super::super::data::{BoneId, EventData, Inherit, Region, SkeletonData, SlotId};
+  use super::super::ik::IkValues;
   use crate::core::asset::Handle;
   use crate::core::ecs::Vec2;
 
@@ -1708,6 +1818,16 @@ mod tests {
       r#"constraint "pelvis""#,
       r#"it lists bone "thigh" twice"#,
     );
+    // A bone and its own descendant are two bones
+    limb()
+      .transform_constraint(
+        "pelvis",
+        &["shin", "thigh"],
+        "foot_target",
+        TransformSetup::default(),
+      )
+      .build()
+      .expect("a bone and its descendant in one transform constraint");
   }
 
   #[test]
@@ -1729,6 +1849,11 @@ mod tests {
       r#"constraint "pelvis""#,
       r#"its target "shin" is below its bone "thigh""#,
     );
+    // Above its bones is allowed: a bone follows what carries it
+    limb()
+      .ik("leg", &["thigh", "shin"], "root", IkSetup::default())
+      .build()
+      .expect("a target that is an ancestor of the bones");
   }
 
   #[test]
@@ -1779,14 +1904,18 @@ mod tests {
 
   #[test]
   fn an_ik_mix_or_softness_out_of_range_fails() {
-    for mix in [-0.1, 1.5, f32::NAN] {
+    for (mix, reason) in [
+      (-0.1, "mix is -0.1; it must be within 0 to 1"),
+      (1.5, "mix is 1.5; it must be within 0 to 1"),
+      (f32::NAN, "mix is NaN, not a finite number"),
+    ] {
       fails(
         leg(IkSetup {
           mix,
           ..IkSetup::default()
         }),
         r#"constraint "leg""#,
-        "mix is",
+        reason,
       );
     }
     fails(
@@ -2027,6 +2156,17 @@ mod tests {
 
   #[test]
   fn too_many_constraints_or_ik_bones_fail() {
+    let mut most = limb();
+    for number in 0..MAX_CONSTRAINTS {
+      most = most.transform_constraint(
+        format!("c{number}"),
+        &["thigh"],
+        "foot_target",
+        TransformSetup::default(),
+      );
+    }
+    let data = most.build().expect("exactly 255 constraints build");
+    assert_eq!(data.constraints().len(), MAX_CONSTRAINTS);
     let mut many = limb();
     for number in 0..=MAX_CONSTRAINTS {
       many = many.transform_constraint(
@@ -2074,6 +2214,241 @@ mod tests {
       limb().ik("leg", &[], "foot_target", IkSetup::default()),
       r#"constraint "leg""#,
       "it has no bones",
+    );
+  }
+
+  /// [`leg`] at its setup, a one-bone constraint "look" on the thigh, a
+  /// chain "tail" of three bones, a transform constraint "level" and a
+  /// one-bone constraint "gaze" on a bone of no length, with the animation
+  /// "walk" holding `timelines`
+  fn keyed(timelines: Vec<Timeline>) -> SkeletonDataBuilder {
+    let long = BoneSetup {
+      length: 5.0,
+      ..BoneSetup::default()
+    };
+    leg(IkSetup::default())
+      .bone("flat", Some("root"), BoneSetup::default())
+      .bone("pelvis", Some("root"), BoneSetup::default())
+      .bone("t0", Some("root"), long)
+      .bone("t1", Some("t0"), long)
+      .bone("t2", Some("t1"), long)
+      .ik("look", &["thigh"], "foot_target", IkSetup::default())
+      .ik(
+        "tail",
+        &["t0", "t1", "t2"],
+        "foot_target",
+        IkSetup::default(),
+      )
+      .transform_constraint(
+        "level",
+        &["pelvis"],
+        "foot_target",
+        TransformSetup::default(),
+      )
+      .ik("gaze", &["flat"], "foot_target", IkSetup::default())
+      .animation(animation("walk", 1.0, timelines))
+  }
+
+  const LEG: ConstraintId = ConstraintId(0);
+  const LOOK: ConstraintId = ConstraintId(1);
+  const TAIL: ConstraintId = ConstraintId(2);
+  const LEVEL: ConstraintId = ConstraintId(3);
+  const GAZE: ConstraintId = ConstraintId(4);
+
+  fn ik_keys(constraint: ConstraintId, keys: Vec<IkValues>) -> Timeline {
+    Timeline::Ik {
+      constraint,
+      frames: keys
+        .into_iter()
+        .enumerate()
+        .map(|(at, key)| (at as f32 * 0.5, key, Curve::Linear))
+        .collect(),
+    }
+  }
+
+  fn ik_value(change: impl FnOnce(&mut IkValues)) -> IkValues {
+    let mut values = IkValues::of(&IkSetup::default());
+    change(&mut values);
+    values
+  }
+
+  fn mix_keys(constraint: ConstraintId, mix: TransformMix) -> Timeline {
+    Timeline::TransformMix {
+      constraint,
+      frames: vec![(0.0, mix, Curve::Linear)],
+    }
+  }
+
+  const WALK_0_IK: &str = r#"animation "walk" timeline 0 (ik)"#;
+
+  #[test]
+  fn a_constraint_timeline_for_an_unknown_constraint_or_the_other_kind_fails() {
+    keyed(vec![
+      ik_keys(LEG, vec![ik_value(|_| {})]),
+      mix_keys(LEVEL, TransformMix::ALL),
+    ])
+    .build()
+    .expect("each timeline keys a constraint of its kind");
+    fails(
+      keyed(vec![ik_keys(ConstraintId(5), vec![ik_value(|_| {})])]),
+      WALK_0_IK,
+      "constraint 5 is out of range; there are 5 constraints",
+    );
+    fails(
+      keyed(vec![ik_keys(LEVEL, vec![ik_value(|_| {})])]),
+      WALK_0_IK,
+      r#"constraint "level" is a transform constraint; an ik timeline keys an IK constraint"#,
+    );
+    fails(
+      keyed(vec![mix_keys(LEG, TransformMix::ALL)]),
+      r#"animation "walk" timeline 0 (transform mix)"#,
+      r#"constraint "leg" is an IK constraint; a transform mix timeline keys a transform constraint"#,
+    );
+  }
+
+  #[test]
+  fn two_timelines_for_one_constraint_fail() {
+    fails(
+      keyed(vec![
+        ik_keys(LEG, vec![ik_value(|_| {})]),
+        ik_keys(LOOK, vec![ik_value(|_| {})]),
+        ik_keys(LEG, vec![ik_value(|_| {})]),
+      ]),
+      r#"animation "walk" timeline 2 (ik)"#,
+      r#"another timeline already keys constraint "leg"'s values"#,
+    );
+    fails(
+      keyed(vec![
+        mix_keys(LEVEL, TransformMix::ALL),
+        mix_keys(LEVEL, TransformMix::default()),
+      ]),
+      r#"animation "walk" timeline 1 (transform mix)"#,
+      r#"another timeline already keys constraint "level"'s values"#,
+    );
+  }
+
+  #[test]
+  fn a_constraint_key_out_of_range_or_with_a_switch_it_cannot_have_fails() {
+    // Every switch each constraint can have, at its edges, builds
+    keyed(vec![
+      ik_keys(
+        LEG,
+        vec![
+          ik_value(|key| key.mix = 0.0),
+          ik_value(|key| {
+            key.mix = 1.0;
+            key.softness = 5.0;
+            key.bend_positive = false;
+            key.stretch = true;
+          }),
+        ],
+      ),
+      ik_keys(
+        LOOK,
+        vec![ik_value(|key| {
+          key.compress = true;
+          key.stretch = true;
+        })],
+      ),
+      ik_keys(TAIL, vec![ik_value(|key| key.mix = 0.5)]),
+      mix_keys(
+        LEVEL,
+        TransformMix {
+          rotate: -1.0,
+          x: 2.0,
+          ..TransformMix::default()
+        },
+      ),
+    ])
+    .build()
+    .expect("keys within range");
+    let one_key = |constraint, change: fn(&mut IkValues)| {
+      keyed(vec![ik_keys(
+        constraint,
+        vec![ik_value(|_| {}), ik_value(change)],
+      )])
+    };
+    type Case = (ConstraintId, fn(&mut IkValues), &'static str);
+    let cases: [Case; 10] = [
+      (
+        LEG,
+        |key| key.mix = 1.5,
+        "key 1's mix is 1.5; it must be within 0 to 1",
+      ),
+      (
+        LEG,
+        |key| key.mix = -0.5,
+        "key 1's mix is -0.5; it must be within 0 to 1",
+      ),
+      (
+        LEG,
+        |key| key.mix = f32::NAN,
+        "key 1's mix is NaN, not a finite number",
+      ),
+      (
+        LEG,
+        |key| key.softness = -1.0,
+        "key 1's softness is -1; it must not be negative",
+      ),
+      (
+        LEG,
+        |key| key.compress = true,
+        "key 1's compress applies only to one bone",
+      ),
+      (
+        LOOK,
+        |key| key.bend_positive = false,
+        "key 1's bend_positive false applies only to two bones",
+      ),
+      (
+        LOOK,
+        |key| key.softness = 1.0,
+        "key 1's softness applies only to two bones",
+      ),
+      (
+        TAIL,
+        |key| key.stretch = true,
+        "key 1's stretch applies only to one or two bones",
+      ),
+      (
+        GAZE,
+        |key| key.stretch = true,
+        r#"key 1's stretch or compress is on, and its bone "flat" has a length of 0; stretch and compress need a length above 0"#,
+      ),
+      (
+        GAZE,
+        |key| key.compress = true,
+        r#"key 1's stretch or compress is on, and its bone "flat" has a length of 0"#,
+      ),
+    ];
+    for (constraint, change, reason) in cases {
+      fails(one_key(constraint, change), WALK_0_IK, reason);
+    }
+    fails(
+      keyed(vec![mix_keys(
+        LEVEL,
+        TransformMix {
+          shear_y: f32::INFINITY,
+          ..TransformMix::default()
+        },
+      )]),
+      r#"animation "walk" timeline 0 (transform mix)"#,
+      "key 0's shear_y is inf, not a finite number",
+    );
+    // Its keys' curves are checked as every timeline's are
+    let mut bent = ik_keys(LEG, vec![ik_value(|_| {}), ik_value(|_| {})]);
+    if let Timeline::Ik { frames, .. } = &mut bent {
+      frames[0].2 = Curve::Bezier {
+        cx1: 1.5,
+        cy1: 0.0,
+        cx2: 0.5,
+        cy2: 1.0,
+      };
+    }
+    fails(
+      keyed(vec![bent]),
+      WALK_0_IK,
+      "key 0's curve has x controls 1.5 and 0.5",
     );
   }
 

@@ -13,10 +13,10 @@ use crate::core::asset::{AssetError, AssetLoader, Assets, CheckContext, Handle, 
 use crate::core::ecs::Vec2;
 use crate::core::graphics::Image;
 use crate::core::skeleton::{
-  Animation, Attachment, BoneSetup, BoundingBoxAttachment, Curve, EventAudio, EventData,
-  EventValues, Frame, IkSetup, Influence, Inherit, MeshAttachment, MeshVertices, PointAttachment,
-  Region, RegionAttachment, SkeletonData, SkeletonError, SlotBlend, SlotId, SlotSetup, Timeline,
-  TransformMix, TransformOffset, TransformSetup, WeightedVertices,
+  Animation, Attachment, BoneSetup, BoundingBoxAttachment, ConstraintId, Curve, EventAudio,
+  EventData, EventValues, Frame, IkSetup, IkValues, Influence, Inherit, MeshAttachment,
+  MeshVertices, PointAttachment, Region, RegionAttachment, SkeletonData, SkeletonError, SlotBlend,
+  SlotId, SlotSetup, Timeline, TransformMix, TransformOffset, TransformSetup, WeightedVertices,
 };
 use crate::core::ui::Color;
 
@@ -152,6 +152,14 @@ use crate::core::ui::Color;
 ///         // offset, the setup shape
 ///         deform: { "flag": [(0.0, []), (0.5, [0, -6, 0, -6, 0, 6], Bezier(0.25, 0, 0.75, 1)), (1.0, [])] },
 ///       ) },
+///       // Constraints by name: an IK constraint's `ik` keys (mix, softness, bend_positive,
+///       // compress, stretch) or a transform constraint's `transform` keys (its six mixes).
+///       // A value a key leaves out is the constraint's setup value. The numbers ease to
+///       // the next key by its curve; the switches change at their key
+///       constraints: {
+///         "reach": (ik: [(0.0, (mix: 1)), (0.5, (mix: 0.5, softness: 4, bend_positive: false), Stepped)]),
+///         "level": (transform: [(0.0, (rotate: 1)), (1.0, (rotate: 0.5, x: 0.25))]),
+///       },
 ///       // Every slot, back to front, or None for the setup order
 ///       draw_order: [(0.25, ["gear", "torso"]), (0.75, None)],
 ///       // (time, event) or (time, event, values) with any of
@@ -173,12 +181,15 @@ use crate::core::ui::Color;
 /// a mesh is found when the animation plays, since the skins worn decide
 /// what a name shows, and a deform that does not fit the attachment of
 /// its name is skipped with one warning. A draw-order key lists the slots
-/// by name. A bone or slot of an animation, a
-/// region's image, an attachment's region, a mesh influence's bone, a
-/// deform's attachment (in its slot, in some skin) and an event key's event
-/// are names the file declares, and so are a constraint's bones and target. Unknown fields are refused, so a
-/// misspelt one fails rather than doing nothing, and so is a name written
-/// twice in one map.
+/// by name. A constraint's timeline keys a constraint of its own kind, and
+/// a key sets no switch its constraint could not have (`compress` on two
+/// bones, say), as a setup sets none. A bone
+/// or slot of an animation, a region's image, an attachment's region, a
+/// mesh influence's bone, a deform's attachment (in its slot, in some
+/// skin), an animation's constraint and an event key's event are names the
+/// file declares, and so are a constraint's bones and target. Unknown
+/// fields are refused, so a misspelt one fails rather than doing nothing,
+/// and so is a name written twice in one map.
 ///
 /// The images are the skeleton's dependencies: it is ready once they are, one
 /// that does not load fails it (`AssetError::Dependency`), and saving one
@@ -485,6 +496,27 @@ struct TransformMixFile {
   shear_y: f32,
 }
 
+impl TransformMixFile {
+  fn mix(&self) -> TransformMix {
+    TransformMix {
+      rotate: self.rotate,
+      x: self.x,
+      y: self.y,
+      scale_x: self.scale_x,
+      scale_y: self.scale_y,
+      shear_y: self.shear_y,
+    }
+  }
+}
+
+impl ConstraintFile {
+  fn name(&self) -> &str {
+    match self {
+      Self::Ik { name, .. } | Self::Transform { name, .. } => name,
+    }
+  }
+}
+
 /// The offsets' angles are degrees
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields, default)]
@@ -644,6 +676,40 @@ struct SlotTimelinesFile {
   deform: Ordered<Vec<Key<Vec<f32>>>>,
 }
 
+/// An IK constraint's key: each value left out is the constraint's setup
+/// value
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields, default)]
+struct IkKeyFile {
+  mix: Option<f32>,
+  softness: Option<f32>,
+  bend_positive: Option<bool>,
+  compress: Option<bool>,
+  stretch: Option<bool>,
+}
+
+/// A transform constraint's key: each mix left out is the constraint's
+/// setup mix
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields, default)]
+struct TransformKeyFile {
+  rotate: Option<f32>,
+  x: Option<f32>,
+  y: Option<f32>,
+  scale_x: Option<f32>,
+  scale_y: Option<f32>,
+  shear_y: Option<f32>,
+}
+
+/// One constraint's timeline: an IK constraint's `ik` keys or a transform
+/// constraint's `transform` keys
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields, default)]
+struct ConstraintTimelinesFile {
+  ik: Option<Vec<Key<IkKeyFile>>>,
+  transform: Option<Vec<Key<TransformKeyFile>>>,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AnimationFile {
@@ -652,6 +718,8 @@ struct AnimationFile {
   bones: Ordered<BoneTimelinesFile>,
   #[serde(default)]
   slots: Ordered<SlotTimelinesFile>,
+  #[serde(default)]
+  constraints: Ordered<ConstraintTimelinesFile>,
   #[serde(default)]
   draw_order: Option<Vec<(f32, Option<Vec<String>>)>>,
   #[serde(default)]
@@ -879,14 +947,7 @@ impl SkeletonFile {
           &bones.iter().map(String::as_str).collect::<Vec<_>>(),
           target,
           TransformSetup {
-            mix: TransformMix {
-              rotate: mix.rotate,
-              x: mix.x,
-              y: mix.y,
-              scale_x: mix.scale_x,
-              scale_y: mix.scale_y,
-              shear_y: mix.shear_y,
-            },
+            mix: mix.mix(),
             offset: TransformOffset {
               rotation: offset.rotation.to_radians(),
               x: offset.x,
@@ -929,7 +990,7 @@ impl SkeletonFile {
       });
     }
     for (name, animation) in &self.animations.0 {
-      let animation = Self::animation(&builder, name, animation)?;
+      let animation = self.animation(&builder, name, animation)?;
       builder = builder.animation(animation);
     }
     builder = builder.default_mix(self.mixes.default);
@@ -1023,9 +1084,10 @@ impl SkeletonFile {
   }
 
   /// The animation `file` called `name`: bones' timelines, then slots'
-  /// (each slot's attachment, colour and deforms), the draw order and the
-  /// events
+  /// (each slot's attachment, colour and deforms), constraints' (each one's
+  /// IK keys, then its transform keys), the draw order and the events
   fn animation(
+    &self,
     builder: &crate::core::skeleton::SkeletonDataBuilder,
     name: &str,
     file: &AnimationFile,
@@ -1111,6 +1173,71 @@ impl SkeletonFile {
         });
       }
     }
+    for (constraint_name, t) in &file.constraints.0 {
+      let found = self
+        .constraints
+        .iter()
+        .enumerate()
+        .find(|(_, constraint)| constraint.name() == constraint_name);
+      let Some((constraint, setup)) = found.and_then(|(index, setup)| {
+        u8::try_from(index)
+          .ok()
+          .map(|index| (ConstraintId(index), setup))
+      }) else {
+        return Err(problem(
+          &item,
+          format!("constraints: {constraint_name:?} is not a constraint (or is past the 255th)"),
+        ));
+      };
+      if let Some(keys) = &t.ik {
+        // A value a key leaves out is the setup's; keys for a transform
+        // constraint fail as validation refuses them
+        let setup = match setup {
+          ConstraintFile::Ik {
+            mix,
+            softness,
+            bend_positive,
+            compress,
+            stretch,
+            ..
+          } => IkValues {
+            mix: *mix,
+            softness: *softness,
+            bend_positive: *bend_positive,
+            compress: *compress,
+            stretch: *stretch,
+          },
+          ConstraintFile::Transform { .. } => IkValues::of(&IkSetup::default()),
+        };
+        timelines.push(Timeline::Ik {
+          constraint,
+          frames: frames(keys, |key| IkValues {
+            mix: key.mix.unwrap_or(setup.mix),
+            softness: key.softness.unwrap_or(setup.softness),
+            bend_positive: key.bend_positive.unwrap_or(setup.bend_positive),
+            compress: key.compress.unwrap_or(setup.compress),
+            stretch: key.stretch.unwrap_or(setup.stretch),
+          }),
+        });
+      }
+      if let Some(keys) = &t.transform {
+        let setup = match setup {
+          ConstraintFile::Transform { mix, .. } => mix.mix(),
+          ConstraintFile::Ik { .. } => TransformMix::default(),
+        };
+        timelines.push(Timeline::TransformMix {
+          constraint,
+          frames: frames(keys, |key| TransformMix {
+            rotate: key.rotate.unwrap_or(setup.rotate),
+            x: key.x.unwrap_or(setup.x),
+            y: key.y.unwrap_or(setup.y),
+            scale_x: key.scale_x.unwrap_or(setup.scale_x),
+            scale_y: key.scale_y.unwrap_or(setup.scale_y),
+            shear_y: key.shear_y.unwrap_or(setup.shear_y),
+          }),
+        });
+      }
+    }
     if let Some(keys) = &file.draw_order {
       let mut frames = Vec::with_capacity(keys.len());
       for (time, order) in keys {
@@ -1181,10 +1308,10 @@ mod tests {
   use crate::core::ecs::kernel::World;
   use crate::core::graphics::Image;
   use crate::core::skeleton::{
-    Animation, Attachment, BoneId, BoneSetup, BoundingBoxAttachment, Curve, EventAudio, EventData,
-    EventValues, IkSetup, Influence, Inherit, MeshAttachment, MeshVertices, PointAttachment,
-    Region, RegionAttachment, SkeletonData, SlotBlend, SlotId, SlotSetup, Timeline, TransformMix,
-    TransformOffset, TransformSetup, WeightedVertices,
+    Animation, Attachment, BoneId, BoneSetup, BoundingBoxAttachment, ConstraintId, Curve,
+    EventAudio, EventData, EventValues, IkSetup, IkValues, Influence, Inherit, MeshAttachment,
+    MeshVertices, PointAttachment, Region, RegionAttachment, SkeletonData, SlotBlend, SlotId,
+    SlotSetup, Timeline, TransformMix, TransformOffset, TransformSetup, WeightedVertices,
   };
   use crate::core::ui::Color;
 
@@ -1494,6 +1621,10 @@ mod tests {
           ),
           "glow": (deform: { "flag": [(0.0, []), (0.5, [0, -6, 0, -6, 0, 6, 0, 6], Bezier(0.25, 0, 0.75, 1)), (1.0, [])] }),
         },
+        constraints: {
+          "copy": (transform: [(0.25, (rotate: -1, shear_y: 3), Bezier(0.25, 0, 0.75, 1)), (1.0, (x: 2))]),
+          "limb": (ik: [(0.0, (mix: 0.5)), (0.5, (softness: 1, bend_positive: true, stretch: false), Stepped), (1.0, (mix: 0, softness: 0))]),
+        },
         draw_order: [(0.25, ["head", "torso", "gear", "glow"]), (0.75, None)],
         events: [
           (0.5, "step"),
@@ -1799,6 +1930,21 @@ mod tests {
       builder.event_index("hit").expect("event"),
     );
     let linear = Curve::Linear;
+    let copy_mix = TransformMix {
+      rotate: 0.5,
+      x: 0.25,
+      y: -0.5,
+      scale_x: 1.0,
+      scale_y: 2.0,
+      shear_y: 0.1,
+    };
+    let limb = IkValues {
+      mix: 0.75,
+      softness: 2.5,
+      bend_positive: false,
+      compress: false,
+      stretch: true,
+    };
     let walk = animation(
       "walk",
       1.0,
@@ -1892,6 +2038,54 @@ mod tests {
               },
             ),
             (1.0, Vec::new(), linear),
+          ],
+        },
+        // The keys' left-out values are the setups': "copy" mixes rotate
+        // 0.5, x 0.25, y -0.5, scale 1 and 2, shear 0.1; "limb" a mix of
+        // 0.75, softness 2.5, bent the negative way, stretching
+        Timeline::TransformMix {
+          constraint: ConstraintId(1),
+          frames: vec![
+            (
+              0.25,
+              TransformMix {
+                rotate: -1.0,
+                shear_y: 3.0,
+                ..copy_mix
+              },
+              Curve::Bezier {
+                cx1: 0.25,
+                cy1: 0.0,
+                cx2: 0.75,
+                cy2: 1.0,
+              },
+            ),
+            (1.0, TransformMix { x: 2.0, ..copy_mix }, linear),
+          ],
+        },
+        Timeline::Ik {
+          constraint: ConstraintId(0),
+          frames: vec![
+            (0.0, IkValues { mix: 0.5, ..limb }, linear),
+            (
+              0.5,
+              IkValues {
+                softness: 1.0,
+                bend_positive: true,
+                stretch: false,
+                ..limb
+              },
+              Curve::Stepped,
+            ),
+            (
+              1.0,
+              IkValues {
+                mix: 0.0,
+                softness: 0.0,
+                ..limb
+              },
+              linear,
+            ),
           ],
         },
         Timeline::DrawOrder {
@@ -2039,6 +2233,144 @@ mod tests {
     assert_eq!(data.constraints(), expected.constraints());
     assert_eq!(data.constraints().len(), 3);
     assert_eq!(data.constraint("level"), expected.constraint("level"));
+  }
+
+  #[test]
+  fn constraint_timelines_load_and_match_the_builder_s() {
+    // The brief's example: a value a key leaves out is the setup's (the
+    // leg's mix 0.8, softness 3, bent the positive way; the pelvis's rotate
+    // mix 0.5, its x mix 0.1)
+    let data = loaded(
+      r#"(
+        bones: [
+          (name: "root"),
+          (name: "pelvis", parent: "root"),
+          (name: "thigh", parent: "root", length: 10),
+          (name: "shin", parent: "thigh", x: 10, length: 10),
+          (name: "torso", parent: "root"),
+          (name: "foot", parent: "root"),
+        ],
+        constraints: [
+          Ik(name: "leg", bones: ["thigh", "shin"], target: "foot", mix: 0.8, softness: 3),
+          Transform(name: "pelvis", bones: ["pelvis"], target: "torso", mix: (rotate: 0.5, x: 0.1)),
+        ],
+        animations: { "walk": (
+          duration: 0.5,
+          bones: { "torso": (rotate: [(0.0, 10)]) },
+          constraints: {
+            "leg": (ik: [(0.0, (mix: 1)), (0.3, (mix: 0, bend_positive: false), Bezier(0.3, 0, 0.7, 1))]),
+            "pelvis": (transform: [(0.0, (rotate: 0.6)), (0.5, (rotate: 0.9, x: 0.2))]),
+          },
+        ) },
+      )"#,
+    );
+    let builder = SkeletonData::builder()
+      .bone("root", None, BoneSetup::default())
+      .bone("pelvis", Some("root"), BoneSetup::default())
+      .bone(
+        "thigh",
+        Some("root"),
+        BoneSetup {
+          length: 10.0,
+          ..BoneSetup::default()
+        },
+      )
+      .bone(
+        "shin",
+        Some("thigh"),
+        BoneSetup {
+          x: 10.0,
+          length: 10.0,
+          ..BoneSetup::default()
+        },
+      )
+      .bone("torso", Some("root"), BoneSetup::default())
+      .bone("foot", Some("root"), BoneSetup::default());
+    let leg = IkSetup {
+      mix: 0.8,
+      softness: 3.0,
+      ..IkSetup::default()
+    };
+    let pelvis = TransformMix {
+      rotate: 0.5,
+      x: 0.1,
+      ..TransformMix::default()
+    };
+    let torso = builder.bone_id("torso").expect("a bone");
+    let setup = IkValues::of(&leg);
+    let walk = animation(
+      "walk",
+      0.5,
+      vec![
+        Timeline::Rotate {
+          bone: torso,
+          frames: vec![(0.0, deg(10.0), Curve::Linear)],
+        },
+        Timeline::Ik {
+          constraint: ConstraintId(0),
+          frames: vec![
+            (0.0, IkValues { mix: 1.0, ..setup }, Curve::Linear),
+            (
+              0.3,
+              IkValues {
+                mix: 0.0,
+                bend_positive: false,
+                ..setup
+              },
+              Curve::Bezier {
+                cx1: 0.3,
+                cy1: 0.0,
+                cx2: 0.7,
+                cy2: 1.0,
+              },
+            ),
+          ],
+        },
+        Timeline::TransformMix {
+          constraint: ConstraintId(1),
+          frames: vec![
+            (
+              0.0,
+              TransformMix {
+                rotate: 0.6,
+                ..pelvis
+              },
+              Curve::Linear,
+            ),
+            (
+              0.5,
+              TransformMix {
+                rotate: 0.9,
+                x: 0.2,
+                ..pelvis
+              },
+              Curve::Linear,
+            ),
+          ],
+        },
+      ],
+    );
+    let expected = builder
+      .ik("leg", &["thigh", "shin"], "foot", leg)
+      .transform_constraint(
+        "pelvis",
+        &["pelvis"],
+        "torso",
+        TransformSetup {
+          mix: pelvis,
+          ..TransformSetup::default()
+        },
+      )
+      .animation(walk)
+      .build()
+      .expect("a valid skeleton");
+    assert_eq!(data.animations(), expected.animations());
+    assert_eq!(data.constraints(), expected.constraints());
+    // The leg's second key keeps the setup's softness, which it leaves out
+    match &data.animation("walk").expect("walk").timelines[1] {
+      Timeline::Ik { frames, .. } => assert_eq!(frames[1].1.softness, 3.0),
+      other => panic!("{other:?}"),
+    }
   }
 
   /// A file with a torso and a head bone, a slot "s" on the torso and the
@@ -2434,12 +2766,33 @@ mod tests {
         r#"animation "w" timeline 0 (deform)"#,
         r#"no skin has an attachment "flagg" in slot "s""#,
       ),
+      (
+        r#"(bones: [(name: "a", length: 5), (name: "t")], constraints: [Ik(name: "c", bones: ["a"], target: "t")], animations: { "w": (duration: 1.0, constraints: { "d": (ik: [(0.0, (mix: 1))]) }) })"#,
+        r#"animation "w""#,
+        r#"constraints: "d" is not a constraint"#,
+      ),
+      (
+        r#"(bones: [(name: "a", length: 5), (name: "t")], constraints: [Ik(name: "c", bones: ["a"], target: "t")], animations: { "w": (duration: 1.0, constraints: { "c": (transform: [(0.0, (rotate: 1))]) }) })"#,
+        r#"animation "w" timeline 0 (transform mix)"#,
+        r#"constraint "c" is an IK constraint"#,
+      ),
+      (
+        r#"(bones: [(name: "a", length: 5), (name: "b", parent: "a", length: 5), (name: "t")], constraints: [Ik(name: "c", bones: ["a", "b"], target: "t")], animations: { "w": (duration: 1.0, constraints: { "c": (ik: [(0.0, (compress: true))]) }) })"#,
+        r#"animation "w" timeline 0 (ik)"#,
+        "key 0's compress applies only to one bone",
+      ),
     ] {
       let error = failure(text);
       assert!(error.contains(PATH), "{error}");
       assert!(error.contains(item), "{item} in {error}");
       assert!(error.contains(reason), "{reason} in {error}");
     }
+    // A misspelt key value too
+    let error = failure(
+      r#"(bones: [(name: "a", length: 5), (name: "t")], constraints: [Ik(name: "c", bones: ["a"], target: "t")], animations: { "w": (duration: 1.0, constraints: { "c": (ik: [(0.0, (mx: 1))]) }) })"#,
+    );
+    assert!(error.contains("mx"), "{error}");
+    assert!(error.contains("line 1"), "{error}");
     // A misspelt setting is a mistake in the text, at its line and column
     let error = failure(
       r#"(bones: [(name: "a", length: 5), (name: "t")], constraints: [Ik(name: "c", bones: ["a"], target: "t", strech: true)])"#,
@@ -2511,6 +2864,23 @@ mod tests {
       })
       .collect();
     assert_eq!(deforms, [("flag", 3, 6)]);
+    // Both kinds of constraint timeline, the IK one's second key keeping
+    // the setup's switches it leaves out
+    let constraints: Vec<_> = walk
+      .timelines
+      .iter()
+      .filter_map(|timeline| match timeline {
+        Timeline::Ik { constraint, frames } => {
+          let key = frames[1].1;
+          Some((constraint.0, frames.len(), key.mix, key.stretch))
+        }
+        Timeline::TransformMix { constraint, frames } => {
+          Some((constraint.0, frames.len(), frames[1].1.rotate, false))
+        }
+        _ => None,
+      })
+      .collect();
+    assert_eq!(constraints, [(0, 2, 0.5, false), (1, 2, 0.5, false)]);
   }
 
   #[test]

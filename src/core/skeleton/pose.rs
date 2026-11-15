@@ -192,6 +192,20 @@ impl Pose {
     }
   }
 
+  /// Holds each IK constraint's values in their range once every track has
+  /// applied: its `mix` within 0 to 1 and its `softness` not negative (a
+  /// curve or an additive layer can carry either past its range). A
+  /// transform constraint's mixes are left as they are: they may be below 0
+  /// or above 1
+  pub(crate) fn clamp_constraints(&mut self) {
+    for values in &mut self.constraints {
+      if let ConstraintValues::Ik(values) = values {
+        values.mix = values.mix.clamp(0.0, 1.0);
+        values.softness = values.softness.max(0.0);
+      }
+    }
+  }
+
   /// A step begins: the deform offsets the last one left become the
   /// previous ones, and their lists are this step's to fill (emptied by
   /// [`Pose::reset`]), so neither is allocated again

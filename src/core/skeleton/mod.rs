@@ -49,7 +49,9 @@ pub use attachment::{
   RegionAttachment, WeightedVertices,
 };
 pub use builder::{BoneSetup, SkeletonDataBuilder, SlotSetup};
-pub use component::{BoneOverride, Skeleton, Space};
+pub use component::{
+  BoneOverride, ConstraintOverride, IkOverride, Skeleton, Space, TransformMixOverride,
+};
 pub use constraint::{
   Constraint, ConstraintId, IkConstraint, IkSetup, MAX_CONSTRAINTS, MAX_IK_BONES,
   TransformConstraint, TransformMix, TransformOffset, TransformSetup,
