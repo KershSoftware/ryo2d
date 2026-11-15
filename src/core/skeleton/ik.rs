@@ -590,8 +590,8 @@ fn reached(sizes: &[Vec2], shape: Shape) -> (Vec2, f32, f32, f32) {
 /// stretch shrinks as the walk nears a turn, and the walk stops once it is
 /// less than `step / CHAIN_SETTLED`: at the first turn, or where the
 /// distance has all but stopped falling; or after `CHAIN_WALK` steps, short
-/// of the turn (about one pose of sixteen bones in 5,000, which loses 0.026
-/// of the length of its reach inward). The places walked are the pose's
+/// of the turn (rare: 11 of 150,000 random poses of sixteen bones, the
+/// worst losing 0.026 of the length of its reach inward). The places walked are the pose's
 /// alone, whatever the target, so as the target comes in the curl follows it
 /// without a jump, out to that stop
 fn fall(sizes: &[Vec2], from: Shape, way: f32, step: f32, end: f32, distance: f32) -> f32 {
