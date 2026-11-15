@@ -1305,6 +1305,42 @@ fn the_level_hand_keeps_its_angle_while_the_arm_turns() {
   assert!(between(hand, Vec2::X) > 0.1, "the hand is still level");
 }
 
+#[test]
+fn a_stretched_arm_stops_at_half_again_its_reach_and_keeps_its_hand_s_size() {
+  let Some(mut engine) = engine_on(CONSTRAINTS) else {
+    return;
+  };
+  engine.step_frames(10).unwrap();
+  let arm = one(&mut engine, REACHER);
+  let shoulder = bone(&engine, arm, "upper").translation;
+  let hand_size = |engine: &HeadlessEngine| {
+    let hand = bone(engine, arm, "hand").matrix2;
+    (hand.x_axis.length(), hand.y_axis.length())
+  };
+  let (wide, tall) = hand_size(&engine);
+  // Rows: the bend, the softness, the stretch: turn Stretch on
+  for _ in 0..2 {
+    engine.tap_key(KeyCode::ArrowDown);
+    engine.step_frames(2).unwrap();
+  }
+  engine.tap_key(KeyCode::ArrowRight);
+  engine.step_frames(2).unwrap();
+  // A pointer far to the left, across the page
+  let far = Vec2::new(shoulder.x - 1000.0, shoulder.y);
+  engine.mouse_move(far.x, far.y);
+  engine.step_frames(15).unwrap();
+  let reached = bone(&engine, arm, "hand").translation.distance(shoulder);
+  assert!(
+    reached > 250.0 * 1.4 && reached < 250.0 * 1.5 + 2.0,
+    "the hand is {reached} from the shoulder; stretch stops at half again the reach of 250"
+  );
+  let (now_wide, now_tall) = hand_size(&engine);
+  assert!(
+    (now_wide - wide).abs() < 0.01 && (now_tall - tall).abs() < 0.01,
+    "the hand was {wide} by {tall} and is {now_wide} by {now_tall}"
+  );
+}
+
 /// The walker's two feet: each IK target bone and the shin whose tip it
 /// holds
 const FEET: [(&str, &str); 2] = [("foot_near", "shin_near"), ("foot_far", "shin_far")];
