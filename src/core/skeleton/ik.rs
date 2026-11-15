@@ -148,7 +148,10 @@ pub(crate) fn one_bone(
 /// full reach and does not arrive. With
 /// `values.stretch`, no softness and an even `first`, a target beyond
 /// reach multiplies `first`'s `scale_x` (and `scale_y` with `uniform`) by
-/// `1 + (distance / reach - 1) × mix`.
+/// `1 + (distance / reach - 1) × mix`, and both parts are laid along the
+/// line to the target on `first` as stretched. The tip is then on the
+/// target when `second` lies on `first`'s axis or with `uniform`, and
+/// otherwise on the line, a little short of the target or past it.
 ///
 /// Exact when `first` scales every direction alike. When its own scale is
 /// uneven or it is sheared, part two's length changes as it turns and the
@@ -229,10 +232,6 @@ pub(crate) fn two_bones(
   let one = toward * along - side;
   let two = toward * (d - along) + side;
 
-  let solved = one.to_angle() - part_one.to_angle();
-  let aim = pointing(second, first.linear_turned(solved).inverse() * two);
-  let first_rotation = turned(first.rotation, solved, mix);
-  let second_rotation = turned(second.rotation, aim, mix);
   let stretches = values.stretch && softness <= 0.0 && distance > reach && even(first);
   let factor = if stretches {
     scale_factor(distance, reach, mix)
@@ -245,6 +244,30 @@ pub(crate) fn two_bones(
   } else {
     first.scale_y
   };
+  // The rotations that lay part one along `one` and point the second bone's
+  // axis along `two`, the first bone holding part one as `held` and carrying
+  // the second bone's axis as `carrier` does
+  let rotations = |carrier: &BonePose, held: Vec2| {
+    let solved = one.to_angle() - held.to_angle();
+    let aim = pointing(second, carrier.linear_turned(solved).inverse() * two);
+    (solved, aim)
+  };
+  let (solved, aim) = if stretches {
+    // Stretched along x alone, the first bone holds a part one off its axis
+    // at another angle, and no longer scales every direction alike: both
+    // parts are laid along the line on the bone as it will be
+    let stretched = BonePose {
+      scale_x,
+      scale_y,
+      ..*first
+    };
+    let held = stretched.linear_turned(0.0) * Vec2::new(second.x, second.y);
+    rotations(&stretched, held)
+  } else {
+    rotations(first, part_one)
+  };
+  let first_rotation = turned(first.rotation, solved, mix);
+  let second_rotation = turned(second.rotation, aim, mix);
   let written = [first_rotation, second_rotation, scale_x, scale_y];
   if !written.iter().all(|value| value.is_finite()) {
     return;
@@ -1077,6 +1100,54 @@ mod tests {
     assert_near(tip(&a, &b, 30.0), target, "off the axis");
     assert_close(a.scale_x, 1.67221, "off the axis");
     assert_close(a.scale_y, 1.67221, "off the axis");
+    // Without uniform only the first bone's x scale grows. The limb still
+    // lies along the line to the target, and falls a little short of it.
+    // Straight, the joint in the first bone's own space is the second
+    // bone's place, (40, 12), and the tip that times 1 + 30 / sqrt(1744),
+    // (68.7348, 20.6204). With each x times 1.67221 they are (66.8885, 12),
+    // which is 67.9564 long, and (114.939, 20.6204), which is 116.774 long:
+    // 3.226 short of the 120. A first bone mirrored by its own scale, or
+    // turned by equal shears, stretches the same
+    let toward = Vec2::new(0.6, 0.8);
+    for (what, first) in [
+      ("off the axis, x alone", first),
+      (
+        "off the axis, x alone, mirrored",
+        BonePose {
+          scale_y: -1.0,
+          ..first
+        },
+      ),
+      (
+        "off the axis, x alone, turned by its shears",
+        BonePose {
+          shear_x: 0.25,
+          shear_y: 0.25,
+          ..first
+        },
+      ),
+    ] {
+      let (a, b) = solved((first, off), 30.0, target, stretch, false);
+      for (part, at, along) in [
+        ("joint", joint(&a, &b), 67.9564),
+        ("tip", tip(&a, &b, 30.0), 116.774),
+      ] {
+        let from_origin = at - ORIGIN;
+        let aside = toward.perp_dot(from_origin);
+        assert!(
+          aside.abs() < 0.01,
+          "{what}: the {part} is {aside} off the line to the target"
+        );
+        let reached = toward.dot(from_origin);
+        assert!(
+          (reached - along).abs() < 0.01,
+          "{what}: the {part} is {reached} along the line, not {along}"
+        );
+      }
+      assert_close(a.scale_x, 1.67221, what);
+      assert_eq!(a.scale_y, first.scale_y, "{what}");
+      assert_only_turned(&off, &b, what);
+    }
 
     // Not applied, so the bones lie straight toward the target and stop
     // at their reach, the first bone's scale as it was:
