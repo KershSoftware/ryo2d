@@ -29,6 +29,7 @@ mod data;
 pub(crate) mod debug;
 mod draw;
 mod event;
+mod ik;
 mod pose;
 mod scope;
 mod skin;
@@ -56,6 +57,7 @@ pub use data::{
 };
 pub(crate) use draw::{Carrier, MeshPart, Part, Parts, RegionQuad};
 pub use event::{SkeletonEvent, SkeletonTrackEvent};
+pub use ik::IkValues;
 pub(crate) use scope::{SkeletonStore, hold_scenes, in_scene, release_scene};
 pub use skin::Skin;
 pub use socket::BoneSocket;

@@ -49,8 +49,14 @@ impl BonePose {
     self.linear_turned(self.rotation)
   }
 
+  /// The bone's own transform, in its parent's space: its linear part, at
+  /// its place
+  pub(crate) fn affine(&self) -> Affine2 {
+    Affine2::from_mat2_translation(self.linear(), Vec2::new(self.x, self.y))
+  }
+
   /// The local linear part as if the bone were turned by `rotation`
-  fn linear_turned(&self, rotation: f32) -> Mat2 {
+  pub(super) fn linear_turned(&self, rotation: f32) -> Mat2 {
     let (sin_x, cos_x) = (rotation + self.shear_x).sin_cos();
     let (sin_y, cos_y) = (rotation + self.shear_y).sin_cos();
     Mat2::from_cols(
@@ -228,7 +234,7 @@ impl Pose {
     let local = &self.bones[index];
     let position = Vec2::new(local.x, local.y);
     self.skeleton_space[index] = match bone.parent {
-      None => Affine2::from_mat2_translation(local.linear(), position),
+      None => local.affine(),
       Some(parent) => {
         let parent = self.skeleton_space[parent.index()];
         let translation = parent.transform_point2(position);
