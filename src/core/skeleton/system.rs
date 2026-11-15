@@ -801,6 +801,90 @@ mod tests {
   }
 
   #[test]
+  fn a_constrained_skeleton_on_a_socket_has_the_pose_a_step_gives_it_where_it_lands() {
+    use crate::core::skeleton::{BoneOverride, IkSetup, Space};
+    let (mut world, mut step, _) = world();
+    let horse_data = rig(&mut world);
+    // The rider: a limb of parts 40 and 30 under hips at its origin, a hand
+    // at its tip, reaching at half its mix for a target the game holds at
+    // a point in the world, within the limb's reach from wherever the
+    // horse's hand carries the rider
+    let long = |x: f32, length: f32| BoneSetup {
+      x,
+      length,
+      ..BoneSetup::default()
+    };
+    let rider_data = SkeletonData::builder()
+      .bone("hips", None, BoneSetup::default())
+      .bone("upper", Some("hips"), long(0.0, 40.0))
+      .bone("lower", Some("upper"), long(40.0, 30.0))
+      .bone("hand", Some("lower"), long(30.0, 0.0))
+      .bone("goal", None, long(70.0, 0.0))
+      .ik(
+        "reach",
+        &["upper", "lower"],
+        "goal",
+        IkSetup {
+          mix: 0.5,
+          ..IkSetup::default()
+        },
+      )
+      .build()
+      .expect("a valid skeleton");
+    let rider_data = world.resource_mut::<Assets<SkeletonData>>().add(rider_data);
+    let goal = BoneOverride {
+      translation: Some(Vec2::new(90.0, 60.0)),
+      space: Space::World,
+      ..BoneOverride::default()
+    };
+    let held = || {
+      let mut skeleton = Skeleton::new(rider_data.clone());
+      skeleton.override_bone("goal", goal);
+      skeleton
+    };
+    // Spawned first, so the rider steps before the horse whose hand
+    // carries it moves it
+    let rider = world
+      .spawn((Transform::IDENTITY, held(), BoneSocket::new("hand")))
+      .id();
+    let horse = world
+      .spawn((
+        Transform::from_xy(50.0, 20.0),
+        Skeleton::new(horse_data),
+        turning(),
+      ))
+      .id();
+    world.entity_mut(rider).insert(ChildOf(horse));
+    assert!(rider.index() < horse.index());
+    for steps in 1..=5 {
+      world
+        .get_mut::<Transform>(horse)
+        .expect("the horse's transform")
+        .translation
+        .x += 3.0;
+      step.run(&mut world);
+      // The rider stands on the horse's hand, and has the pose a skeleton
+      // stepped standing there has, constraint and override and all
+      let stood = global(&world, rider);
+      same(stood, bone(&world, horse, "hand"));
+      let assets = world.resource::<Assets<SkeletonData>>();
+      let data = assets.get(&rider_data).expect("the rider's data");
+      let version = assets.version(&rider_data).expect("a version");
+      let mut twin = held();
+      let fired = &mut Fired::default();
+      let seen = (rider_data.id(), version);
+      twin.step(data, seen, None, 1.0 / 60.0, stood.into(), fired);
+      let skeleton = world.get::<Skeleton>(rider).expect("the rider");
+      let pose = &skeleton.pose;
+      assert_eq!(
+        pose.skeleton_space, twin.pose.skeleton_space,
+        "step {steps}"
+      );
+      assert_eq!(pose.world, twin.pose.world, "step {steps}");
+    }
+  }
+
+  #[test]
   fn propagation_after_the_step_writes_what_the_step_wrote() {
     let (mut world, mut step, mut frame) = world();
     let data = rig(&mut world);

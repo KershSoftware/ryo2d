@@ -859,6 +859,88 @@ mod tests {
   }
 
   #[test]
+  fn a_limb_under_a_moved_turned_and_unevenly_scaled_parent_reaches_its_target() {
+    // The limb's parent "hips" stands at (20, -10) of the skeleton, turned
+    // 0.5 and scaled (1.5, 0.7). The limb's own bones are even, so the
+    // solve is exact in the hips' space. Its target is a bone under the
+    // hips at (30, 40) there, 50 from the limb's origin and within its
+    // reach of 70: the 3-4-5 triangle puts the joint at (38.4, 11.2) in
+    // the hips' space
+    let hips = BoneSetup {
+      x: 20.0,
+      y: -10.0,
+      rotation: 0.5,
+      scale_x: 1.5,
+      scale_y: 0.7,
+      ..BoneSetup::default()
+    };
+    let rig = built(
+      SkeletonData::builder()
+        .bone("hips", None, hips)
+        .bone("upper", Some("hips"), long(0.0, 40.0))
+        .bone("lower", Some("upper"), long(40.0, 30.0))
+        .bone("hand", Some("lower"), at(30.0, 0.0))
+        .bone("goal", Some("hips"), at(30.0, 40.0))
+        .ik("reach", &["upper", "lower"], "goal", IkSetup::default()),
+    );
+    let root = Affine2::from_angle_translation(-0.3, Vec2::new(100.0, 50.0));
+    let skeleton = rig.posed(root, |_| {});
+    near(world(&skeleton, "hand"), world(&skeleton, "goal"));
+    let back = space(&skeleton, "hips").inverse();
+    let in_hips = |name: &str| back.transform_point2(space(&skeleton, name).translation);
+    near(in_hips("hand"), Vec2::new(30.0, 40.0));
+    near(in_hips("lower"), Vec2::new(38.4, 11.2));
+  }
+
+  #[test]
+  fn world_and_local_overrides_below_a_limb_come_out_as_asked_after_it_moves() {
+    // The limb, its target at (0, 50), with a watch on the shin at
+    // (10, 3), on an entity turned 0.4 at (100, 50). The game puts the
+    // hand at a point in the world, and turns and moves the watch half way
+    // to values of its own
+    let rig = built(
+      limb_bones(BoneSetup::default(), Vec2::new(0.0, 50.0))
+        .bone("watch", Some("lower"), at(10.0, 3.0))
+        .ik("reach", &["upper", "lower"], "goal", IkSetup::default()),
+    );
+    let root = Affine2::from_angle_translation(0.4, Vec2::new(100.0, 50.0));
+    let point = root.transform_point2(Vec2::new(10.0, 60.0));
+    let skeleton = rig.posed(root, |skeleton| {
+      let put = BoneOverride {
+        translation: Some(point),
+        space: Space::World,
+        ..BoneOverride::default()
+      };
+      skeleton.override_bone("hand", put);
+      let set = BoneOverride {
+        rotation: Some(0.7),
+        translation: Some(Vec2::new(12.0, -4.0)),
+        mix: 0.5,
+        ..BoneOverride::default()
+      };
+      skeleton.override_bone("watch", set);
+    });
+    // The limb has moved: the shin points from the joint to the target
+    near(
+      space(&skeleton, "lower").matrix2.x_axis,
+      Vec2::new(-0.8, 0.6),
+    );
+    // The hand is at the point asked for
+    near(world(&skeleton, "hand"), point);
+    // The watch has its own values half way from the animated ones, once,
+    // and is placed by them under the shin as the limb left it
+    let watch = own(&skeleton, "watch");
+    assert!((watch.rotation - 0.35).abs() < 0.001, "{}", watch.rotation);
+    near(Vec2::new(watch.x, watch.y), Vec2::new(11.0, -0.5));
+    let placed = space(&skeleton, "lower") * watch.affine();
+    near(space(&skeleton, "watch").translation, placed.translation);
+    near(
+      space(&skeleton, "watch").matrix2.x_axis,
+      placed.matrix2.x_axis,
+    );
+  }
+
+  #[test]
   fn a_constraint_has_the_last_word_over_an_override_on_its_own_bone() {
     // An eye at the origin whose target is 10 below it, and a game that
     // turns the eye to 2 radians: the constraint points it at the target,
