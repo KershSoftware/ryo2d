@@ -39,7 +39,7 @@ Each stage gets its own plan, reviews and hand-play. The old module and its demo
 ## Non-goals
 
 - **No skeleton editor in the engine.** Authoring is in a tool, then imported (stage 4), or in the file format by hand or in code.
-- **No path constraints and no physics constraints** (Spine 4.2's springs). Both go to the backlog.
+- **No path constraints.** Backlog. (Springs for secondary motion were added later: see "Authoring".)
 - **No clipping attachments** (stencil masks). Backlog.
 - **No GPU skinning.** Meshes are deformed on the CPU into a vertex stream, as Spine's own runtimes do. GPU skinning is a backlog lever if the targets demand it.
 - **No 3D bones**, and no Spine binary format. Stage 4 reads JSON only.
@@ -118,7 +118,7 @@ Each stage gets its own plan, reviews and hand-play. The old module and its demo
   - Stage 2 adds deform timelines.
   - Stage 3 adds IK and transform-constraint mix timelines.
 - **Events:** named, with default int, float and string values, and an optional audio path with volume and balance. An event key can override the values.
-  - The engine does not play an event's audio itself. The path, volume and balance ride on `SkeletonEvent`, and the game plays it, as Spine's own runtimes leave it to the game.
+  - The path, volume and balance ride on `SkeletonEvent`, and the game plays it, as Spine's own runtimes leave it to the game. (Later, `SkeletonSounds` lets the engine play them: see "Authoring".)
   - The path is a string, not a loaded dependency.
   - The demo shows the pattern: on a footstep event, play the sound at the skeleton's position.
 - **Validation at load:** names are unique per kind; parents come before children; references resolve; frames are in time order; curve values are finite.
@@ -489,3 +489,125 @@ A `constraints` list at the top of the file, in the order they apply, each `Ik(.
   - 200 skeletons, each with two two-bone IK constraints, one one-bone IK constraint and one transform constraint: the update is at most 1,000 µs a step;
   - the figures of skeletons without constraints do not rise by more than 5%, measured in one sitting against the build before constraints.
 - **Demo:** the Constraints page as above; the hero's pelvis by constraint on every page. The page tests cover both.
+
+## Authoring: details settled at planning (2026-11-15)
+
+The owner will not use an animation tool: skeletons and their animations are written by Claude, in `.skeleton.ron` or in code. This part makes that easier and better: springs for secondary motion, pivots that make placing an image on a bone a matter of naming two pixels, a contact sheet to look at an animation without running a game, a fixed side for chains, a limit on stretch, an exact solve for an unevenly scaled IK bone, skeleton-wide culling, and event sounds the engine can play itself. Import from a tool is set aside; the data model stays close enough to Spine's for it to come later.
+
+The rules come from Spine's public user guide (its page on physics constraints), geometry and first principles. Spine's public format reference documents no physics constraint, so the file format here is the engine's own.
+
+### Springs
+
+- **A spring constraint** gives one bone secondary motion: when the bone's animated place moves, the bone lags behind and swings back, so hair, a cape, a tail or an ear follows through without keys. It is a third kind of constraint in the same ordered list as IK and transform constraints, and takes its turn in that order. A spring has no target bone.
+- **What it moves**, each by its own amount from 0 (not at all) to 1 (fully): the bone's place (`x`, `y`), its rotation (`rotate`), and its scale along its length (`scale_x`). (Spine's guide also lists shear; it would read the same sideways lag that rotation reads, so it is left out.)
+- **The model.** A spring follows two points of its bone in the world: its origin and its tip (the bone's `length` along its x axis). For each point it keeps an offset from where animation puts it, and the offset's speed, both in world units (pixels, so the entity's own scale and turn are in them). Each fixed step of length `h`:
+  1. The point's animated movement since the last step, `m`, is clamped to `limit × h` in length (`limit` in units a second), so a jump in the animation does not fling the bone.
+  2. Inertia leaves the point behind: `offset -= m × inertia` (`inertia` 0 to 1).
+  3. The speed changes by the pull back and the forces: `speed += (-strength × offset + (wind, gravity)) × h`, where `strength` is a pull a second squared per unit of offset, and `wind` and `gravity` are accelerations in units a second squared along the world's x and y (y down, so a positive gravity falls).
+  4. Damping takes the speed down: `speed *= e^(-damping × h)` (`damping` a rate a second, 0 or more).
+  5. The offset moves by the speed: `offset += speed × h`.
+  - Steps 3 to 5 are split into equal sub-steps, as many as keep `h × √strength` below 0.5 in each, so the simulation is stable however stiff the spring and whatever the engine's fixed rate. A spring has no mass (it would only scale the strength).
+- **Onto the bone.** The sprung origin is the animated origin plus its offset × `mix`, the sprung tip likewise. The bone's place moves by the origin's offset × `x`/`y`; it turns by the angle between the animated and the sprung bone (origin to tip) × `rotate`; its scale along its length is multiplied by `1 + (sprung length / animated length - 1) × scale_x`. These are written into the bone's own values (converted through its parent, as a world override is), so a later constraint wins as with IK, and the bones below are placed again.
+- **Deterministic:** the same steps give the same result. Tuning is at the engine's fixed rate; a game that changes its fixed rate may need to retune its springs (inertia acts once a step).
+- **Time:** the game clock's pause and speed change how many steps run, so pause holds every spring still and a slowed game slows them. A skeleton's own animation speed does not change its springs.
+- **When the spring forgets** (offset and speed back to 0): when the skeleton's data is taken up (a new skeleton, a reload), when it appears, when the entity teleports (skips interpolation), when the entity was disabled for a step, and when the game calls `Skeleton::reset_springs()`. A skeleton held by its scene (under a pushed menu) keeps its springs as they were and goes on from them. A flip mirrors each offset and speed across the entity's axis, so a turning character's cape swings on round.
+- **Placing again between steps** (a skeleton on a socket, or flipped) applies the current offsets and does not advance the simulation.
+- **Order of a strand:** a strand of hair is a chain of bones each with its own spring; list the parent's spring before the child's, so the child lags the parent's sprung place. A spring listed before its bone's ancestor's fails to load.
+- **Keys and overrides:** `mix`, `wind` and `gravity` can be keyed (a spring timeline) and overridden (`SpringOverride`), as an IK constraint's numbers are. The rest are the setup's.
+- **Validation:** finite values; the four amounts and `inertia` and `mix` 0 to 1; `strength` above 0; `damping` and `limit` 0 or more; a spring that moves rotation or scale on a bone of length 0 fails to load (its tip is what lags); a spring that moves nothing fails to load.
+- **Debug:** `debug:skeletons` draws a line from the bone's animated tip to where the spring has put it.
+
+### Pivots on region attachments
+
+- A region attachment today is placed by its centre: its `x` and `y` are where the image's centre goes on its bone, which means working out a turned offset for every limb.
+- **`pivot`:** a point in the region's own pixels (from its top-left, x right and y down, as the image is drawn), which is what `x`, `y` and `rotation` place. Left out, it is the centre, as today, so existing files are unchanged.
+- **`along`:** a second point in the region's pixels. With it, the region is turned so the line from `pivot` to `along` lies along the bone's x axis, and `rotation` is added to that. So a limb is placed by naming its joint pixel and the pixel of the next joint: `Region(region: "thigh", pivot: (31, 18), along: (64, 158))`.
+- Pixels become the attachment's units by its `width` over the region's pixel width (and height likewise), so a region drawn larger or smaller keeps its pivot on the same pixel.
+- `along`'s angle is taken after the attachment's own scale, mirroring included, so the line from `pivot` to `along` always lies along the bone; scale and a mirroring scale act about the pivot.
+- `along` equal to `pivot`, or values not finite, fail to load. Meshes need nothing: their vertices are already in the bone's space.
+
+### The contact sheet
+
+- **`ryo2d sheet <file.skeleton.ron>`** renders a skeleton's animations as a grid and writes a PNG: one row an animation, one column a moment, evenly spaced over the animation's length (eight by default), each cell labelled with the animation's name and the time.
+- Options: which animations, how many moments, a skin (or skins), the bones overlay on or off, the cell size (otherwise fitted to the largest pose across the sheet), and where to write it.
+- It runs headlessly and draws each pose as the game would, with its constraints. A cell's moment is reached by stepping the animation from its start at the engine's fixed rate, so springs show as they would in play; a looping animation is first run once round, so its springs are warmed up. The moments are `k × length / n` for `k` from 0 to `n - 1`, so a loop does not repeat its first frame.
+- Every cell has one scale and the skeleton's origin at the same place, so root motion reads; cells are rendered one by one and composed, so a large sheet has no size limit. The bones overlay is drawn by the sheet itself, so it works in a build without developer tools.
+- The file's images are paths from the asset root of the project the file is in; a file outside a project's assets folder is refused, with a message. A machine with no GPU gets a message, not a crash.
+- The same sheet is a library function (`ryo2d::testing::skeleton_sheet`), for a skeleton built in code.
+- It exists so the author of an animation (a person, or Claude) can see it, judge it and fix it in one loop. The skill says to make one after writing or changing an animation.
+
+### A fixed side for a chain
+
+- **`bend`** replaces `bend_positive` on every IK constraint, in files, keys and overrides: `Positive`, `Negative`, or `Pose`.
+  - Two bones take `Positive` (the default) or `Negative`, as today.
+  - A chain takes `Pose` (the default: it closes the way its animated pose bends, as today), or a fixed side. With a fixed side the chain is solved from straight, not from its pose: an even arc on that side, curling as the target comes nearer, laid straight toward a target beyond its length. Its animated pose is then blended in only by `mix`. So a chain whose animation sways through straight, or as an S, no longer changes sides; its animated curve does not shape its reach.
+  - `Pose` on two bones, and any bend on one bone, fail to load. A key or setup that leaves `bend` out takes the default for the constraint's bone count.
+- A key or an override of `bend` is stepped, as the switch is today.
+
+### A limit on stretch
+
+- **`max_stretch`**, on an IK constraint with stretch: the most the stretched bone's scale is multiplied by (for example 1.5). Left out, stretch has no limit, as today. The factor becomes `min(distance / reach, max_stretch)`, then blends by mix as now (`1 + (factor - 1) × mix`); `uniform` uses the same capped factor. A target beyond it leaves the limb stretched by that much, straight, and pointing at the target, for one bone and two.
+- It can be overridden (not keyed). Validation: finite and at least 1.
+
+### The exact solve for an unevenly scaled first bone
+
+- Today two-bone IK takes both parts as rigid, which is exact unless the first bone's own scale is uneven or it is sheared; then the tip misses (up to about 7% of the reach at (1.2, 1)).
+- **The solve becomes exact** for such a bone. In the first bone's own space both parts are rigid, so the tip's distance from the first bone's origin depends on the second bone's bend alone (the angle between the two parts in that space; straight is that angle 0).
+  - On the bend's side, find the bend where the distance is greatest (the side's farthest reach; for an even bone this is straight). From there, walk toward folded, with a step bounded so no turn of the distance hides inside it (as the chain's walk is), to the first bend at which the distance is the target's; then turn the first bone so the tip is on the target.
+  - A target beyond the farthest reach leaves the limb at that farthest bend, pointing at the target. A target nearer than the walk reaches before the distance stops falling leaves it at that nearest bend, pointing at it.
+  - This is continuous as the target moves in and out: the walk always starts from the same place. Each side of a sheared bone has its own farthest and nearest.
+  - Softness measures its reach from that farthest bend.
+  - The even, unsheared case keeps the closed form, bit for bit, and the walk agrees with it at an even bone, so the switch shows no step.
+- It is deterministic and has a fixed most number of steps.
+
+### Skeleton-wide culling
+
+- A skeleton whose drawn parts cannot reach any camera's view is not walked or drawn at all in that frame (today every part is built and then culled).
+- Its box is kept in the skeleton's own space, worked out each time it is posed (a step, `appear`, placing again) from its bones: each bone's place, widened by how far any attachment of any skin on a slot of that bone (regions, meshes with each weighted influence under its own bone, points, boxes) can reach from it, and by the most any deform key moves those meshes, all under the bone's largest stretch (shear included). It is the union of this pose's box and the last's, so drawing between steps stays inside it.
+- At draw time its corners go through the same transform the parts do (the entity drawn between steps, its floor's lift, its y-sort depth scale, its flip), and it is widened by anything drawn outside the parts: effects that grow a quad (outline, glow, directional outline), the drop shadow's offset and scale, and the blob and contact shadows. A camera sees it if it is on one of the entity's render layers (texture cameras included) and its view meets the box.
+- The box is conservative: a skeleton is never culled when any part of it shows. Only the drawing walk is skipped: the skeleton is still stepped, its springs and events run. A socket's child is its own entity and is drawn or culled on its own.
+
+### Event sounds
+
+- **A component, `SkeletonSounds`,** on a skeleton's entity makes the engine play its events' sounds: each event that names an audio path plays that sound when it fires, at the event's volume and balance.
+- The sounds are loaded when the data lands (a `.sound.ron` or a clip, by path from the asset root), held by the engine in a store kept per skeleton data, freed when the data is, and loaded again when the data reloads with other paths. The path stays a string in the data, not a dependency of the asset, so a skeleton used without `SkeletonSounds` loads no audio. Loading is asynchronous, so the first steps after the data lands may be silent.
+- The sounds play from a system after the skeletons' step, in the skeleton's scene (so a long sound stops with the scene and a held scene plays nothing).
+- Where it plays: by default at the skeleton's place in the world (as a spatial one-shot, heard as the sound's own settings say), or non-spatially (`SkeletonSounds::flat()`), or at a named bone (`at_bone("sole")`).
+- Balance pans a non-spatial play, and a play at a place whose sound has no spatial settings (heard as at the listener); a spatial play takes its pan from its place, and balance is ignored.
+- Volume is the event's linear volume (as the file has it), floored at 0.001, converted to the audio system's decibels.
+- `SkeletonEvent` messages are still sent; a game can play sounds itself as before.
+- The audio system's `PlayOptions` gains a `pan` (-1 left to 1 right) for non-spatial plays.
+
+### File format
+
+Each item's keys are in the plan and are checked by the loader's tests. In outline: a `Spring(..)` entry in a skeleton's `constraints` list, and a `spring` list of keys in an animation's `constraints` block; `pivot` and `along` on `Region(..)`; `bend: Negative` (and so on) in place of `bend_positive`; `max_stretch` on `Ik(..)`.
+
+### Limits, recorded
+
+- A spring moves one bone; a strand of hair is a chain of bones each with its own spring, each lagging behind the one above. A spring does not collide with anything.
+- A spring's state is not saved or networked; it settles from rest after a load.
+- A spring is tuned at the engine's fixed rate (inertia acts once a step).
+- A skeleton riding another's socket is stepped before the socket moves it, so its springs see the carrier's motion a step late.
+- A chain with a fixed side ignores its animated curve while it reaches (blended back only by mix).
+- Event sounds play from the fixed step, so they can be up to a step late, as every skeleton event is.
+- The exact solve for an uneven first bone walks a fixed number of steps; a very uneven bone (the first bone scaled more than about three to one) may stop short of the first crossing, as the chain's walk can (pinned with its figure).
+
+### Demo and docs
+
+- The hero's cape swings by springs on its two cape bones in place of keys; the Meshes page gains a setting for the springs and a gust (a keyed or overridden wind). The Constraints page gains a tail: a chain with a fixed side, swaying, reaching for the pointer. Every hero plays its footsteps through `SkeletonSounds`.
+- The reacher and the walker are written with pivots (their parts placed by their joint pixels), and the README's turned-offset method is replaced by pivots.
+- The `ryo-skeleton` skill gains each item, with the contact sheet as a step in its authoring workflow; `ryo-cli` describes `ryo2d sheet`; `ryo-audio` describes `pan`.
+
+### Acceptance (authoring)
+
+- **Springs:** each step of the model above checked against hand-worked numbers (inertia, the limit, strength, damping, wind, gravity, the sub-steps, each amount, mix); a bone lags a moving parent and settles to rest; stable at a strength of 10⁶ at 60 Hz and 240 Hz; the same steps give the same result; a teleport, a reload, an appear, a disabled step and `reset_springs` set it to rest; a held scene keeps it; a flip mirrors it; pause holds it; placing again does not advance it; a strand's order; keys and overrides of mix, wind and gravity; validation; the overlay's line; no allocation per step.
+- **Pivots:** a region placed by `pivot` and `along` draws on the same corners (to 0.01) as the same region placed by numerically worked centre values, at its pixel size and drawn larger, under a mirroring scale; files without them load unchanged; validation.
+- **Contact sheet:** `ryo2d sheet` writes a grid of the expected size with every cell non-empty and labelled, from a demo rig; springs show; the bones overlay draws in a build without developer tools; a file outside a project and a machine without a GPU give messages; the library function from a skeleton built in code.
+- **Chain side:** a fixed-side chain whose pose sways through straight and as an S does not change sides, including a pose bent opposite the side with the target crossing the animated tip's distance; `Pose` behaves as today; the rename of `bend_positive` loads, keys and overrides; `Pose` on two bones and a bend on one fail to load.
+- **Max stretch:** one bone and two, with `uniform`, at a mix of 0.5: stretch stops at the limit and the limb points at the target beyond it; a value below 1 fails to load.
+- **Uneven first bone:** the tip lands within 0.01 of every reachable target at first-bone scales (1.2, 1), (1.5, 1), (2, 1), (1, 1.5) and shears 0.3 and 0.6 (both sides); even bones unchanged bit for bit; no jump as the target moves through the reach (walked as the chain's tests walk), including through the straight distance at (1, 2).
+- **Culling:** an off-screen crowd's drawing work falls to at most a tenth of an on-screen crowd's; a skeleton with any part in view is never culled (a box test against parts' boxes over walks and poses), including lifted, depth-scaled, outlined, blob-shadowed and drop-shadowed skeletons at the view's edge; a culled skeleton is still stepped.
+- **Event sounds:** a footstep event plays its sound once, at the volume and pan expected, through the audio log; balance on a flat play; spatial, flat and at a bone; the voice is the skeleton's scene's; the sounds are loaded once and again when a reload changes a path.
+- **Docs:** each item in the skill and notes, and the earlier sentences that said otherwise (no physics constraints; the engine plays no event sound) corrected.
+- **Speed and allocation:** no per-step allocation with springs; 200 skeletons with two springs each update within the 1,000 µs guard; the figures of skeletons without these features do not rise by more than 5% in one sitting against the build before.
+- **Demo:** the cape by springs, the gust, the tail with a fixed side, footsteps through `SkeletonSounds`; the page tests cover them.
