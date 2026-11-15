@@ -33,6 +33,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::backtrace::Backtrace;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
+use std::f32::consts::{PI, TAU};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -1812,9 +1813,10 @@ fn fifty_skeletons_with_a_deforming_mesh_allocate_nothing_per_frame() {
 /// The same crowd with constraints of every kind applied in every step
 /// ([`CONSTRAINED`]): two two-bone IK constraints, a chain of four bones and
 /// a transform constraint in each of the four modes, the first limb's mix
-/// keyed and blended through the crossfades, an override on two of the
-/// constraints changed every 30 frames, and the three targets moved by
-/// world-space bone overrides every frame
+/// keyed and blended through the crossfades (and overridden in every other
+/// skeleton), an override on two of the constraints changed every 30
+/// frames, and the three targets moved by world-space bone overrides every
+/// frame
 #[test]
 fn fifty_skeletons_with_constraints_allocate_nothing_per_frame() {
   skeletons_allocate_nothing(Extra::Constraints);
@@ -1822,8 +1824,9 @@ fn fifty_skeletons_with_constraints_allocate_nothing_per_frame() {
 
 /// What the game does to the constrained crowd's skeleton `index` before
 /// `frame`: puts its three targets where [`goals`] says, in the world, and
-/// every 30 frames changes its overrides of the first limb (its mix and its
-/// bend) and of the world-mode transform constraint (its rotate mix)
+/// every 30 frames changes its overrides of the first limb (its bend, and
+/// in an odd skeleton its mix, which an even one's keys set) and of the
+/// world-mode transform constraint (its rotate mix)
 fn steer(skeleton: &mut Skeleton, at: Vec2, index: usize, frame: usize) {
   for (bone, goal) in ["goal_a", "goal_b", "goal_tail"]
     .into_iter()
@@ -1838,8 +1841,11 @@ fn steer(skeleton: &mut Skeleton, at: Vec2, index: usize, frame: usize) {
   }
   if (frame + index).is_multiple_of(30) {
     let odd = (frame + index) / 30 % 2 == 1;
+    // An odd skeleton's override sets the first limb's mix; an even one's
+    // leaves it to the keys
+    let mix = if odd { 0.5 } else { 0.9 };
     let limb = IkOverride {
-      mix: Some(if odd { 0.5 } else { 0.9 }),
+      mix: (index % 2 == 1).then_some(mix),
       bend_positive: Some(odd),
       ..IkOverride::default()
     };
@@ -1854,13 +1860,76 @@ fn steer(skeleton: &mut Skeleton, at: Vec2, index: usize, frame: usize) {
 
 /// Asserts that the constraints act in every constrained skeleton as the
 /// crowd's last step left it: the second limb's hand and the chain's tip
-/// are on their targets, where the game's overrides put them in that step
+/// are on their targets, where the game's overrides put them in that step;
+/// each mode of transform constraint has put its bone where its rule says;
+/// and the first limb's keyed mix, which only odd skeletons override,
+/// holds the even ones' hands short of their targets
 fn constraints_act(crowd: &mut HeadlessEngine, frame: usize, when: &str) {
   let world = crowd.world_mut();
   let mut skeletons = world.query::<(&Skeleton, &Transform)>();
-  let mut acted = 0;
+  let (mut acted, mut keyed, mut short) = (0, 0, 0);
   for (index, (skeleton, transform)) in skeletons.iter(world).enumerate() {
     let at = transform.translation;
+    let bone = |name: &str| {
+      skeleton
+        .bone_world(name)
+        .unwrap_or_else(|| panic!("{when}: skeleton {index} has no {name}"))
+    };
+    let close = |what: &str, actual: Vec2, expected: Vec2| {
+      assert!(
+        actual.distance(expected) < 0.01,
+        "{when}: skeleton {index}'s {what} is at {actual}, not {expected}"
+      );
+    };
+    // World: the place copied fully (its rotate mix is overridden)
+    close(
+      "copy_world",
+      bone("copy_world").translation,
+      bone("hand_b").translation,
+    );
+    // World, relative: half the target's place in the skeleton's space
+    // added to its own, and half the target's turn to its own
+    let (b0, tail_2) = (bone("b0"), bone("tail_2"));
+    let relative = bone("copy_world_relative");
+    let own = b0.transform_point2(Vec2::new(3.0, 0.0));
+    close(
+      "copy_world_relative",
+      relative.translation,
+      own + (tail_2.translation - at) * 0.5,
+    );
+    let turned = relative.matrix2.x_axis.to_angle()
+      - b0.matrix2.x_axis.to_angle()
+      - tail_2.matrix2.x_axis.to_angle() * 0.5;
+    let turned = (turned + PI).rem_euclid(TAU) - PI;
+    assert!(
+      turned.abs() < 0.001,
+      "{when}: skeleton {index}'s copy_world_relative is turned {turned} from its rule"
+    );
+    // Local: the target's own values, under its own parent
+    let hand_a_own = bone("arm_a").inverse() * bone("hand_a");
+    let local = b0 * hand_a_own;
+    let copied = bone("copy_local");
+    close("copy_local", copied.translation, local.translation);
+    close(
+      "copy_local's x axis",
+      copied.matrix2.x_axis,
+      local.matrix2.x_axis,
+    );
+    // Local, relative: half the target's own place (5 along its parent)
+    // added to its own (3 along the root)
+    let tail_3_own = (tail_2.inverse() * bone("tail_3")).translation;
+    close(
+      "copy_local_relative",
+      bone("copy_local_relative").translation,
+      b0.transform_point2(Vec2::new(3.0, 0.0) + tail_3_own * 0.5),
+    );
+    if index % 2 == 0 {
+      keyed += 1;
+      let reached = bone("hand_a").transform_point2(Vec2::new(5.0, 0.0));
+      if reached.distance(bone("goal_a").translation) > 0.01 {
+        short += 1;
+      }
+    }
     let [_, limb, tail] = goals(index, frame);
     for (tip, length, goal, target) in [
       ("hand_b", 5.0, limb, "goal_b"),
@@ -1886,6 +1955,12 @@ fn constraints_act(crowd: &mut HeadlessEngine, frame: usize, when: &str) {
     acted += 1;
   }
   assert_eq!(acted, CROWD, "{when}: {acted} constrained skeletons");
+  // The keys move the mix between 0.4 and 1: at the setup's 1 every hand
+  // would be on its target
+  assert!(
+    short * 2 > keyed,
+    "{when}: {short} of {keyed} hands held short by their keyed mix"
+  );
 }
 
 /// How far the vertices of the skeleton's [`ribbon`] are from where its

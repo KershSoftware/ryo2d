@@ -346,10 +346,10 @@ pub(crate) fn two_bones(
 /// that the tip's distance cannot turn back inside one: it stops at the
 /// first turn (or short of it, for a pose whose steps stay small past
 /// `CHAIN_WALK` of them), and the shape follows a target coming in without
-/// a jump out to there. The walk goes the way the tip's distance changes at the pose:
-/// a pose wound past half a turn, so far that bending it further takes its
-/// tip out, is bent further for a farther target, as far as that helps,
-/// and only then opened, which can make it jump.
+/// a jump out to there. The walk goes the way the tip's distance changes
+/// at the pose: a pose wound past half a turn, so far that bending it
+/// further takes its tip out, is bent further for a farther target, as far
+/// as that helps, and only then opened, which can make it jump.
 ///
 /// Each part has then turned from where it stood, and turning a bone turns
 /// its part and every part after it. So a bone is turned by what its part
@@ -2899,6 +2899,88 @@ mod tests {
       "a joint moves at most {} of the length in steps of 0.001, {} in steps of 0.0001",
       most[0],
       most[1]
+    );
+  }
+
+  #[test]
+  fn a_chain_whose_closing_walk_runs_out_of_steps_stops_short_of_its_first_turn() {
+    // Of 150,000 poses of sixteen bones drawn at random (parts 5 to 30
+    // long, turns up to 1 rad a joint), the one that lost the most reach:
+    // its closing walk's steps stay small for all `CHAIN_WALK` of them, so
+    // it stops before the tip's distance first turns. Along the closing
+    // family (every joint curled by the same added turn) the tip comes
+    // nearest the first joint 0.0058 of the length away; the chain's
+    // nearest shape is 0.0323 away, so 0.026 of the length of its reach
+    // inward is lost
+    let (bones, length) = links_each(
+      &[
+        11.849832, 24.498531, 9.307253, 24.300673, 14.914842, 13.321269, 25.84975, 22.07027,
+        29.127676, 21.63734, 8.36898, 20.327698, 12.015852, 17.040762, 10.327988, 17.161476,
+      ],
+      2.1118746,
+      &[
+        -0.7299214,
+        -0.15719052,
+        -0.54538554,
+        0.6643152,
+        0.42509753,
+        0.4988583,
+        -0.6412369,
+        -0.08497129,
+        0.08515261,
+        -0.8755955,
+        -0.19222638,
+        -0.676992,
+        0.21935646,
+        -0.56450045,
+        -0.68637544,
+      ],
+    );
+    // Each part's length and angle, in f64, and the tip's distance from
+    // the first joint with every joint curled `curl` more
+    let parts: Vec<(f64, f64)> = chain_joints(&bones, length)
+      .windows(2)
+      .map(|pair| {
+        let part = pair[1] - pair[0];
+        let (x, y) = (f64::from(part.x), f64::from(part.y));
+        (x.hypot(y), y.atan2(x))
+      })
+      .collect();
+    let total: f64 = parts.iter().map(|&(part, _)| part).sum();
+    let reach = |curl: f64| {
+      let (mut x, mut y) = (0.0, 0.0);
+      for (joints_before, &(part, angle)) in parts.iter().enumerate() {
+        let angle = angle + curl * joints_before as f64;
+        x += part * angle.cos();
+        y += part * angle.sin();
+      }
+      f64::hypot(x, y)
+    };
+    // The family closes the way the distance falls; walked in steps of
+    // 1e-4 rad to the first turn of the distance
+    let way = if reach(1e-6) < reach(-1e-6) {
+      1.0
+    } else {
+      -1.0
+    };
+    let (mut curl, mut nearest) = (0.0, reach(0.0));
+    while curl < std::f64::consts::PI {
+      let next = reach((curl + 1e-4) * way);
+      if next > nearest {
+        break;
+      }
+      (curl, nearest) = (curl + 1e-4, next);
+    }
+    let first_turn = nearest / total;
+    let stopped = f64::from(chain_nearest(&bones, length)) / total;
+    assert!(
+      (first_turn - 0.0058).abs() < 0.0005,
+      "the first turn is {first_turn} of the length away"
+    );
+    let lost = stopped - first_turn;
+    assert!(
+      (lost - 0.026).abs() < 0.002,
+      "the nearest shape is {stopped} of the length away: {lost} lost"
     );
   }
 
