@@ -108,7 +108,7 @@ impl Constrained {
     let (chain, joints) = match chains.max() {
       Some(longest) => (
         Vec::with_capacity(longest),
-        Vec::with_capacity(3 * longest + 1),
+        Vec::with_capacity(super::ik::chain_room(longest)),
       ),
       None => (Vec::new(), Vec::new()),
     };
