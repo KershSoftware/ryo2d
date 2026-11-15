@@ -151,8 +151,8 @@ pub struct TransformMixOverride {
 
 impl ConstraintOverride {
   /// The override without its values that are not finite, an IK mix within
-  /// 0 to 1, an IK softness not below 0 and an IK `max_stretch` not below 1, and whether any value was taken
-  /// out
+  /// 0 to 1, an IK softness not below 0 and an IK `max_stretch` not below 1,
+  /// and whether any value was taken out
   fn checked(self) -> (Self, bool) {
     fn keep(value: &mut Option<f32>, bad: &mut bool) {
       if value.is_some_and(|value| !value.is_finite()) {
@@ -704,7 +704,7 @@ impl Skeleton {
     if bad && !self.warned_constraint_value {
       self.warned_constraint_value = true;
       log::warn!(
-        "skeleton constraint override for {name:?} has a value that is not finite (or a max_stretch below 1); the value is ignored"
+        "skeleton constraint override for {name:?} has a value that is not finite or out of range; the value is ignored"
       );
     }
     let at = self
@@ -2599,6 +2599,27 @@ mod tests {
     played.skeleton.clear_constraint_override("leg");
     played.step(0.1);
     assert_eq!(leg_values(&played.skeleton).max_stretch, None);
+    // A chain has no stretch to limit: the same override leaves a chain's
+    // values untouched, and a bone count of 2 or less takes it
+    let o = ConstraintOverride::Ik(IkOverride {
+      max_stretch: Some(1.5),
+      ..IkOverride::default()
+    });
+    for (bones, taken) in [(1, Some(1.5)), (2, Some(1.5)), (3, None), (16, None)] {
+      let mut values = ConstraintValues::Ik(crate::core::skeleton::IkValues::of(
+        &crate::core::skeleton::IkSetup::default(),
+        bones,
+      ));
+      let before = values;
+      o.apply(&mut values, bones);
+      match values {
+        ConstraintValues::Ik(after) => assert_eq!(after.max_stretch, taken, "{bones} bones"),
+        other => panic!("{other:?}"),
+      }
+      if taken.is_none() {
+        assert_eq!(values, before, "{bones} bones");
+      }
+    }
   }
 
   #[test]

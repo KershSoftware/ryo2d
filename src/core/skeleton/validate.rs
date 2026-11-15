@@ -1027,6 +1027,15 @@ fn timeline_ok<'a>(
       for (frame, (_, values, key_curve)) in frames.iter().enumerate() {
         let whose = format!("key {frame}'s ");
         ik_values_ok(&item, &whose, &ik.bones, counts.bones, values, false)?;
+        if values.max_stretch != ik.setup.max_stretch {
+          return Err(error(
+            item(),
+            format!(
+              "{whose}max_stretch is {:?}, but its constraint's is {:?}; max_stretch is not keyed, so a key holds the setup's",
+              values.max_stretch, ik.setup.max_stretch
+            ),
+          ));
+        }
         curve(&item, frame, key_curve)?;
       }
     }
@@ -2016,6 +2025,13 @@ mod tests {
       r#"constraint "tail""#,
       "max_stretch applies only to one or two bones",
     );
+    // It is allowed without `stretch`: an override can turn stretch on later
+    leg(IkSetup {
+      max_stretch: Some(1.5),
+      ..IkSetup::default()
+    })
+    .build()
+    .expect("valid skeleton");
     // At least 1 is allowed, on two bones and on one
     for max in [1.0, 1.5] {
       leg(IkSetup {
@@ -2626,6 +2642,51 @@ mod tests {
       keyed(vec![bent]),
       WALK_0_IK,
       "key 0's curve has x controls 1.5 and 0.5",
+    );
+  }
+
+  #[test]
+  fn a_key_cannot_carry_its_own_stretch_limit() {
+    // The setup's own limit is what a key holds
+    let limited = |key: IkValues| {
+      limb()
+        .ik(
+          "leg",
+          &["thigh", "shin"],
+          "foot_target",
+          IkSetup {
+            max_stretch: Some(1.5),
+            ..IkSetup::default()
+          },
+        )
+        .animation(animation("walk", 1.0, vec![ik_keys(LEG, vec![key])]))
+    };
+    let mut same = IkValues::of(&IkSetup::default(), 2);
+    same.max_stretch = Some(1.5);
+    limited(same)
+      .build()
+      .expect("a key holding the setup's limit");
+    let mut other = same;
+    other.max_stretch = Some(2.0);
+    fails(
+      limited(other),
+      WALK_0_IK,
+      "key 0's max_stretch is Some(2.0), but its constraint's is Some(1.5)",
+    );
+    other.max_stretch = None;
+    fails(
+      limited(other),
+      WALK_0_IK,
+      "key 0's max_stretch is None, but its constraint's is Some(1.5)",
+    );
+    // A setup with none: a key with one fails
+    fails(
+      keyed(vec![ik_keys(
+        LEG,
+        vec![ik_value(|key| key.max_stretch = Some(1.5))],
+      )]),
+      WALK_0_IK,
+      "key 0's max_stretch is Some(1.5), but its constraint's is None",
     );
   }
 
