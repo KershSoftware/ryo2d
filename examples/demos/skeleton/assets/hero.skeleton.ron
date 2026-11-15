@@ -68,14 +68,21 @@
     "cape": (image: "cape", rect: (0, 0, 280, 292)),
   },
 
-  // Sixteen bones. Each limb's bone lies along the limb, so turning it
+  // Seventeen bones. Each limb's bone lies along the limb, so turning it
   // swings the limb and a world rotation points it. The head's bone points
   // the way the hero looks, the weapon's along a blade held in the fist.
   // The cape's two hang down the back from the collar, one after the
-  // other: they carry no image, only the cape's vertices
+  // other: they carry no image, only the cape's vertices.
+  //
+  // The pelvis carries the band of the hips, and nothing else. The legs
+  // hang from the hip and the trunk turns on it, so a trunk that leans far
+  // (a run, a crouch, a cut) would lift the back of the shirt off a band
+  // that stayed level. Those animations turn the pelvis six tenths of the
+  // way with the trunk, which keeps the band over the shirt's hem
   bones: [
     (name: "root"),
     (name: "hip", parent: "root", y: -180),
+    (name: "pelvis", parent: "hip"),
     (name: "torso", parent: "hip", y: -10, rotation: -90, length: 150),
     (name: "head", parent: "torso", x: 170, y: 2, rotation: 90, length: 70),
     (name: "face", parent: "head", x: 12, y: -60),
@@ -108,7 +115,7 @@
     (name: "pants_near", bone: "leg_near", attachment: "pants"),
     (name: "neck", bone: "torso", attachment: "neck"),
     (name: "shirt", bone: "torso", attachment: "shirt", color: "#e8e8f0"),
-    (name: "hips", bone: "hip", attachment: "hips", color: "#e8e8f0"),
+    (name: "hips", bone: "pelvis", attachment: "hips", color: "#e8e8f0"),
     (name: "head", bone: "head", attachment: "head"),
     (name: "mouth", bone: "face", attachment: "glad"),
     (name: "nose", bone: "face", attachment: "nose"),
@@ -419,6 +426,7 @@
         "shoe_near": (rotate: [(0.0, 16), (0.08, 0), (0.16, -14), (0.26, 14), (0.42, 28), (0.5, 16)]),
         "shoe_far": (rotate: [(0.0, 14), (0.17, 28), (0.25, 16), (0.33, 0), (0.41, -14), (0.5, 14)]),
         "torso": (rotate: [(0.0, 12), (0.125, 15), (0.25, 12), (0.375, 15), (0.5, 12)]),
+        "pelvis": (rotate: [(0.0, 7.2), (0.125, 9), (0.25, 7.2), (0.375, 9), (0.5, 7.2)]),
         "head": (rotate: [(0.0, -9), (0.125, -11), (0.25, -9), (0.375, -11), (0.5, -9)]),
         "arm_near": (rotate: [(0.0, 52, Bezier(0.4, 0, 0.6, 1)), (0.25, -64, Bezier(0.4, 0, 0.6, 1)), (0.5, 52)]),
         "arm_far": (rotate: [(0.0, -64, Bezier(0.4, 0, 0.6, 1)), (0.25, 52, Bezier(0.4, 0, 0.6, 1)), (0.5, -64)]),
@@ -453,6 +461,7 @@
           rotate: [(0.0, 0), (0.11, 12), (0.2, -4), (0.47, 2), (0.8, 6), (0.87, 12), (1.0, 0)],
           scale: [(0.0, (1, 1)), (0.11, (0.93, 1.05)), (0.2, (1.06, 0.97)), (0.47, (1, 1)), (0.8, (1.03, 0.98)), (0.87, (0.92, 1.06)), (1.0, (1, 1))],
         ),
+        "pelvis": (rotate: [(0.0, 0), (0.11, 7.2), (0.2, -2.4), (0.47, 1.2), (0.8, 3.6), (0.87, 7.2), (1.0, 0)]),
         "head": (rotate: [(0.0, 0), (0.11, -6), (0.2, 6), (0.47, -2), (0.8, 4), (0.87, -8), (1.0, 0)]),
         // On the ground the legs slide up as the hips sink; in the air they
         // tuck, the near knee forward
@@ -527,6 +536,7 @@
           translate: [(0.0, (0, 0)), (0.14, (0, -4)), (0.3, (0, -10)), (0.4, (0, -6)), (0.6, (0, 0))],
         ),
         "torso": (rotate: [(0.0, 0, Bezier(0.4, 0, 0.6, 1)), (0.14, -8), (0.3, 14), (0.4, 10, Bezier(0.4, 0, 0.6, 1)), (0.6, 0)]),
+        "pelvis": (rotate: [(0.0, 0, Bezier(0.4, 0, 0.6, 1)), (0.14, -4.8), (0.3, 8.4), (0.4, 6, Bezier(0.4, 0, 0.6, 1)), (0.6, 0)]),
         "head": (rotate: [(0.0, 0), (0.14, 4), (0.3, -8), (0.4, -6), (0.6, 0)]),
         "arm_near": (rotate: [
           (0.0, 0, Bezier(0.3, 0, 0.5, 1)), (0.14, -200, Bezier(0.4, 0.1, 0.7, 0.8)), (0.3, -70, Bezier(0.3, 0.6, 0.6, 1)),

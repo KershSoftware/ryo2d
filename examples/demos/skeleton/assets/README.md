@@ -2,7 +2,7 @@
 
 | File | What |
 |---|---|
-| `hero.skeleton.ron` | The hero: 16 bones, 28 slots, seven skins, seven animations and a footstep event. Written by hand; its comments say how it is put together |
+| `hero.skeleton.ron` | The hero: 17 bones, 28 slots, seven skins, seven animations and a footstep event. Written by hand; its comments say how it is put together |
 | `hero.png` | The hero's parts in one 1024 x 744 atlas: three bodies, three outfits, the faces' parts and a cap. The skeleton file names each part's rectangle |
 | `cape.png` | The cape the Meshes page puts on the hero, 280 x 292: the image of the mesh in the hero's `cape` skin |
 | `banner.skeleton.ron` | The Meshes page's banner: three bones, a pole and a flag. The flag is a mesh of 27 vertices, and the `ripple` animation's deform keys move them. Written by hand, but for the ripple's keys (below) |
