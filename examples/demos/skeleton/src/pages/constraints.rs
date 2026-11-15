@@ -334,7 +334,7 @@ impl ConstraintsPage {
     );
     skeleton.override_constraint(
       "arm",
-      SkeletonConstraintOverride::Ik(IkOverride {
+      SkeletonConstraintOverride::Ik(IkConstraintOverride {
         mix: Some(self.mix),
         softness: Some(self.softness),
         bend_positive: Some(self.bend == 1),
@@ -344,7 +344,7 @@ impl ConstraintsPage {
     );
     skeleton.override_constraint(
       "level",
-      SkeletonConstraintOverride::Transform(TransformMixOverride {
+      SkeletonConstraintOverride::Transform(TransformConstraintOverride {
         rotate: Some(self.level),
         ..Default::default()
       }),

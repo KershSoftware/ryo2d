@@ -256,12 +256,12 @@ fn a_part_held_level_stays_level_while_its_arm_turns() {
     },
     part("part", GREEN, (12, 4)).under("arm", 20.0, 0.0),
   ];
-  let hold = TransformSetup {
-    mix: TransformMix {
+  let hold = TransformConstraintSetup {
+    mix: TransformConstraintMix {
       rotate: 1.0,
-      ..TransformMix::default()
+      ..TransformConstraintMix::default()
     },
-    ..TransformSetup::default()
+    ..TransformConstraintSetup::default()
   };
   let data = rig_with(world, &parts, Images::Each, |builder| {
     builder

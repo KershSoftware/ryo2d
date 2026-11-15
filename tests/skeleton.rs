@@ -1351,9 +1351,9 @@ fn a_reload_that_removes_or_reorders_constraints_keeps_playing() {
   let walk = play(&mut engine, body, 0, "walk", true);
   // The game turns the arm's constraint off: the arm lies as animated,
   // along x, and does not point at its goal straight above it
-  let off = SkeletonConstraintOverride::Ik(IkOverride {
+  let off = SkeletonConstraintOverride::Ik(IkConstraintOverride {
     mix: Some(0.0),
-    ..IkOverride::default()
+    ..IkConstraintOverride::default()
   });
   skeleton_mut(&mut engine, body).override_constraint("aim", off);
   engine.step_frames(4).expect("frames");
@@ -1448,9 +1448,9 @@ fn turning_foot_ik_off_with_an_override_frees_the_leg_in_the_same_step() {
   // In one step the game turns the constraint off (the foot leaves the
   // ground) and swings the leg itself: the step that follows has the leg
   // as the game set it, its tip where its own values put it
-  let off = SkeletonConstraintOverride::Ik(IkOverride {
+  let off = SkeletonConstraintOverride::Ik(IkConstraintOverride {
     mix: Some(0.0),
-    ..IkOverride::default()
+    ..IkConstraintOverride::default()
   });
   let swing = BoneOverride {
     rotation: Some(0.5),

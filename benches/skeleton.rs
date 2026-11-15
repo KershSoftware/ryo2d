@@ -399,12 +399,12 @@ fn rig(images: &[Handle<Image>], mesh: bool, constraints: bool) -> SkeletonData 
       };
       builder = builder.ik(name, bones, target, IkSetup::default());
     }
-    let turn = TransformSetup {
-      mix: TransformMix {
+    let turn = TransformConstraintSetup {
+      mix: TransformConstraintMix {
         rotate: 1.0,
-        ..TransformMix::default()
+        ..TransformConstraintMix::default()
       },
-      ..TransformSetup::default()
+      ..TransformConstraintSetup::default()
     };
     builder = builder.transform_constraint("copy", &["b26"], "b28", turn);
   }

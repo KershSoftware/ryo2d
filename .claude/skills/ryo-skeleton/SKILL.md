@@ -672,7 +672,7 @@ fn hero(parts: Handle<Image>) -> Option<SkeletonData> {
 let handle: Handle<SkeletonData> = ctx.assets().add(data);
 ```
 
-Other builder calls: `skin(name)` declares a skin, `mix(from, to, seconds)` sets a pair's mix, and `ik(name, bones, target, IkSetup)` and `transform_constraint(name, bones, target, TransformSetup)` add constraints in the order they apply (Constraints, below). The timelines are `Rotate`, `Translate`, `Scale`, `Shear` (`Vec2` keys), `TranslateX`, `TranslateY`, `ScaleX`, `ScaleY`, `ShearX`, `ShearY` (`f32` keys), `Attachment { slot, frames: Vec<(f32, Option<Arc<str>>)> }`, `Color { slot, frames }`, `Deform { slot, attachment: Arc<str>, frames: Vec<(f32, Vec<f32>, SkeletonCurve)> }` (Meshes, above), `DrawOrder { frames: Vec<(f32, Option<Vec<SlotId>>)> }`, `Event`, and a constraint's `Ik { constraint, frames }` and `TransformMix { constraint, frames }` (Constraints, Keys). Meshes are `SkeletonAttachment::Mesh` (Meshes, above). Built data is immutable: `bones()`, `slots()`, `regions()`, `skins()`, `skin(name)`, `animations()`, `animation(name)`, `events()`, `bone(name)`, `slot(name)`, `constraints()`, `constraint(name)`, `mix(from, to)` and `default_mix()` read it.
+Other builder calls: `skin(name)` declares a skin, `mix(from, to, seconds)` sets a pair's mix, and `ik(name, bones, target, IkSetup)` and `transform_constraint(name, bones, target, TransformConstraintSetup)` add constraints in the order they apply (Constraints, below). The timelines are `Rotate`, `Translate`, `Scale`, `Shear` (`Vec2` keys), `TranslateX`, `TranslateY`, `ScaleX`, `ScaleY`, `ShearX`, `ShearY` (`f32` keys), `Attachment { slot, frames: Vec<(f32, Option<Arc<str>>)> }`, `Color { slot, frames }`, `Deform { slot, attachment: Arc<str>, frames: Vec<(f32, Vec<f32>, SkeletonCurve)> }` (Meshes, above), `DrawOrder { frames: Vec<(f32, Option<Vec<SlotId>>)> }`, `Event`, and a constraint's `Ik { constraint, frames }` and `TransformMix { constraint, frames }` (Constraints, Keys). Meshes are `SkeletonAttachment::Mesh` (Meshes, above). Built data is immutable: `bones()`, `slots()`, `regions()`, `skins()`, `skin(name)`, `animations()`, `animation(name)`, `events()`, `bone(name)`, `slot(name)`, `constraints()`, `constraint(name)`, `mix(from, to)` and `default_mix()` read it.
 
 ## Playing animations
 
@@ -1141,7 +1141,7 @@ if let Some(mut skeleton) = ctx.world.get_mut::<Skeleton>(hero) {
   let mix = if airborne { 0.0 } else { 1.0 };
   skeleton.override_constraint(
     "leg",
-    SkeletonConstraintOverride::Ik(IkOverride { mix: Some(mix), ..Default::default() }),
+    SkeletonConstraintOverride::Ik(IkConstraintOverride { mix: Some(mix), ..Default::default() }),
   );
 }
 ```
@@ -1273,9 +1273,9 @@ In code, `TransformSetup { mix: TransformMix, offset: TransformOffset, local: bo
 
 ```rust
 fn pelvis_follows_torso(builder: SkeletonDataBuilder) -> SkeletonDataBuilder {
-  let follow = TransformSetup {
-    mix: TransformMix { rotate: 0.6, ..Default::default() },
-    offset: TransformOffset { rotation: 90.0_f32.to_radians(), ..Default::default() },
+  let follow = TransformConstraintSetup {
+    mix: TransformConstraintMix { rotate: 0.6, ..Default::default() },
+    offset: TransformConstraintOffset { rotation: 90.0_f32.to_radians(), ..Default::default() },
     local: true,
     ..Default::default()
   };
@@ -1308,7 +1308,7 @@ if let Some(mut skeleton) = ctx.world.get_mut::<Skeleton>(hero) {
   );
   skeleton.override_constraint(
     "arm",
-    SkeletonConstraintOverride::Ik(IkOverride {
+    SkeletonConstraintOverride::Ik(IkConstraintOverride {
       bend_positive: Some(false),
       softness: Some(20.0),
       ..Default::default()
@@ -1317,7 +1317,7 @@ if let Some(mut skeleton) = ctx.world.get_mut::<Skeleton>(hero) {
   // The tray half way to level; the other five mixes stay as animated
   skeleton.override_constraint(
     "level",
-    SkeletonConstraintOverride::Transform(TransformMixOverride {
+    SkeletonConstraintOverride::Transform(TransformConstraintOverride {
       rotate: Some(0.5),
       ..Default::default()
     }),
@@ -1327,7 +1327,7 @@ if let Some(mut skeleton) = ctx.world.get_mut::<Skeleton>(hero) {
 
 `override_constraint(name, SkeletonConstraintOverride)` sets the constraint every step until `clear_constraint_override(name)` gives it back to the animation, from the next step:
 
-- `SkeletonConstraintOverride::Ik(IkOverride { mix, softness, bend_positive, compress, stretch })` and `SkeletonConstraintOverride::Transform(TransformMixOverride { rotate, x, y, scale_x, scale_y, shear_y })`, every field an `Option` (`Default`: nothing set). Each value given replaces what the animations key, or the setup's where none does, a switch included; each left `None` is the animated one. Its kind must be the constraint's.
+- `SkeletonConstraintOverride::Ik(IkConstraintOverride { mix, softness, bend_positive, compress, stretch })` and `SkeletonConstraintOverride::Transform(TransformConstraintOverride { rotate, x, y, scale_x, scale_y, shear_y })`, every field an `Option` (`Default`: nothing set). Each value given replaces what the animations key, or the setup's where none does, a switch included; each left `None` is the animated one. Its kind must be the constraint's.
 - It shows from the skeleton's next step, as a bone override does. Setting a constraint again replaces its override.
 - An IK `mix` is taken within 0 to 1 and a `softness` below 0 as 0; a transform mix outside 0 to 1 is kept. A value that is not finite is ignored, with one warning per skeleton.
 - A name the data lacks warns once per skeleton per name (`skeleton constraint "leg" is not in the skeleton's data; its override is ignored`), and so does a constraint of the other kind (`skeleton constraint "leg" is not of its override's kind (IK or transform); the override is ignored`); either does nothing. Before the data has loaded the override is kept by name, and it is kept by name through a reload.
@@ -1358,7 +1358,7 @@ An animation can key a constraint's values, and they blend through layers and cr
 - **An IK mix is held within 0 to 1 and its softness at 0 or more once every track has applied**, not after each, so an additive layer or a bezier's overshoot cannot carry them out of range. A transform constraint's mixes are not clamped.
 - The game's `override_constraint` is written over whatever the keys leave.
 
-In code, `SkeletonTimeline::Ik { constraint: SkeletonConstraintId, frames: Vec<(f32, IkValues, SkeletonCurve)> }` and `SkeletonTimeline::TransformMix { constraint, frames: Vec<(f32, TransformMix, SkeletonCurve)> }`. A key gives every value: `IkValues { mix, softness, bend_positive, compress, stretch }`, and `IkValues::of(&setup)` is a setup's. A constraint's id is its place in the order added, from 0:
+In code, `SkeletonTimeline::Ik { constraint: SkeletonConstraintId, frames: Vec<(f32, IkValues, SkeletonCurve)> }` and `SkeletonTimeline::TransformMix { constraint, frames: Vec<(f32, TransformConstraintMix, SkeletonCurve)> }`. A key gives every value: `IkValues { mix, softness, bend_positive, compress, stretch }`, and `IkValues::of(&setup)` is a setup's. A constraint's id is its place in the order added, from 0:
 
 <!-- given: setup: IkSetup -->
 ```rust

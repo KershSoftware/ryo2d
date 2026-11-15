@@ -1652,17 +1652,17 @@ fn crowd_rig(image: Handle<Image>, extra: Extra) -> SkeletonData {
       };
       builder = builder.bone(name, Some(parent), setup);
     }
-    let copy = |local, relative, mix| TransformSetup {
+    let copy = |local, relative, mix| TransformConstraintSetup {
       mix,
       local,
       relative,
-      ..TransformSetup::default()
+      ..TransformConstraintSetup::default()
     };
-    let half = TransformMix {
+    let half = TransformConstraintMix {
       rotate: 0.5,
       x: 0.5,
       y: 0.5,
-      ..TransformMix::default()
+      ..TransformConstraintMix::default()
     };
     builder = builder
       .ik("limb_a", &["arm_a", "hand_a"], "goal_a", IkSetup::default())
@@ -1685,7 +1685,7 @@ fn crowd_rig(image: Handle<Image>, extra: Extra) -> SkeletonData {
         "world",
         &["copy_world"],
         "hand_b",
-        copy(false, false, TransformMix::ALL),
+        copy(false, false, TransformConstraintMix::ALL),
       )
       .transform_constraint(
         "world_relative",
@@ -1697,7 +1697,7 @@ fn crowd_rig(image: Handle<Image>, extra: Extra) -> SkeletonData {
         "local",
         &["copy_local"],
         "hand_a",
-        copy(true, false, TransformMix::ALL),
+        copy(true, false, TransformConstraintMix::ALL),
       )
       .transform_constraint(
         "local_relative",
@@ -1844,15 +1844,15 @@ fn steer(skeleton: &mut Skeleton, at: Vec2, index: usize, frame: usize) {
     // An odd skeleton's override sets the first limb's mix; an even one's
     // leaves it to the keys
     let mix = if odd { 0.5 } else { 0.9 };
-    let limb = IkOverride {
+    let limb = IkConstraintOverride {
       mix: (index % 2 == 1).then_some(mix),
       bend_positive: Some(odd),
-      ..IkOverride::default()
+      ..IkConstraintOverride::default()
     };
     skeleton.override_constraint("limb_a", SkeletonConstraintOverride::Ik(limb));
-    let copy = TransformMixOverride {
+    let copy = TransformConstraintOverride {
       rotate: Some(if odd { 0.25 } else { 0.75 }),
-      ..TransformMixOverride::default()
+      ..TransformConstraintOverride::default()
     };
     skeleton.override_constraint("world", SkeletonConstraintOverride::Transform(copy));
   }
