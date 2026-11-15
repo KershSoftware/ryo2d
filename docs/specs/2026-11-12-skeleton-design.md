@@ -378,7 +378,11 @@ The rules come from Spine's public user guide and format reference (its pages on
   - **Softness:** with full reach `m` and softness `s` (taken as `m` at most), a target distance `d` beyond `m - s` is replaced by `(m - s) + s × (1 - e^(-(d - (m - s)) / s))`, which approaches `m` and never reaches it. The slope is continuous where it begins. The triangle is solved for that distance, and `mix` then blends toward the result.
   - **Stretch** applies only when softness is 0 and the first bone's scale is even and unsheared, as Spine's guide has it. It reaches the target exactly when the second bone lies on the first's axis or `uniform` is set.
 - **Stretch and compress** multiply the first bone's own scale along its length (and across it with `uniform`) by the target's distance over the reach, blended by `mix` as `1 + (factor - 1) × mix`.
-- **A chain** (three to sixteen bones, each an immediate child of the one before) is solved by an iterative method (forward and backward reaching) from the animated pose, with a fixed cap on its passes, so the same pose and target always give the same result. A chain has `mix` only. Spine has no chains; this is the engine's own.
+- **A chain** (three to sixteen bones, each an immediate child of the one before) is solved by forward and backward reaching from the animated pose, with a fixed cap on its passes. A chain has `mix` only. Spine has no chains; this is the engine's own.
+  - A pass puts the tip on the target and pulls each joint after it, then puts the first joint back and pulls each joint after that. Each joint moves as little as its bone's length lets it, so the animated pose decides which way the chain bends.
+  - If the passes stop short of a target in reach, the chain's bends are opened or closed evenly, every one by the same factor, until the tip is the target's distance from the first joint, and the chain is turned onto the target. So a chain meets a target near its full reach, and straightens smoothly as the target leaves it.
+  - A straight chain reaching along its own line has no side to bend to, and is first bent the positive way.
+  - The same pose and target always give the same result.
 - **Every bone an IK constraint turns must inherit normally** from its parent. Another inherit mode fails to load, as Spine's guide rules it out.
 
 ### Transform constraints
@@ -439,7 +443,7 @@ A constraint that cannot work fails to load, naming the constraint and the reaso
 
 - **Constraints bound to a skin** (active only while a skin is worn) are not built: every constraint is always active. The import part decides whether it needs them.
 - **Two bones whose first has an uneven scale or a shear of its own** miss the target, by more the more uneven it is. The second part is pointed the right way and comes out another length, so the tip is off along it, by up to the difference between the longest and the shortest the first bone makes that part. On a limb of parts 40 and 30 that is up to 7% of the limb's reach at a scale of (1.2, 1), 14% at (1.5, 1) and 21% at (2, 1). Where such a limb passes from bent to straight or to folded, the tip follows its target steeply, though without a jump. An uneven or sheared ancestor is exact.
-- **A chain** assumes each of its bones has an even scale and no shear; otherwise its tip may miss.
+- **A chain** assumes each of its bones has an even scale and no shear; otherwise its tip may miss. A short chain can also stop short of a target in its reach, when reaching folds it flat at a joint a little wrong for the target: one target in a thousand on chains of three and four unequal parts (21 of 19,152 in the test's grid), by up to 2% of the chain's length.
 - **Stretch on two bones** falls a little short or long when the second bone is off the first's axis and `uniform` is not set.
 - **A world mode with a mix that is not a whole number** jumps when its target passes half a turn, since the way an axis points is only known within a turn. A local mode does not.
 - **An IK constraint with a mix strictly between 0 and 1** jumps the same way. Each bone is turned part of the short way from its animated rotation to its solved one, and when the solved one passes half a turn from the animated one the short way changes sides: the bone jumps by a full turn times the mix. At a mix of 1 nothing jumps.

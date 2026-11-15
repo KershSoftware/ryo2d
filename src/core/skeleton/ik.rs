@@ -1,5 +1,5 @@
 //! Inverse kinematics: the turns that bring one bone to point at a target,
-//! or the tip of two bones to reach it.
+//! or the tip of two bones or of a chain to reach it.
 //!
 //! The functions here are pure. They take bones' own values (each relative
 //! to its parent) and a target point in the space of the first bone's
@@ -9,7 +9,7 @@
 
 use std::f32::consts::PI;
 
-use glam::Vec2;
+use glam::{Affine2, Vec2};
 
 use super::apply::shortest;
 use super::constraint::IkSetup;
@@ -26,6 +26,25 @@ const FLAT: f32 = 1e-12;
 /// How far apart a bone's two scales, or its two shears, may be while it
 /// still counts as even
 const EVEN: f32 = 1e-4;
+
+/// How many times, at most, a chain is reached back from its tip and out
+/// from its first joint
+pub(crate) const CHAIN_PASSES: usize = 16;
+
+/// How near its target a chain's tip counts as on it, and how near one line
+/// a chain's joints and its target count as on it, as a share of the
+/// chain's length
+pub(crate) const CHAIN_NEAR: f32 = 0.001;
+
+/// The first step, in the factor a chain's turns are scaled by, in which
+/// the factor that closes the chain is looked for
+const CLOSING_STEP: f32 = 0.125;
+
+/// The most steps the factor is looked for in, each way from 1
+const CLOSING_WALK: usize = 32;
+
+/// How many times the step that holds the factor is halved
+const CLOSING_HALVINGS: usize = 20;
 
 /// The values of an IK constraint that a solve takes: those its setup gives
 /// and animations can key. `uniform` is the setup's alone
@@ -285,6 +304,370 @@ pub(crate) fn two_bones(
   first.scale_x = scale_x;
   first.scale_y = scale_y;
   second.rotation = second_rotation;
+}
+
+/// Turns a chain of bones, each the child of the one before, so that the
+/// tip of the last (`length` along its x axis) reaches for `target`, a
+/// point in the space of the first bone's parent, by `mix` the short way
+/// round. A mix above 1 is taken as 1.
+///
+/// The chain is its joints: each bone's origin and then the tip, where the
+/// bones' own matrices put them in the pose passed in. A part runs from one
+/// joint to the next, and is rigid at the length it has there. The joints
+/// are moved, and the bones are then turned to carry them:
+///
+/// - A target at least the chain's length away lays every part along the
+///   line to it.
+/// - A nearer one is reached for from the pose passed in, in at most
+///   `CHAIN_PASSES` passes. A pass goes back from the tip, put on the
+///   target, with each joint put its part's length from the one after it,
+///   on the line to where it was; then out from the first joint, put back
+///   where it was, the same way. Each joint moves as little as its part
+///   lets it, so the pose decides which way the chain bends. The passes
+///   stop when the tip is within `CHAIN_NEAR ×` the chain's length of the
+///   target.
+/// - Passes close slowly on a pose that must end nearly straight or folded
+///   nearly flat. Where they stop short, every joint's turn is scaled by
+///   one factor, below 1 to open the chain out or above 1 to close it up,
+///   until the tip is as far from the first joint as the target is; and
+///   the whole chain is turned about its first joint onto the target. The
+///   factor is looked for in steps both ways from 1, opening as far as
+///   straight and closing until a joint has folded half a turn, so the
+///   nearest is found, and then by halving the step it is in. So a chain
+///   meets a target near its full reach, and straightens smoothly as the
+///   target leaves it. When no factor does it the joints stay where the
+///   passes left them: a short chain folded flat at a joint can stop short.
+/// - Reaching along a line cannot bend a chain that lies on it. A chain
+///   whose joints and target are all within `CHAIN_NEAR ×` its length of
+///   one line is first bent into an arc the positive way, its tip on the
+///   line to the target: each part is turned from the one before by
+///   `√(24 (1 - d / L) / (n² - 1))`, the turn at which `n` equal parts, `L`
+///   long together, end about `d` from where they start.
+///
+/// Each part has then turned from where it stood, and turning a bone turns
+/// its part and every part after it. So a bone is turned by what its part
+/// turned more than the part before it, and the first bone by what its
+/// part turned: the other way round under bones before it that mirror
+/// between them by their own scales. A part of no length is passed over:
+/// its joint stays on the one before, and its bone is not turned.
+///
+/// Exact when every bone but the last scales every direction alike. Under
+/// a bone with an uneven scale or a shear, the parts after it change
+/// length as they turn, and the tip may miss.
+///
+/// Only the bones' rotations are written. Nothing is, when there are fewer
+/// than two bones, when the mix is 0 or less, when the tip is already
+/// within `CHAIN_NEAR ×` the chain's length of the target, when the chain
+/// has no length, or when any value given, or any that would be written,
+/// is not finite.
+///
+/// `joints` is scratch the caller keeps. It is cleared and filled here,
+/// and a run takes no more room than a run with as many bones took before
+#[cfg_attr(
+  not(test),
+  expect(
+    dead_code,
+    reason = "a skeleton's step applies its IK constraints; until it does, only tests solve one"
+  )
+)]
+pub(crate) fn chain(
+  bones: &mut [BonePose],
+  length: f32,
+  target: Vec2,
+  mix: f32,
+  joints: &mut Vec<Vec2>,
+) {
+  let count = bones.len();
+  let given = length.is_finite() && target.is_finite() && mix.is_finite();
+  if count < 2 || !given || mix <= 0.0 || !bones.iter().all(finite) {
+    return;
+  }
+  let mix = mix.min(1.0);
+
+  // The scratch: the joints (each bone's origin, then the tip), each part
+  // (one joint to the next) as it stands in the pose passed in, and each
+  // part's length (`x`) beside an angle of the step under way (`y`)
+  joints.clear();
+  joints.resize(3 * count + 1, Vec2::ZERO);
+  let (joints, parts) = joints.split_at_mut(count + 1);
+  let (stood, sizes) = parts.split_at_mut(count);
+
+  let mut carried = Affine2::IDENTITY;
+  for (joint, bone) in joints.iter_mut().zip(bones.iter()) {
+    *joint = carried.transform_point2(Vec2::new(bone.x, bone.y));
+    carried *= bone.affine();
+  }
+  joints[count] = carried.transform_point2(Vec2::new(length, 0.0));
+  let mut total = 0.0;
+  for index in 0..count {
+    let part = joints[index + 1] - joints[index];
+    let long = part.length();
+    stood[index] = part;
+    sizes[index].x = if long > NO_LENGTH { long } else { 0.0 };
+    total += sizes[index].x;
+  }
+  let placed = total.is_finite() && joints.iter().all(|joint| joint.is_finite());
+  if !placed || total <= NO_LENGTH {
+    return;
+  }
+
+  let near = CHAIN_NEAR * total;
+  let to_target = target - joints[0];
+  let distance = to_target.length();
+  if joints[count].distance(target) <= near {
+    return;
+  }
+  if distance >= total {
+    let line = to_target / distance;
+    for index in 0..count {
+      joints[index + 1] = joints[index] + line * sizes[index].x;
+    }
+  } else {
+    if on_one_line(joints, target, near) {
+      arc(joints, stood, sizes, target, total);
+    }
+    reach(joints, stood, sizes, target, near);
+    if joints[count].distance(target) > near {
+      close(joints, sizes, target);
+    }
+  }
+
+  // Each bone's rotation, kept beside its part until every one is known to
+  // be finite
+  let (mut before, mut mirrored) = (0.0, false);
+  for index in 0..count {
+    let swung = if sizes[index].x > 0.0 {
+      turn(stood[index], joints[index + 1] - joints[index])
+    } else {
+      before
+    };
+    let more = if mirrored {
+      before - swung
+    } else {
+      swung - before
+    };
+    sizes[index].y = bones[index].rotation + shortest(more) * mix;
+    before = swung;
+    mirrored ^= mirrors(&bones[index]);
+  }
+  if sizes.iter().all(|size| size.y.is_finite()) {
+    for (bone, size) in bones.iter_mut().zip(sizes.iter()) {
+      bone.rotation = size.y;
+    }
+  }
+}
+
+/// Reaches a chain's joints for `target`, in passes: back from the tip, put
+/// on the target, and out from the first joint, put back where it was. It
+/// stops when the tip is within `near` of the target, or after
+/// `CHAIN_PASSES`. `stood` holds each part as it stood in the pose passed
+/// in, and `sizes` its length
+fn reach(joints: &mut [Vec2], stood: &[Vec2], sizes: &[Vec2], target: Vec2, near: f32) {
+  let count = sizes.len();
+  let first = joints[0];
+  for _ in 0..CHAIN_PASSES {
+    if joints[count].distance(target) <= near {
+      return;
+    }
+    joints[count] = target;
+    for index in (0..count).rev() {
+      joints[index] = pulled(
+        joints[index + 1],
+        joints[index],
+        sizes[index].x,
+        -stood[index],
+      );
+    }
+    joints[0] = first;
+    for index in 0..count {
+      joints[index + 1] = pulled(
+        joints[index],
+        joints[index + 1],
+        sizes[index].x,
+        stood[index],
+      );
+    }
+  }
+}
+
+/// Where a joint at `joint` comes when it is pulled to `length` from
+/// `from`: on the line between them. When the two are on one spot there is
+/// no such line, and the joint is put `otherwise` from `from`, as its part
+/// stood in the pose passed in
+fn pulled(from: Vec2, joint: Vec2, length: f32, otherwise: Vec2) -> Vec2 {
+  let way = joint - from;
+  let apart = way.length();
+  if apart > NO_LENGTH {
+    from + way * (length / apart)
+  } else {
+    from + otherwise
+  }
+}
+
+/// Whether every joint and the target are within `near` of one line through
+/// the first joint: the line to whichever of them is farthest from it
+fn on_one_line(joints: &[Vec2], target: Vec2, near: f32) -> bool {
+  let first = joints[0];
+  let points = || {
+    joints[1..]
+      .iter()
+      .map(move |joint| *joint - first)
+      .chain([target - first])
+  };
+  let farthest = points().fold(Vec2::ZERO, |farthest, point| {
+    if point.length_squared() > farthest.length_squared() {
+      point
+    } else {
+      farthest
+    }
+  });
+  let along = farthest.normalize_or_zero();
+  points().all(|point| along.perp_dot(point).abs() <= near)
+}
+
+/// Lays a straight chain along an arc bent the positive way, with its tip
+/// on the line to the target: each part with a length is turned from the
+/// one before by `√(24 (1 - d / L) / (n² - 1))`. An arc of `n` equal parts
+/// turned `t` each, `L` long together, ends `L (1 - (n² - 1) t² / 24)` from
+/// its start while `t` is small, and that turn brings it to `d`
+fn arc(joints: &mut [Vec2], stood: &[Vec2], sizes: &[Vec2], target: Vec2, total: f32) {
+  let long = sizes.iter().filter(|size| size.x > 0.0).count() as f32;
+  if long < 2.0 {
+    return;
+  }
+  let first = joints[0];
+  let to_target = target - first;
+  let distance = to_target.length();
+  let each = (24.0 * (1.0 - distance / total) / (long * long - 1.0)).sqrt();
+  // The arc with its first part along x, then turned about the first joint
+  let (mut angle, mut end) = (0.0, Vec2::ZERO);
+  for (joint, size) in joints[1..].iter_mut().zip(sizes) {
+    if size.x > 0.0 {
+      end += Vec2::from_angle(angle) * size.x;
+      angle += each;
+    }
+    *joint = end;
+  }
+  let heading = if distance > NO_LENGTH && end.length() > NO_LENGTH {
+    to_target.to_angle() - end.to_angle()
+  } else {
+    // Nowhere to point the tip: the arc starts the way the chain lay
+    stood
+      .iter()
+      .zip(sizes)
+      .find(|(_, size)| size.x > 0.0)
+      .map_or(0.0, |(part, _)| part.to_angle())
+  };
+  let heading = Vec2::from_angle(heading);
+  for joint in &mut joints[1..] {
+    *joint = first + heading.rotate(*joint);
+  }
+}
+
+/// Closes a chain whose passes stopped short of a target in its reach.
+/// Every joint's turn is scaled by one factor, below 1 to open the chain
+/// out and above 1 to close it up, until the tip is as far from the first
+/// joint as the target is; then the whole chain is turned about its first
+/// joint onto the target. When no factor does it the joints are left as
+/// they are. `sizes` holds each part's length, and is given how far the
+/// chain has swung by each part
+fn close(joints: &mut [Vec2], sizes: &mut [Vec2], target: Vec2) {
+  let first = joints[0];
+  let to_target = target - first;
+  let distance = to_target.length();
+  // How far the chain has swung from its first part by each part, and the
+  // most it turns at one joint
+  let (mut before, mut heading, mut swung, mut widest) = (None::<Vec2>, 0.0, 0.0, 0.0_f32);
+  for (index, size) in sizes.iter_mut().enumerate() {
+    if size.x > 0.0 {
+      let part = joints[index + 1] - joints[index];
+      match before {
+        Some(before) => {
+          let by = turn(before, part);
+          swung += by;
+          widest = widest.max(by.abs());
+        }
+        None => heading = part.to_angle(),
+      }
+      before = Some(part);
+    }
+    size.y = swung;
+  }
+  if widest <= 0.0 {
+    // Straight: no turn to scale
+    return;
+  }
+  // Where the tip comes from the first joint with the first part along x
+  // and every turn scaled
+  let end = |factor: f32| {
+    sizes
+      .iter()
+      .filter(|size| size.x > 0.0)
+      .fold(Vec2::ZERO, |end, size| {
+        end + Vec2::from_angle(size.y * factor) * size.x
+      })
+  };
+  let short = |factor: f32| end(factor).length() < distance;
+
+  // The step that holds the factor: at `held` the tip is on the side of the
+  // target's distance it is on now, and at `crossed` on the other. It is
+  // looked for both ways from 1 in turn, so the nearer is found: opening in
+  // even steps as far as straight, and closing in steps that double until
+  // a joint has folded half a turn
+  let opening = short(1.0);
+  let folded = PI / widest;
+  let (mut opened, mut closed, mut step) = (Some(1.0_f32), Some(1.0_f32), CLOSING_STEP);
+  let mut found = None;
+  for _ in 0..CLOSING_WALK {
+    if let Some(held) = opened {
+      let factor = (held - CLOSING_STEP).max(0.0);
+      if short(factor) != opening {
+        found = Some((held, factor));
+        break;
+      }
+      opened = (factor > 0.0).then_some(factor);
+    }
+    if let Some(held) = closed {
+      let factor = (held + step).min(folded);
+      if short(factor) != opening {
+        found = Some((held, factor));
+        break;
+      }
+      closed = (factor < folded).then_some(factor);
+      step *= 2.0;
+    }
+  }
+  let Some((mut held, mut crossed)) = found else {
+    return;
+  };
+  for _ in 0..CLOSING_HALVINGS {
+    let middle = 0.5 * (held + crossed);
+    if short(middle) == opening {
+      held = middle;
+    } else {
+      crossed = middle;
+    }
+  }
+  let factor = 0.5 * (held + crossed);
+
+  let tip = end(factor);
+  if distance > NO_LENGTH && tip.length() > NO_LENGTH {
+    heading = to_target.to_angle() - tip.to_angle();
+  }
+  for (index, size) in sizes.iter().enumerate() {
+    joints[index + 1] = joints[index] + Vec2::from_angle(heading + size.y * factor) * size.x;
+  }
+}
+
+/// The turn from one direction to another, the short way round
+fn turn(from: Vec2, to: Vec2) -> f32 {
+  from.perp_dot(to).atan2(from.dot(to))
+}
+
+/// Whether a bone mirrors what it carries: the determinant of its linear
+/// part, `scale_x × scale_y × cos(shear_x - shear_y)`, is negative
+fn mirrors(bone: &BonePose) -> bool {
+  (bone.scale_x < 0.0) ^ (bone.scale_y < 0.0) ^ ((bone.shear_x - bone.shear_y).cos() < 0.0)
 }
 
 /// The rotation that points `bone`'s x axis along `direction`, a direction
@@ -1956,5 +2339,1042 @@ mod tests {
         "a scale of (1.5, 1): the tip moved {largest} for a step of {step}, above {most}"
       );
     }
+  }
+
+  /// A chain's joints in the space of its first bone's parent, each bone's
+  /// origin and then the tip: the bones' own transforms composed, as placing
+  /// a pose composes them
+  fn chain_joints(bones: &[BonePose], length: f32) -> Vec<Vec2> {
+    let mut carried = Affine2::IDENTITY;
+    let mut joints = Vec::with_capacity(bones.len() + 1);
+    for bone in bones {
+      joints.push(carried.transform_point2(Vec2::new(bone.x, bone.y)));
+      carried *= bone.affine();
+    }
+    joints.push(carried.transform_point2(Vec2::new(length, 0.0)));
+    joints
+  }
+
+  /// A chain's tip: the last of its joints
+  fn chain_tip(bones: &[BonePose], length: f32) -> Vec2 {
+    chain_joints(bones, length)[bones.len()]
+  }
+
+  /// A chain's length: its parts', joint to joint
+  fn chain_length(bones: &[BonePose], length: f32) -> f32 {
+    chain_joints(bones, length)
+      .windows(2)
+      .map(|pair| pair[0].distance(pair[1]))
+      .sum()
+  }
+
+  /// The turn at each joint after the first, from the part before it to the
+  /// part after: positive the positive way
+  fn chain_turns(bones: &[BonePose], length: f32) -> Vec<f32> {
+    chain_joints(bones, length)
+      .windows(3)
+      .map(|three| {
+        let (before, after) = (three[1] - three[0], three[2] - three[1]);
+        before.perp_dot(after).atan2(before.dot(after))
+      })
+      .collect()
+  }
+
+  /// A chain of unit bones with the tip's length: the first at `ORIGIN`
+  /// turned `first`, each later one at the end of the one before and turned
+  /// `each` from it. Its parts are `lengths` long
+  fn links(lengths: &[f32], first: f32, each: f32) -> (Vec<BonePose>, f32) {
+    let mut bones = vec![bone(ORIGIN.x, ORIGIN.y, first)];
+    let mut last = 0.0;
+    for (index, length) in lengths.iter().enumerate() {
+      if index > 0 {
+        bones.push(bone(last, 0.0, each));
+      }
+      last = *length;
+    }
+    (bones, last)
+  }
+
+  /// Four bones, their parts 30, 25, 25 and 20 long (100 together), bent
+  /// the positive way by 0.5 rad at each joint
+  fn four() -> (Vec<BonePose>, f32) {
+    links(&[30.0, 25.0, 25.0, 20.0], 0.3, 0.5)
+  }
+
+  /// Sixteen bones, their parts 10 long (160 together), bent the positive
+  /// way by 0.1 rad at each joint
+  fn sixteen() -> (Vec<BonePose>, f32) {
+    links(&[10.0; 16], -0.4, 0.1)
+  }
+
+  /// `bones` reached toward `target`
+  fn reached(bones: &[BonePose], length: f32, target: Vec2, mix: f32) -> Vec<BonePose> {
+    let mut bones = bones.to_vec();
+    chain(&mut bones, length, target, mix, &mut Vec::new());
+    bones
+  }
+
+  /// What composing a chain's bones adds to where its reaching put the
+  /// joints, in rounding, ten times over: 0.00006 of a unit is the most
+  /// these tests' chains show
+  const COMPOSED: f32 = 0.001;
+
+  /// The tip is within `CHAIN_NEAR ×` the chain's length of its target
+  #[track_caller]
+  fn assert_on_target(bones: &[BonePose], length: f32, target: Vec2, what: &str) {
+    let near = CHAIN_NEAR * chain_length(bones, length);
+    let miss = chain_tip(bones, length).distance(target);
+    assert!(
+      miss <= near + COMPOSED,
+      "{what}: the tip is {miss} from its target, and {near} is near"
+    );
+  }
+
+  /// Nothing of any bone but its rotation changed, to the bit
+  #[track_caller]
+  fn assert_chain_only_turned(before: &[BonePose], after: &[BonePose], what: &str) {
+    assert_eq!(before.len(), after.len(), "{what}");
+    for (before, after) in before.iter().zip(after) {
+      assert_only_turned(before, after, what);
+    }
+  }
+
+  fn chain_bits(bones: &[BonePose]) -> Vec<[u32; 7]> {
+    bones.iter().map(bits).collect()
+  }
+
+  #[test]
+  fn a_chain_reaches_a_target_in_range() {
+    // Ten distances from 30% to 99.9% of each chain's length, each in eight
+    // directions an eighth of a turn apart, 0.1 rad off the axes
+    for (rig, (bones, length)) in [("four bones", four()), ("sixteen bones", sixteen())] {
+      let total = chain_length(&bones, length);
+      for share in [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99, 0.999] {
+        for eighth in 0..8 {
+          let what = format!("{rig}, {share} of the length away, direction {eighth}");
+          let toward = Vec2::from_angle(eighth as f32 * TAU / 8.0 + 0.1);
+          let target = ORIGIN + toward * (share * total);
+          let after = reached(&bones, length, target, 1.0);
+          assert_on_target(&after, length, target, &what);
+          assert_chain_only_turned(&bones, &after, &what);
+        }
+      }
+      // A target on a joint of the pose: the tip's part, pulled to it, has
+      // no line to follow to where its other end was, and keeps the way it
+      // pointed
+      for joint in &chain_joints(&bones, length)[bones.len() - 2..bones.len()] {
+        let after = reached(&bones, length, *joint, 1.0);
+        assert_on_target(&after, length, *joint, &format!("{rig}, on a joint"));
+        assert_chain_only_turned(&bones, &after, rig);
+      }
+      // And a target on the first joint itself
+      let after = reached(&bones, length, ORIGIN, 1.0);
+      assert_on_target(
+        &after,
+        length,
+        ORIGIN,
+        &format!("{rig}, on the first joint"),
+      );
+      assert_chain_only_turned(&bones, &after, rig);
+    }
+
+    // The joints are where the bones' own matrices put them. Here the
+    // second and fourth bones sit off their parents' axes, the first bone
+    // is scaled (2, 2) and the third (0.5, 0.5), the second is turned by
+    // equal shears, and the last has a scale and a shear of its own, which
+    // only its tip is carried by
+    let bones = vec![
+      BonePose {
+        scale_x: 2.0,
+        scale_y: 2.0,
+        ..bone(ORIGIN.x, ORIGIN.y, 0.3)
+      },
+      BonePose {
+        shear_x: 0.25,
+        shear_y: 0.25,
+        ..bone(15.0, 4.0, 0.5)
+      },
+      BonePose {
+        scale_x: 0.5,
+        scale_y: 0.5,
+        ..bone(25.0, -6.0, -0.4)
+      },
+      BonePose {
+        scale_x: 1.5,
+        scale_y: 0.7,
+        shear_x: 0.2,
+        shear_y: -0.3,
+        ..bone(40.0, 8.0, 0.6)
+      },
+    ];
+    let length = 10.0;
+    // Parts of 2 sqrt(241) = 31.05, 2 sqrt(661) = 51.42, sqrt(1664) = 40.79
+    // and 10 x 1.5 = 15
+    let total = chain_length(&bones, length);
+    assert!((total - 138.26).abs() < 0.01, "{total}");
+    for share in [0.3, 0.6, 0.9, 0.99] {
+      for quarter in 0..4 {
+        let what = format!("off the axes, {share} of the length away, direction {quarter}");
+        let toward = Vec2::from_angle(quarter as f32 * TAU / 4.0 + 0.4);
+        let target = ORIGIN + toward * (share * total);
+        let after = reached(&bones, length, target, 1.0);
+        assert_on_target(&after, length, target, &what);
+        assert_chain_only_turned(&bones, &after, &what);
+      }
+    }
+  }
+
+  #[test]
+  fn a_chain_out_of_reach_lies_straight_toward_its_target() {
+    // Parts of 30, 25, 25 and 20. Toward a target farther than their 100
+    // along (0.6, 0.8) the joints are 30, 55, 80 and 100 along the line to
+    // it; and parts of 10, toward (-0.8, 0.6), ten apart along that
+    let (bones, length) = four();
+    let toward = Vec2::new(0.6, 0.8);
+    for distance in [100.01, 101.0, 150.0, 1.0e3, 1.0e4] {
+      let what = format!("four bones, {distance} away");
+      let after = reached(&bones, length, ORIGIN + toward * distance, 1.0);
+      let joints = chain_joints(&after, length);
+      for (joint, along) in joints.iter().zip([0.0, 30.0, 55.0, 80.0, 100.0]) {
+        assert_near(*joint, ORIGIN + toward * along, &what);
+      }
+      assert_chain_only_turned(&bones, &after, &what);
+    }
+    let (bones, length) = sixteen();
+    let toward = Vec2::new(-0.8, 0.6);
+    for distance in [160.02, 165.0, 400.0, 1.0e4] {
+      let what = format!("sixteen bones, {distance} away");
+      let after = reached(&bones, length, ORIGIN + toward * distance, 1.0);
+      let joints = chain_joints(&after, length);
+      for (index, joint) in joints.iter().enumerate() {
+        assert_near(*joint, ORIGIN + toward * (index as f32 * 10.0), &what);
+      }
+      assert_chain_only_turned(&bones, &after, &what);
+    }
+  }
+
+  #[test]
+  fn a_chain_gives_the_same_result_every_run() {
+    // One of each way through the solve: reached by its passes alone;
+    // closed after them; laid straight out of reach; and a straight chain
+    // bent into an arc first
+    let straight = links(&[10.0; 16], 0.3, 0.0);
+    for (what, (bones, length), target) in [
+      ("passes", four(), ORIGIN + Vec2::new(40.0, 30.0)),
+      ("closed", sixteen(), ORIGIN + Vec2::new(-90.0, 130.0)),
+      ("out of reach", four(), ORIGIN + Vec2::new(-90.0, 130.0)),
+      ("an arc", straight, ORIGIN + Vec2::from_angle(0.3) * 100.0),
+    ] {
+      let mut first = bones.clone();
+      let mut scratch = Vec::new();
+      chain(&mut first, length, target, 1.0, &mut scratch);
+      assert_ne!(chain_bits(&first), chain_bits(&bones), "{what}");
+      // Again in the scratch the first run left
+      let mut second = bones.clone();
+      chain(&mut second, length, target, 1.0, &mut scratch);
+      assert_eq!(chain_bits(&second), chain_bits(&first), "{what}");
+      // And in one another chain's solve left
+      let (mut other, other_length) = links(&[7.0, 9.0, 11.0, 13.0, 15.0], 2.0, -0.3);
+      let mut used = Vec::new();
+      chain(
+        &mut other,
+        other_length,
+        Vec2::new(-20.0, 5.0),
+        1.0,
+        &mut used,
+      );
+      let mut third = bones.clone();
+      chain(&mut third, length, target, 1.0, &mut used);
+      assert_eq!(chain_bits(&third), chain_bits(&first), "{what}");
+    }
+  }
+
+  #[test]
+  fn a_chain_starts_from_the_animated_pose() {
+    // Four parts of 25 at -0.75, -0.25, 0.25 and 0.75 rad: bent the
+    // positive way, out to one side of the x axis through the first joint
+    // and back onto it, the middle joints 17.04, 23.23 and 17.04 to its
+    // negative side and the tip on it 50 (cos 0.75 + cos 0.25) = 85.03
+    // along. Its mirror in that axis is bent the other way, the same joints
+    // to the positive side. Both are sent to one target on the axis
+    let (clockwise, length) = links(&[25.0; 4], -0.75, 0.5);
+    let (mirror, _) = links(&[25.0; 4], 0.75, -0.5);
+    let side = |bones: &[BonePose]| {
+      chain_joints(bones, length)[1..4]
+        .iter()
+        .map(|joint| joint.y - ORIGIN.y)
+        .collect::<Vec<_>>()
+    };
+    assert!(
+      side(&clockwise).iter().all(|off| *off < -17.0),
+      "{:?}",
+      side(&clockwise)
+    );
+    assert!(
+      side(&mirror).iter().all(|off| *off > 17.0),
+      "{:?}",
+      side(&mirror)
+    );
+    assert_near(
+      chain_tip(&clockwise, length),
+      ORIGIN + Vec2::new(85.03, 0.0),
+      "the tip",
+    );
+    for along in [30.0, 50.0, 70.0, 95.0, 99.5] {
+      let target = ORIGIN + Vec2::new(along, 0.0);
+      let what = format!("{along} along");
+      let (a, b) = (
+        reached(&clockwise, length, target, 1.0),
+        reached(&mirror, length, target, 1.0),
+      );
+      assert_on_target(&a, length, target, &what);
+      assert_on_target(&b, length, target, &what);
+      // Each keeps its bend to its own side, well off the axis
+      let (ours, theirs) = (side(&a), side(&b));
+      assert!(ours.iter().all(|off| *off < -1.0), "{what}: {ours:?}");
+      assert!(theirs.iter().all(|off| *off > 1.0), "{what}: {theirs:?}");
+      // And is the other's mirror image
+      for (joint, twin) in chain_joints(&a, length)
+        .iter()
+        .zip(chain_joints(&b, length))
+      {
+        let mirrored = Vec2::new(twin.x, 2.0 * ORIGIN.y - twin.y);
+        assert_near(*joint, mirrored, &what);
+      }
+    }
+  }
+
+  #[test]
+  fn a_chain_at_half_mix_turns_each_bone_half_way() {
+    let (bones, length) = four();
+    // Behind the chain, so its parts turn a long way round to reach it
+    let target = ORIGIN + Vec2::new(-60.0, -35.0);
+    let full = reached(&bones, length, target, 1.0);
+    assert_on_target(&full, length, target, "mix 1");
+
+    // How far each part turned, and so how far each bone was turned: by
+    // what its part turned more than the part before it. As plain numbers
+    // one of those differences is more than half a turn, and the bone was
+    // turned the short way round to the same place
+    let turned: Vec<f32> = chain_joints(&bones, length)
+      .windows(2)
+      .zip(chain_joints(&full, length).windows(2))
+      .map(|(before, after)| {
+        let (before, after) = (before[1] - before[0], after[1] - after[0]);
+        before.perp_dot(after).atan2(before.dot(after))
+      })
+      .collect();
+    let mut plain = vec![turned[0]];
+    plain.extend(turned.windows(2).map(|pair| pair[1] - pair[0]));
+    assert!(
+      plain.iter().any(|by| by.abs() > PI),
+      "no bone's turn passes half a turn: {plain:?}"
+    );
+    for ((before, after), plain) in bones.iter().zip(&full).zip(&plain) {
+      let by = after.rotation - before.rotation;
+      assert!(by.abs() <= PI + 1.0e-4, "turned {by}");
+      assert!(
+        (by - shortest(*plain)).abs() < 1.0e-3,
+        "turned {by}, not {plain} the short way"
+      );
+    }
+
+    // Half way is half of each bone's turn
+    let half = reached(&bones, length, target, 0.5);
+    for ((before, half), full) in bones.iter().zip(&half).zip(&full) {
+      let expected = before.rotation + (full.rotation - before.rotation) * 0.5;
+      assert!(
+        (half.rotation - expected).abs() < 1.0e-4,
+        "at half mix a bone is at {}, not {expected}",
+        half.rotation
+      );
+    }
+    assert_chain_only_turned(&bones, &half, "mix 0.5");
+    // And a quarter a quarter
+    let quarter = reached(&bones, length, target, 0.25);
+    for ((before, quarter), full) in bones.iter().zip(&quarter).zip(&full) {
+      let expected = before.rotation + (full.rotation - before.rotation) * 0.25;
+      assert!((quarter.rotation - expected).abs() < 1.0e-4, "mix 0.25");
+    }
+
+    // No mix, or less than none, leaves every bone exactly as it was
+    for mix in [0.0, -0.0, -1.0] {
+      let after = reached(&bones, length, target, mix);
+      assert_eq!(chain_bits(&after), chain_bits(&bones), "mix {mix}");
+    }
+    // And a mix above 1 is taken as 1
+    for mix in [1.5, 4.0, 1.0e30, f32::MAX] {
+      let after = reached(&bones, length, target, mix);
+      assert_eq!(chain_bits(&after), chain_bits(&full), "mix {mix}");
+    }
+  }
+
+  #[test]
+  fn a_chain_changes_only_rotations() {
+    // A chain with every value a bone has set to something: bones off
+    // their parents' axes, scaled evenly, mirrored and turned by equal
+    // shears
+    let bones = vec![
+      BonePose {
+        scale_x: 1.5,
+        scale_y: 1.5,
+        ..bone(ORIGIN.x, ORIGIN.y, 0.3)
+      },
+      BonePose {
+        shear_x: -0.2,
+        shear_y: -0.2,
+        ..bone(20.0, 5.0, 0.6)
+      },
+      BonePose {
+        scale_x: 0.8,
+        scale_y: -0.8,
+        ..bone(18.0, -4.0, -0.5)
+      },
+      BonePose {
+        scale_x: 1.25,
+        scale_y: 1.25,
+        ..bone(22.0, 3.0, 0.4)
+      },
+      bone(15.0, -2.0, 0.7),
+    ];
+    let length = 12.0;
+    let total = chain_length(&bones, length);
+    let straight = links(&[25.0; 4], 0.3, 0.0);
+    for (what, bones, length, target, mix) in [
+      (
+        "in reach",
+        &bones,
+        length,
+        ORIGIN + Vec2::new(30.0, -50.0),
+        1.0,
+      ),
+      (
+        "nearly taut",
+        &bones,
+        length,
+        ORIGIN + Vec2::new(0.6, 0.8) * (0.995 * total),
+        1.0,
+      ),
+      (
+        "out of reach",
+        &bones,
+        length,
+        ORIGIN + Vec2::new(-300.0, 40.0),
+        1.0,
+      ),
+      (
+        "at a part mix",
+        &bones,
+        length,
+        ORIGIN + Vec2::new(-40.0, 20.0),
+        0.3,
+      ),
+      (
+        "a straight chain",
+        &straight.0,
+        straight.1,
+        ORIGIN + Vec2::from_angle(0.3) * 40.0,
+        1.0,
+      ),
+    ] {
+      let after = reached(bones, length, target, mix);
+      assert_chain_only_turned(bones, &after, what);
+      // And it did turn them
+      let turned = bones
+        .iter()
+        .zip(&after)
+        .filter(|(before, after)| before.rotation != after.rotation)
+        .count();
+      assert!(turned >= 2, "{what}: {turned} bones turned");
+      if mix == 1.0 && what != "out of reach" {
+        assert_on_target(&after, length, target, what);
+      }
+    }
+
+    // A target the tip already touches changes nothing at all: on the tip,
+    // and within `CHAIN_NEAR ×` the chain's length of it
+    let tip = chain_tip(&bones, length);
+    for target in [tip, tip + Vec2::new(0.6, -0.8) * (0.9 * CHAIN_NEAR * total)] {
+      let after = reached(&bones, length, target, 1.0);
+      assert_eq!(
+        chain_bits(&after),
+        chain_bits(&bones),
+        "already at {target}"
+      );
+    }
+    // A little farther and the bones turn
+    let target = tip + Vec2::new(0.6, -0.8) * (1.5 * CHAIN_NEAR * total);
+    let after = reached(&bones, length, target, 1.0);
+    assert_ne!(chain_bits(&after), chain_bits(&bones));
+    assert_on_target(&after, length, target, "a little farther");
+    // Nor is a straight chain bent into an arc, or laid toward a target just
+    // past its reach, when its tip is already as near: 100 long, its target
+    // 0.05 short of its tip along it, and 0.05 past
+    let (straight, length) = straight;
+    for along in [99.95, 100.05] {
+      let target = ORIGIN + Vec2::from_angle(0.3) * along;
+      let after = reached(&straight, length, target, 1.0);
+      assert_eq!(chain_bits(&after), chain_bits(&straight), "{along} along");
+    }
+  }
+
+  #[test]
+  fn a_chain_takes_no_more_room_on_a_second_run() {
+    let (bones, length) = sixteen();
+    // One target the passes reach and one the closing step is needed for
+    let targets = [
+      ORIGIN + Vec2::new(60.0, 70.0),
+      ORIGIN + Vec2::new(-90.0, 130.0),
+    ];
+    let mut scratch = Vec::new();
+    chain(&mut bones.clone(), length, targets[0], 1.0, &mut scratch);
+    let room = (scratch.as_ptr(), scratch.capacity());
+    assert!(room.1 > bones.len(), "the scratch holds {}", room.1);
+    for target in targets {
+      let mut again = bones.clone();
+      chain(&mut again, length, target, 1.0, &mut scratch);
+      assert_ne!(chain_bits(&again), chain_bits(&bones));
+      assert_eq!((scratch.as_ptr(), scratch.capacity()), room, "{target}");
+    }
+    // A shorter chain is solved in the same room, which is not given back
+    let (mut short, short_length) = four();
+    chain(&mut short, short_length, targets[0], 1.0, &mut scratch);
+    assert_eq!((scratch.as_ptr(), scratch.capacity()), room, "four bones");
+    chain(&mut bones.clone(), length, targets[1], 1.0, &mut scratch);
+    assert_eq!(
+      (scratch.as_ptr(), scratch.capacity()),
+      room,
+      "sixteen again"
+    );
+    // Nor is a solve that changes nothing a reason to take or give any
+    chain(&mut bones.clone(), length, Vec2::NAN, 1.0, &mut scratch);
+    chain(&mut bones.clone(), length, targets[0], 0.0, &mut scratch);
+    assert_eq!(
+      (scratch.as_ptr(), scratch.capacity()),
+      room,
+      "nothing to do"
+    );
+  }
+
+  /// One input of a chain's solve, by number: each bone's seven values in
+  /// turn, then the target's two, the length and the mix
+  fn chain_input<'a>(
+    bones: &'a mut [BonePose],
+    rest: &'a mut (Vec2, f32, f32),
+    index: usize,
+  ) -> &'a mut f32 {
+    let count = bones.len() * 7;
+    if index < count {
+      let bone = &mut bones[index / 7];
+      match index % 7 {
+        0 => &mut bone.x,
+        1 => &mut bone.y,
+        2 => &mut bone.rotation,
+        3 => &mut bone.scale_x,
+        4 => &mut bone.scale_y,
+        5 => &mut bone.shear_x,
+        _ => &mut bone.shear_y,
+      }
+    } else {
+      match index - count {
+        0 => &mut rest.0.x,
+        1 => &mut rest.0.y,
+        2 => &mut rest.1,
+        _ => &mut rest.2,
+      }
+    }
+  }
+
+  #[test]
+  fn a_chain_with_a_part_of_no_length_or_a_value_not_finite_makes_no_nan() {
+    let (bones, length) = four();
+    let target = ORIGIN + Vec2::new(40.0, 30.0);
+    let unchanged = |what: &str, bones: &[BonePose], length: f32, target: Vec2, mix: f32| {
+      let after = reached(bones, length, target, mix);
+      assert_eq!(chain_bits(&after), chain_bits(bones), "{what}");
+    };
+
+    // A bone on its parent's origin makes a part of no length. The chain
+    // reaches with its other parts, and that parent, whose part points
+    // nowhere, keeps its rotation
+    let mut on_parent = bones.clone();
+    on_parent[2].x = 0.0;
+    let after = reached(&on_parent, length, target, 1.0);
+    assert_on_target(&after, length, target, "a bone on its parent's origin");
+    assert_chain_only_turned(&on_parent, &after, "a bone on its parent's origin");
+    assert_eq!(
+      after[1].rotation, on_parent[1].rotation,
+      "the parent turned"
+    );
+    assert_ne!(
+      after[2].rotation, on_parent[2].rotation,
+      "the bone on it did not"
+    );
+    // Within a millionth of a unit of it counts as on it: a chain of parts
+    // 1 long at the origin, where so small a step is not lost in rounding
+    let beside = vec![
+      bone(0.0, 0.0, 0.3),
+      bone(1.0, 0.0, 0.5),
+      bone(5.0e-7, 0.0, 0.5),
+      bone(1.0, 0.0, 0.5),
+    ];
+    let near_by = Vec2::new(1.5, 1.0);
+    let part = chain_joints(&beside, 1.0);
+    assert!(part[1].distance(part[2]) > 1.0e-7, "the step was lost");
+    let after = reached(&beside, 1.0, near_by, 1.0);
+    assert_on_target(&after, 1.0, near_by, "a bone beside its parent's origin");
+    assert_eq!(after[1].rotation, beside[1].rotation, "the parent turned");
+    // So does a first bone whose child is on it, and a last bone with no x
+    // scale, whose tip is on its own origin
+    let mut on_first = bones.clone();
+    on_first[1].x = 0.0;
+    let after = reached(&on_first, length, target, 1.0);
+    assert_on_target(&after, length, target, "a bone on the first bone's origin");
+    assert_eq!(
+      after[0].rotation, on_first[0].rotation,
+      "the first bone turned"
+    );
+    let mut no_tip = bones.clone();
+    no_tip[3].scale_x = 0.0;
+    let after = reached(&no_tip, length, target, 1.0);
+    assert_on_target(&after, length, target, "a tip on the last bone's origin");
+    assert_eq!(
+      after[3].rotation, no_tip[3].rotation,
+      "the last bone turned"
+    );
+    assert_on_target(
+      &reached(&bones, 0.0, target, 1.0),
+      0.0,
+      target,
+      "a tip with no length",
+    );
+
+    // Nothing to reach with, or for: a chain with no length at all, and
+    // fewer than two bones
+    let heap = vec![
+      bone(ORIGIN.x, ORIGIN.y, 0.3),
+      bone(0.0, 0.0, 0.5),
+      bone(0.0, 0.0, 0.5),
+    ];
+    unchanged("every joint on one spot", &heap, 0.0, target, 1.0);
+    unchanged("one bone", &bones[..1], 30.0, target, 1.0);
+    unchanged("no bones", &[], 30.0, target, 1.0);
+
+    // A value that is not finite, anywhere, changes nothing
+    for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+      for index in 0..bones.len() * 7 + 4 {
+        let (mut bones, mut rest) = (bones.clone(), (target, length, 1.0));
+        *chain_input(&mut bones, &mut rest, index) = bad;
+        unchanged(
+          &format!("input {index} = {bad}"),
+          &bones,
+          rest.1,
+          rest.0,
+          rest.2,
+        );
+      }
+    }
+
+    // Bones the chain is not exact for give finite values, in their
+    // rotations alone: uneven, sheared and flat ones
+    for (what, scale_x, scale_y, shear_x) in [
+      ("an uneven bone", 1.6, 0.7, 0.0),
+      ("a sheared bone", 1.0, 1.0, 0.5),
+      ("a bone flat along x", 0.0, 1.0, 0.0),
+      ("a bone flat along y", 1.0, 0.0, 0.0),
+      ("a bone scaled to nothing", 0.0, 0.0, 0.0),
+    ] {
+      for index in 0..bones.len() {
+        let mut odd = bones.clone();
+        odd[index] = BonePose {
+          scale_x,
+          scale_y,
+          shear_x,
+          ..odd[index]
+        };
+        for target in [
+          target,
+          ORIGIN + Vec2::new(-20.0, 90.0),
+          ORIGIN + Vec2::new(0.0, 300.0),
+        ] {
+          let after = reached(&odd, length, target, 1.0);
+          assert!(after.iter().all(finite), "{what} at {index}: {after:?}");
+          assert_chain_only_turned(&odd, &after, what);
+        }
+      }
+    }
+
+    // Whatever goes in, alone or in pairs: nothing comes out that is not
+    // finite, and an input that is not finite changes nothing. Three bones,
+    // so every pair of their values is tried
+    let extremes = [
+      0.0,
+      -0.0,
+      f32::MIN_POSITIVE,
+      1.0e-30,
+      -1.0e-30,
+      1.0e-6,
+      1.0,
+      -1.0,
+      1.0e30,
+      -1.0e30,
+      f32::MAX,
+      f32::NAN,
+      f32::INFINITY,
+      f32::NEG_INFINITY,
+    ];
+    let (bones, length) = links(&[30.0, 20.0, 25.0], 0.3, 0.6);
+    let inputs = bones.len() * 7 + 4;
+    for one in 0..inputs {
+      for one_value in extremes {
+        for other in one..inputs {
+          for other_value in extremes {
+            let (mut bones, mut rest) = (bones.clone(), (target, length, 1.0));
+            *chain_input(&mut bones, &mut rest, one) = one_value;
+            *chain_input(&mut bones, &mut rest, other) = other_value;
+            let given = bones.iter().all(finite)
+              && rest.0.is_finite()
+              && rest.1.is_finite()
+              && rest.2.is_finite();
+            let after = reached(&bones, rest.1, rest.0, rest.2);
+            for (was, is) in chain_bits(&bones).into_iter().zip(chain_bits(&after)) {
+              for (was, is) in was.into_iter().zip(is) {
+                assert!(
+                  was == is || (given && f32::from_bits(is).is_finite()),
+                  "input {one} = {one_value:e}, input {other} = {other_value:e}: {bones:?} became {after:?}"
+                );
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  #[test]
+  fn a_chain_does_not_jump_as_its_target_crosses_its_full_reach() {
+    // A target walked straight out through each chain's full length, twenty
+    // steps short of it to twenty past. Inside it the bends open evenly as
+    // the target nears the limit, and at the limit the chain is straight,
+    // as it is beyond
+    for (rig, (bones, length)) in [("four bones", four()), ("sixteen bones", sixteen())] {
+      let total = chain_length(&bones, length);
+      for toward in [
+        Vec2::new(0.0, 1.0),
+        Vec2::new(1.0, 0.0),
+        Vec2::new(-0.6, 0.8),
+      ] {
+        for share in [1.0e-2, 1.0e-3, 1.0e-4] {
+          let what = format!("{rig}, toward {toward}, in steps of {share} of the length");
+          let step = share * total;
+          let poses: Vec<Vec<Vec2>> = (-20..=20)
+            .map(|steps| {
+              let target = ORIGIN + toward * (total + steps as f32 * step);
+              let after = reached(&bones, length, target, 1.0);
+              // The tip is on its target up to the limit, and at the limit
+              // from there on
+              if steps < 0 {
+                assert_on_target(&after, length, target, &what);
+              } else {
+                assert_near(chain_tip(&after, length), ORIGIN + toward * total, &what);
+              }
+              chain_joints(&after, length)
+            })
+            .collect();
+          let moved = |joint: usize| {
+            poses
+              .windows(2)
+              .map(|pair| pair[0][joint].distance(pair[1][joint]))
+              .fold(0.0, f32::max)
+          };
+          // The tip moves as far as its target does
+          let tip = moved(bones.len());
+          assert!(tip < 1.25 * step, "{what}: the tip moved {tip}");
+          // A joint goes sideways as the square root of how far inside the
+          // limit the target is, as the joint of two bones does: 0.65 of
+          // the square root of the step times the length is the most here,
+          // so a smaller step moves it less
+          let joint = (0..bones.len()).map(moved).fold(0.0, f32::max);
+          let most = 0.8 * (step * total).sqrt();
+          assert!(joint < most, "{what}: a joint moved {joint}, above {most}");
+        }
+      }
+    }
+  }
+
+  #[test]
+  fn a_short_chain_folded_tight_may_stop_short_by_a_bounded_amount() {
+    // The recorded limit. Reaching can fold a short chain flat at a joint
+    // (a hairpin), a little wrong for its target, and stay there; and with
+    // one joint folded flat, no one factor on every turn brings the tip
+    // home. Three such targets, each well inside its chain's reach: the tip
+    // stops 1.00, 1.13 and 0.86 from them
+    for (what, lengths, twentieths, direction, miss) in [
+      ("30, 20 and 10", vec![30.0, 20.0, 10.0], 13, 0, 1.0),
+      ("10, 20 and 30", vec![10.0, 20.0, 30.0], 12, 14, 1.13),
+      (
+        "12, 28, 10 and 21",
+        vec![12.0, 28.0, 10.0, 21.0],
+        13,
+        14,
+        0.86,
+      ),
+    ] {
+      let (bones, length) = links(&lengths, 0.2, 0.4);
+      let total = chain_length(&bones, length);
+      let toward = Vec2::from_angle(direction as f32 * TAU / 24.0 + 0.05);
+      let target = ORIGIN + toward * (twentieths as f32 * 0.05 * total);
+      let after = reached(&bones, length, target, 1.0);
+      assert!(after.iter().all(finite), "{what}: {after:?}");
+      assert_chain_only_turned(&bones, &after, what);
+      let short = chain_tip(&after, length).distance(target);
+      assert!((short - miss).abs() < 0.05, "{what}: {short} short");
+      let folded = chain_turns(&after, length)
+        .into_iter()
+        .fold(0.0, |most: f32, turn| most.max(turn.abs()));
+      assert!(folded > 2.8, "{what}: folded {folded} at most");
+    }
+
+    // How often, and how far: seven chains of three and four unequal parts,
+    // each bent six ways, toward targets in 24 directions at every
+    // twentieth of their length. A thousandth of them stop short (21 of
+    // 19,152), none by more than 2% of its chain's length
+    let (mut targets, mut short, mut worst) = (0, 0, 0.0_f32);
+    for lengths in [
+      vec![30.0, 20.0, 10.0],
+      vec![30.0, 10.0, 20.0],
+      vec![10.0, 20.0, 30.0],
+      vec![20.0, 30.0, 10.0],
+      vec![25.0, 15.0, 20.0],
+      vec![30.0, 12.0, 20.0, 9.0],
+      vec![12.0, 28.0, 10.0, 21.0],
+    ] {
+      for each in [0.4, -0.4, 0.7, -0.7, 1.0, -1.0] {
+        let (bones, length) = links(&lengths, 0.2, each);
+        let total = chain_length(&bones, length);
+        for twentieths in 1..20 {
+          for direction in 0..24 {
+            let toward = Vec2::from_angle(direction as f32 * TAU / 24.0 + 0.05);
+            let target = ORIGIN + toward * (twentieths as f32 * 0.05 * total);
+            let after = reached(&bones, length, target, 1.0);
+            assert!(after.iter().all(finite), "{lengths:?}, {each}: {after:?}");
+            let miss = chain_tip(&after, length).distance(target) / total;
+            targets += 1;
+            if miss > CHAIN_NEAR + COMPOSED / total {
+              short += 1;
+            }
+            worst = worst.max(miss);
+          }
+        }
+      }
+    }
+    assert_eq!(targets, 19_152);
+    assert!((10..=40).contains(&short), "{short} stop short");
+    assert!(
+      (0.01..0.03).contains(&worst),
+      "the worst is {worst} of the length"
+    );
+  }
+
+  #[test]
+  fn a_straight_chain_bends_into_an_arc_to_reach_along_its_own_line() {
+    // Chains laid along one line at 0.3 rad, sent to targets on that line:
+    // nearer than their length, and behind their first joint. Reaching
+    // alone keeps every joint on the line, and the tip sticks or folds flat
+    // onto it. Each chain is bent into an arc first, the positive way: it
+    // reaches its target with every part turned the positive way from the
+    // one before, none folded flat
+    let line = Vec2::from_angle(0.3);
+    for lengths in [vec![25.0; 4], vec![10.0; 16], vec![30.0, 20.0, 10.0]] {
+      let (bones, length) = links(&lengths, 0.3, 0.0);
+      let total = chain_length(&bones, length);
+      for share in [0.05, 0.25, 0.5, 0.75, 0.9, 0.97, 0.995, -0.5] {
+        let what = format!("{} parts, {share} of the length along", lengths.len());
+        let target = ORIGIN + line * (share * total);
+        let after = reached(&bones, length, target, 1.0);
+        assert_on_target(&after, length, target, &what);
+        assert_chain_only_turned(&bones, &after, &what);
+        let turns = chain_turns(&after, length);
+        assert!(
+          turns.iter().all(|turn| (0.02..2.9).contains(turn)),
+          "{what}: turns of {turns:?}"
+        );
+      }
+    }
+
+    // Four equal parts 100 long, to a target 75 along: the arc for it turns
+    // each part sqrt(24 x 0.25 / 15) = 0.632 rad from the one before, which
+    // brings four parts of 25 to 76.7 from their start, so the passes have
+    // 1.7 to close and leave the turns near that
+    let (bones, length) = links(&[25.0; 4], 0.3, 0.0);
+    let after = reached(&bones, length, ORIGIN + line * 75.0, 1.0);
+    for turn in chain_turns(&after, length) {
+      assert!((turn - 0.632).abs() < 0.1, "a turn of {turn}");
+    }
+
+    // A chain within `CHAIN_NEAR ×` its length of a line counts as on it,
+    // whichever way it leans: here by a ten thousandth of a radian a joint,
+    // the negative way
+    let (leaning, length) = links(&[25.0; 4], 0.3, -1.0e-4);
+    let target = ORIGIN + line * 50.0;
+    let after = reached(&leaning, length, target, 1.0);
+    assert_on_target(&after, length, target, "leaning a little");
+    let turns = chain_turns(&after, length);
+    assert!(turns.iter().all(|turn| *turn > 0.02), "{turns:?}");
+    // One bent by more than that is left to the reaching, which folds it
+    // flat at a joint on its own side
+    let (bent, length) = links(&[25.0; 4], 0.3, -0.01);
+    let toward = (chain_tip(&bent, length) - ORIGIN).normalize();
+    let target = ORIGIN + toward * 50.0;
+    let after = reached(&bent, length, target, 1.0);
+    assert_on_target(&after, length, target, "bent a little");
+    let turns = chain_turns(&after, length);
+    assert!(turns.iter().all(|turn| *turn < 0.0), "{turns:?}");
+    assert!(turns.iter().any(|turn| *turn < -3.0), "{turns:?}");
+
+    // A straight chain whose target is off its line is not on one line
+    // with it, and bends toward the target's side
+    let (bones, length) = links(&[25.0; 4], 0.3, 0.0);
+    for side in [1.0, -1.0] {
+      let target = ORIGIN + line * 60.0 + line.perp() * (20.0 * side);
+      let after = reached(&bones, length, target, 1.0);
+      assert_on_target(&after, length, target, "off the line");
+    }
+  }
+
+  /// `bones` with bone `index` mirrored by a `scale_y` of -1 and every bone
+  /// after it written for a parent mirrored so: its `y` and its rotation
+  /// the other way round. Its joints are where `bones`' are
+  fn mirrored_from(bones: &[BonePose], index: usize) -> Vec<BonePose> {
+    let mut twin = bones.to_vec();
+    twin[index].scale_y = -twin[index].scale_y;
+    for bone in &mut twin[index + 1..] {
+      bone.y = -bone.y;
+      bone.rotation = -bone.rotation;
+    }
+    twin
+  }
+
+  #[test]
+  fn a_mirrored_bone_in_a_chain_passes_its_turn_on_reversed() {
+    // A chain with bones off their parents' axes, and its twins: the same
+    // joints, with a bone in it mirrored by its own scale. Under a mirrored
+    // bone the bones after it turn the other way for the same turn of
+    // their parts, so each twin's joints come to where the plain chain's do
+    let plain = vec![
+      bone(ORIGIN.x, ORIGIN.y, 0.3),
+      bone(30.0, 4.0, 0.5),
+      bone(25.0, -3.0, 0.4),
+      bone(25.0, 5.0, -0.6),
+      bone(20.0, 0.0, 0.7),
+    ];
+    let length = 15.0;
+    let second = mirrored_from(&plain, 1);
+    // Mirrored by its x scale instead, which is the same bone turned half
+    // round
+    let mut by_x = second.clone();
+    by_x[1] = BonePose {
+      scale_x: -1.0,
+      scale_y: 1.0,
+      rotation: second[1].rotation + PI,
+      ..second[1]
+    };
+    let twins = [
+      ("the second bone mirrored", second),
+      ("mirrored by its x scale", by_x),
+      ("the first bone mirrored", mirrored_from(&plain, 0)),
+      // Two mirrors: the bones after both turn the plain way again
+      (
+        "two bones mirrored",
+        mirrored_from(&mirrored_from(&plain, 1), 3),
+      ),
+    ];
+    let total = chain_length(&plain, length);
+    for (what, twin) in &twins {
+      for (joint, same) in chain_joints(&plain, length)
+        .iter()
+        .zip(chain_joints(twin, length))
+      {
+        assert_near(same, *joint, what);
+      }
+    }
+    for target in [
+      // Reached by the passes; closed after them; out of reach
+      ORIGIN + Vec2::new(40.0, 50.0),
+      ORIGIN + Vec2::new(-0.6, 0.8) * (0.99 * total),
+      ORIGIN + Vec2::new(0.0, -400.0),
+    ] {
+      let solved = reached(&plain, length, target, 1.0);
+      let joints = chain_joints(&solved, length);
+      let moved = joints
+        .iter()
+        .zip(chain_joints(&plain, length))
+        .any(|(joint, stood)| joint.distance(stood) > 10.0);
+      assert!(moved, "target {target}: nothing moved");
+      for (what, twin) in &twins {
+        let what = format!("{what}, target {target}");
+        let after = reached(twin, length, target, 1.0);
+        assert_chain_only_turned(twin, &after, &what);
+        for (joint, same) in joints.iter().zip(chain_joints(&after, length)) {
+          assert_near(same, *joint, &what);
+        }
+      }
+    }
+  }
+
+  #[test]
+  fn a_chain_its_passes_leave_short_is_closed_by_one_factor_on_its_turns() {
+    // A chain the passes bring within `CHAIN_NEAR ×` its length of the
+    // target is left as they left it: four bones 100 long, the tip 0.089
+    // from a target 40 away
+    let (bones, length) = four();
+    let target = ORIGIN + Vec2::from_angle(7.0 * TAU / 8.0 + 0.1) * 40.0;
+    let after = reached(&bones, length, target, 1.0);
+    let miss = chain_tip(&after, length).distance(target);
+    assert!(
+      (0.08..0.1).contains(&miss),
+      "the passes left the tip {miss} away"
+    );
+
+    // Parts of 20, 20 and 10, turned 0.01 and -0.02 rad at the joints: all
+    // but straight, and its target on the line through its tip at 0.995 of
+    // its length. Sixteen passes leave the tip 0.24 away. Its own turns,
+    // 0.022 and -0.041 by then, are scaled 6.45 times, which brings the tip
+    // onto the target with the chain still the shape it was, an S
+    let bones = vec![
+      bone(ORIGIN.x, ORIGIN.y, 0.3),
+      bone(20.0, 0.0, 0.01),
+      bone(20.0, 0.0, -0.02),
+    ];
+    let length = 10.0;
+    let toward = (chain_tip(&bones, length) - ORIGIN).normalize();
+    let target = ORIGIN + toward * (0.995 * 50.0);
+    let after = reached(&bones, length, target, 1.0);
+    let miss = chain_tip(&after, length).distance(target);
+    assert!(miss < 0.005, "the tip is {miss} away");
+    let turns = chain_turns(&after, length);
+    assert!((turns[0] - 0.141).abs() < 0.01, "{turns:?}");
+    assert!((turns[1] + 0.265).abs() < 0.01, "{turns:?}");
+    assert_chain_only_turned(&bones, &after, "an S");
+
+    // The least change that closes it is the one made. Parts of 10, 15 and
+    // 10 toward a target 4.24 from the first joint: the passes fold the
+    // chain to turns of -2.758 and -2.899, its tip 4.20 from the first
+    // joint, a little too near. Folded so far, closing its turns moves the
+    // tip out: by 0.26%, to -2.765 and -2.906, the tip is on the target.
+    // Opening them does too, by a quarter (to -2.089 and -2.195), with the
+    // middle joints 20 from where the passes put them
+    let bones = vec![
+      bone(ORIGIN.x, ORIGIN.y, 1.0),
+      bone(10.0, 0.0, -0.6),
+      bone(15.0, 0.0, 0.8),
+    ];
+    let target = ORIGIN + Vec2::new(-3.0, 3.0);
+    let after = reached(&bones, 10.0, target, 1.0);
+    let miss = chain_tip(&after, 10.0).distance(target);
+    assert!(miss < 0.005, "the tip is {miss} away");
+    let turns = chain_turns(&after, 10.0);
+    assert!((turns[0] + 2.765).abs() < 0.02, "{turns:?}");
+    assert!((turns[1] + 2.906).abs() < 0.02, "{turns:?}");
   }
 }
