@@ -103,8 +103,11 @@ use crate::core::ui::Color;
 ///        bend: Positive,                                     // two bones: Positive or
 ///                                                            // Negative; a chain: those
 ///                                                            // or Pose (its default)
-///        compress: false, stretch: false, uniform: false),   // compress: one bone; the
+///        compress: false, stretch: false, uniform: false,    // compress: one bone; the
 ///                                                            // others: not a chain
+///        max_stretch: 1.5),                                  // stretch up to this times the
+///                                                            // reach (at least 1; left out:
+///                                                            // no limit); not a chain
 ///     // A transform constraint copies the target's rotation, place, scale and shear by a
 ///     // mix each (0 leaves it, 1 copies it; outside 0 to 1 is allowed) plus an offset
 ///     Transform(name: "level", bones: ["arm"], target: "aim",
@@ -483,6 +486,8 @@ enum ConstraintFile {
     compress: bool,
     #[serde(default)]
     stretch: bool,
+    #[serde(default)]
+    max_stretch: Option<f32>,
     #[serde(default)]
     uniform: bool,
   },
@@ -936,6 +941,7 @@ impl SkeletonFile {
           bend,
           compress,
           stretch,
+          max_stretch,
           uniform,
         } => builder.ik(
           name.as_str(),
@@ -947,6 +953,7 @@ impl SkeletonFile {
             bend: bend.map(IkBendFile::bend),
             compress: *compress,
             stretch: *stretch,
+            max_stretch: *max_stretch,
             uniform: *uniform,
           },
         ),
@@ -1219,6 +1226,7 @@ impl SkeletonFile {
             bend,
             compress,
             stretch,
+            max_stretch,
             ..
           } => IkValues {
             mix: *mix,
@@ -1226,6 +1234,7 @@ impl SkeletonFile {
             bend: bend.map_or(IkBend::default_for(bones.len()), IkBendFile::bend),
             compress: *compress,
             stretch: *stretch,
+            max_stretch: *max_stretch,
           },
           ConstraintFile::Transform { .. } => IkValues::of(&IkSetup::default()),
         };
@@ -1237,6 +1246,7 @@ impl SkeletonFile {
             bend: key.bend.map_or(setup.bend, IkBendFile::bend),
             compress: key.compress.unwrap_or(setup.compress),
             stretch: key.stretch.unwrap_or(setup.stretch),
+            max_stretch: setup.max_stretch,
           }),
         });
       }
@@ -1606,7 +1616,7 @@ mod tests {
     },
     constraints: [
       Ik(name: "limb", bones: ["thigh", "shin"], target: "aim", mix: 0.75, softness: 2.5,
-         bend: Negative, stretch: true, uniform: true),
+         bend: Negative, stretch: true, max_stretch: 1.8, uniform: true),
       Transform(name: "copy", bones: ["head", "arm"], target: "aim",
                 mix: (rotate: 0.5, x: 0.25, y: -0.5, scale_x: 1, scale_y: 2, shear_y: 0.1),
                 offset: (rotation: 45, x: 1, y: 2, scale_x: 0.5, scale_y: -0.5, shear_y: 30),
@@ -1806,6 +1816,7 @@ mod tests {
           bend: Some(IkBend::Negative),
           compress: false,
           stretch: true,
+          max_stretch: Some(1.8),
           uniform: true,
         },
       )
@@ -1965,6 +1976,7 @@ mod tests {
       bend: IkBend::Negative,
       compress: false,
       stretch: true,
+      max_stretch: Some(1.8),
     };
     let walk = animation(
       "walk",
@@ -2171,6 +2183,41 @@ mod tests {
   }
 
   #[test]
+  fn a_stretch_limit_below_one_or_on_a_chain_fails_to_load() {
+    let file = |constraint: &str| {
+      format!(
+        r#"(
+          bones: [
+            (name: "root"),
+            (name: "a", parent: "root", length: 10),
+            (name: "b", parent: "a", x: 10, length: 10),
+            (name: "c", parent: "b", x: 10, length: 10),
+            (name: "target", parent: "root"),
+          ],
+          constraints: [{constraint}],
+        )"#
+      )
+    };
+    let error = failure(&file(
+      r#"Ik(name: "arm", bones: ["a", "b"], target: "target", stretch: true, max_stretch: 0.5)"#,
+    ));
+    assert!(
+      error.contains("max_stretch is 0.5; it must be at least 1"),
+      "{error}"
+    );
+    let error = failure(&file(
+      r#"Ik(name: "tail", bones: ["a", "b", "c"], target: "target", max_stretch: 2)"#,
+    ));
+    assert!(
+      error.contains("max_stretch applies only to one or two bones"),
+      "{error}"
+    );
+    loaded(&file(
+      r#"Ik(name: "arm", bones: ["a", "b"], target: "target", stretch: true, max_stretch: 1)"#,
+    ));
+  }
+
+  #[test]
   fn a_file_s_constraints_load_and_match_the_builder_s() {
     let data = loaded(
       r#"(
@@ -2186,7 +2233,7 @@ mod tests {
         ],
         constraints: [
           Ik(name: "leg", bones: ["thigh", "shin"], target: "foot_target", bend: Negative, softness: 6),
-          Ik(name: "look", bones: ["head"], target: "look_target", mix: 0.5, stretch: true, uniform: true),
+          Ik(name: "look", bones: ["head"], target: "look_target", mix: 0.5, stretch: true, max_stretch: 2, uniform: true),
           Transform(name: "level", bones: ["pelvis"], target: "torso", mix: (rotate: 0.6), offset: (rotation: 90), local: true),
         ],
       )"#,
@@ -2228,6 +2275,7 @@ mod tests {
         IkSetup {
           mix: 0.5,
           stretch: true,
+          max_stretch: Some(2.0),
           uniform: true,
           ..IkSetup::default()
         },

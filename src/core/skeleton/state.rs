@@ -4793,6 +4793,7 @@ mod tests {
       },
       compress: false,
       stretch,
+      max_stretch: None,
     };
     let ik_keys = |keys: Vec<(f32, IkValues)>| Timeline::Ik {
       constraint: leg,

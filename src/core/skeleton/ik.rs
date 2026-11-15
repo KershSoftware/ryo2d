@@ -79,6 +79,10 @@ pub struct IkValues {
   /// One or two bones: scale the first along its length when the target
   /// is beyond reach
   pub stretch: bool,
+  /// One or two bones: the most stretch multiplies the scale by before the
+  /// mix, as `distance / reach` is taken no higher. Not keyed: an
+  /// animation's key leaves it as the setup's. `None` is no limit
+  pub max_stretch: Option<f32>,
 }
 
 impl IkValues {
@@ -92,6 +96,7 @@ impl IkValues {
       bend: setup.bend.unwrap_or(IkBend::Positive),
       compress: setup.compress,
       stretch: setup.stretch,
+      max_stretch: setup.max_stretch,
     }
   }
 }
@@ -103,7 +108,9 @@ impl IkValues {
 /// With `values.stretch` and a target beyond the bone's reach
 /// (`length × |scale_x|`), or `values.compress` and one nearer, the bone's
 /// `scale_x` is multiplied by `1 + (distance / reach - 1) × mix`, which at
-/// a mix of 1 puts its tip on the target; `uniform` multiplies `scale_y` by
+/// a mix of 1 puts its tip on the target (`distance / reach` is taken no
+/// higher than `values.max_stretch`, so a farther target is pointed at and
+/// not reached); `uniform` multiplies `scale_y` by
 /// the same. A bone with no reach (no `length`, or no x scale) only turns.
 ///
 /// Only the bone's rotation and scale are written. Nothing is, when the mix
@@ -130,7 +137,7 @@ pub(crate) fn one_bone(
   let scales = reach > NO_LENGTH
     && ((values.stretch && distance > reach) || (values.compress && distance < reach));
   let factor = if scales {
-    scale_factor(distance, reach, mix)
+    scale_factor(distance, reach, mix, values.max_stretch)
   } else {
     1.0
   };
@@ -184,7 +191,8 @@ pub(crate) fn one_bone(
 ///
 /// With `values.stretch`, no softness and an even `first`, a target beyond
 /// reach multiplies `first`'s `scale_x` (and `scale_y` with `uniform`) by
-/// `1 + (distance / reach - 1) × mix`, and both parts are laid along the
+/// `1 + (distance / reach - 1) × mix` (with `distance / reach` taken no
+/// higher than `values.max_stretch`), and both parts are laid along the
 /// line to the target on `first` as stretched. The tip is then on the
 /// target when `second` lies on `first`'s axis or with `uniform`, and
 /// otherwise on the line, a little short of the target.
@@ -267,7 +275,7 @@ pub(crate) fn two_bones(
 
   let stretches = values.stretch && softness <= 0.0 && distance > reach && even(first);
   let factor = if stretches {
-    scale_factor(distance, reach, mix)
+    scale_factor(distance, reach, mix, values.max_stretch)
   } else {
     1.0
   };
@@ -797,9 +805,12 @@ fn turned(from: f32, to: f32, mix: f32) -> f32 {
 }
 
 /// What stretch and compress multiply a scale by so that a `reach` becomes
-/// `distance`, by `mix`
-fn scale_factor(distance: f32, reach: f32, mix: f32) -> f32 {
-  1.0 + (distance / reach - 1.0) * mix
+/// `distance`, by `mix`, with `distance / reach` taken no higher than
+/// `max` when there is one. Compress is below 1 and a limit is at least 1,
+/// so it never limits compress
+fn scale_factor(distance: f32, reach: f32, mix: f32, max: Option<f32>) -> f32 {
+  let ratio = distance / reach;
+  1.0 + (max.map_or(ratio, |max| ratio.min(max)) - 1.0) * mix
 }
 
 /// Whether a bone scales every direction alike: its axes as long as each
@@ -828,7 +839,11 @@ fn finite(bone: &BonePose) -> bool {
 
 /// Whether everything a solve is given beside its bones is finite
 fn given(length: f32, target: Vec2, values: IkValues) -> bool {
-  length.is_finite() && target.is_finite() && values.mix.is_finite() && values.softness.is_finite()
+  length.is_finite()
+    && target.is_finite()
+    && values.mix.is_finite()
+    && values.softness.is_finite()
+    && values.max_stretch.is_none_or(f32::is_finite)
 }
 
 #[cfg(test)]
@@ -1004,6 +1019,7 @@ mod tests {
       bend: Some(IkBend::Negative),
       compress: true,
       stretch: false,
+      max_stretch: Some(1.5),
       uniform: true,
     };
     assert_eq!(
@@ -1014,6 +1030,7 @@ mod tests {
         bend: IkBend::Negative,
         compress: true,
         stretch: false,
+        max_stretch: Some(1.5),
       }
     );
     let setup = IkSetup {
@@ -1023,6 +1040,7 @@ mod tests {
     };
     let values = IkValues::of(&setup);
     assert!(values.stretch && !values.compress, "{values:?}");
+    assert_eq!(values.max_stretch, Some(1.5));
     assert_eq!(
       IkValues::of(&IkSetup::default()),
       IkValues {
@@ -1031,6 +1049,7 @@ mod tests {
         bend: IkBend::Positive,
         compress: false,
         stretch: false,
+        max_stretch: None,
       }
     );
   }
@@ -1651,6 +1670,101 @@ mod tests {
         "mix {mix}"
       );
     }
+  }
+
+  #[test]
+  fn stretch_stops_at_its_limit_and_the_limb_points_on() {
+    let capped = IkValues {
+      stretch: true,
+      max_stretch: Some(1.5),
+      ..values()
+    };
+    // One bone of length 30 scaled (2, 3): reach 60. A target 180 below is
+    // 3 times that; the limit holds scale_x to 2 x 1.5 = 3 (and uniform
+    // scale_y to 4.5), so the tip is 90 below, on the line to the target
+    let start = BonePose {
+      scale_x: 2.0,
+      scale_y: 3.0,
+      ..bone(ORIGIN.x, ORIGIN.y, 0.0)
+    };
+    let far = ORIGIN + Vec2::new(0.0, 180.0);
+    let after = pointed(start, 30.0, far, capped, true);
+    assert_close(after.scale_x, 3.0, "one bone");
+    assert_close(after.scale_y, 4.5, "one bone uniform");
+    assert_near(end(&after, 30.0), ORIGIN + Vec2::new(0.0, 90.0), "one bone");
+    // Mix 0.5: 1 + (1.5 - 1) x 0.5 = 1.25, not 1 + (3 - 1) x 0.5
+    let half = IkValues { mix: 0.5, ..capped };
+    let after = pointed(start, 30.0, far, half, true);
+    assert_close(after.scale_x, 2.5, "one bone, mix 0.5");
+    assert_close(after.scale_y, 3.75, "one bone, mix 0.5");
+    // A target within the limit is reached: 1.2 times the reach is 72
+    let near = ORIGIN + Vec2::new(0.0, 72.0);
+    let after = pointed(start, 30.0, near, capped, false);
+    assert_near(end(&after, 30.0), near, "one bone within the limit");
+    assert_close(after.scale_x, 2.4, "one bone within the limit");
+    // No limit stretches all the way
+    let after = pointed(
+      start,
+      30.0,
+      far,
+      IkValues {
+        max_stretch: None,
+        ..capped
+      },
+      false,
+    );
+    assert_close(after.scale_x, 6.0, "one bone, no limit");
+
+    // Two bones, reach 70, a target 210 straight below (3 times): scale_x
+    // 1.5, the joint 60 below and the tip 105 below, on the line
+    let (first, second) = limb();
+    let target = ORIGIN + Vec2::new(0.0, 210.0);
+    let (a, b) = solved((first, second), 30.0, target, capped, true);
+    assert_close(a.scale_x, 1.5, "two bones");
+    assert_close(a.scale_y, 1.5, "two bones uniform");
+    assert_near(joint(&a, &b), ORIGIN + Vec2::new(0.0, 60.0), "two bones");
+    assert_near(
+      tip(&a, &b, 30.0),
+      ORIGIN + Vec2::new(0.0, 105.0),
+      "two bones",
+    );
+    assert!(bend(&a, &b, 30.0).abs() < 0.01, "straight");
+    // And off to a side: still pointing at the target
+    let toward = Vec2::new(0.6, 0.8);
+    let (a, b) = solved(
+      (first, second),
+      30.0,
+      ORIGIN + toward * 300.0,
+      capped,
+      false,
+    );
+    assert_near(
+      tip(&a, &b, 30.0),
+      ORIGIN + toward * 105.0,
+      "two bones aslant",
+    );
+    // Mix 0.5 uses the capped factor too
+    let (a, _) = solved((first, second), 30.0, target, half, true);
+    assert_close(a.scale_x, 1.25, "two bones, mix 0.5");
+    assert_close(a.scale_y, 1.25, "two bones, mix 0.5");
+    // Within the limit: 105 away is reached
+    let (a, b) = solved(
+      (first, second),
+      30.0,
+      ORIGIN + Vec2::new(0.0, 105.0),
+      capped,
+      false,
+    );
+    assert_near(tip(&a, &b, 30.0), ORIGIN + Vec2::new(0.0, 105.0), "within");
+    assert_close(a.scale_x, 1.5, "within");
+    // A limit that is not finite changes nothing
+    let bad = IkValues {
+      max_stretch: Some(f32::NAN),
+      ..capped
+    };
+    let (a, b) = solved((first, second), 30.0, target, bad, true);
+    assert_eq!(bits(&a), bits(&first));
+    assert_eq!(bits(&b), bits(&second));
   }
 
   #[test]

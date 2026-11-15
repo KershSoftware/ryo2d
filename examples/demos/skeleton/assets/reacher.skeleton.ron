@@ -63,9 +63,10 @@
   // the reach has put it, at its own size (the horizon's scale is 1), so
   // an arm stretched to the target does not stretch the hand and tray. The
   // elbow bends the negative way: reaching to the right, it hangs below the
-  // line to the target
+  // line to the target. With stretch on (the page's toggle) the arm lengthens by
+  // half again its reach at most
   constraints: [
-    Ik(name: "arm", bones: ["upper", "fore"], target: "target", bend: Negative),
+    Ik(name: "arm", bones: ["upper", "fore"], target: "target", bend: Negative, max_stretch: 1.5),
     Transform(name: "level", bones: ["hand"], target: "horizon", mix: (rotate: 1, scale_x: 1, scale_y: 1)),
   ],
 )

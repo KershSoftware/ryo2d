@@ -130,6 +130,9 @@ pub struct IkOverride {
   /// One or two bones: scale the first along its length when the target is
   /// beyond reach
   pub stretch: Option<bool>,
+  /// One or two bones: the most stretch takes the scale to, as a factor of
+  /// the reach; at least 1, or it is dropped with a warning
+  pub max_stretch: Option<f32>,
 }
 
 /// The mixes an override sets on a transform constraint. Each one given
@@ -148,7 +151,7 @@ pub struct TransformMixOverride {
 
 impl ConstraintOverride {
   /// The override without its values that are not finite, an IK mix within
-  /// 0 to 1 and an IK softness not below 0, and whether any value was taken
+  /// 0 to 1, an IK softness not below 0 and an IK `max_stretch` not below 1, and whether any value was taken
   /// out
   fn checked(self) -> (Self, bool) {
     fn keep(value: &mut Option<f32>, bad: &mut bool) {
@@ -162,6 +165,11 @@ impl ConstraintOverride {
       Self::Ik(mut ik) => {
         keep(&mut ik.mix, &mut bad);
         keep(&mut ik.softness, &mut bad);
+        keep(&mut ik.max_stretch, &mut bad);
+        if ik.max_stretch.is_some_and(|max| max < 1.0) {
+          ik.max_stretch = None;
+          bad = true;
+        }
         ik.mix = ik.mix.map(|mix| mix.clamp(0.0, 1.0));
         ik.softness = ik.softness.map(|softness| softness.max(0.0));
         Self::Ik(ik)
@@ -204,6 +212,9 @@ impl ConstraintOverride {
         set(&mut values.bend, o.bend.filter(|bend| bend.fits(bones)));
         set(&mut values.compress, o.compress);
         set(&mut values.stretch, o.stretch);
+        if bones <= 2 {
+          set(&mut values.max_stretch, o.max_stretch.map(Some));
+        }
       }
       (Self::Transform(o), ConstraintValues::Transform(values)) => {
         set(&mut values.rotate, o.rotate);
@@ -693,7 +704,7 @@ impl Skeleton {
     if bad && !self.warned_constraint_value {
       self.warned_constraint_value = true;
       log::warn!(
-        "skeleton constraint override for {name:?} has a value that is not finite; the value is ignored"
+        "skeleton constraint override for {name:?} has a value that is not finite (or a max_stretch below 1); the value is ignored"
       );
     }
     let at = self
@@ -2418,6 +2429,7 @@ mod tests {
       bend: IkBend::Negative,
       compress: false,
       stretch: false,
+      max_stretch: None,
     };
     let lean = TransformMix {
       rotate: 0.5,
@@ -2552,6 +2564,41 @@ mod tests {
     let leg = leg_values(&played.skeleton);
     assert!(leg.bend == IkBend::Positive && leg.stretch && !leg.compress);
     close(leg.mix, 0.5);
+  }
+
+  #[test]
+  fn an_override_sets_the_stretch_limit_and_drops_one_below_one() {
+    let log = capture_log();
+    let mut played = walking();
+    played.step(0.1);
+    assert_eq!(leg_values(&played.skeleton).max_stretch, None);
+    played.skeleton.override_constraint(
+      "leg",
+      ik_override(IkOverride {
+        max_stretch: Some(1.5),
+        ..IkOverride::default()
+      }),
+    );
+    played.step(0.1);
+    assert_eq!(leg_values(&played.skeleton).max_stretch, Some(1.5));
+    // Below 1, or not finite: dropped with one warning, and the setup's
+    // (none) stands
+    for bad in [0.5, f32::NAN] {
+      played.skeleton.override_constraint(
+        "leg",
+        ik_override(IkOverride {
+          max_stretch: Some(bad),
+          ..IkOverride::default()
+        }),
+      );
+      played.step(0.1);
+      assert_eq!(leg_values(&played.skeleton).max_stretch, None, "{bad}");
+    }
+    assert_eq!(log.containing("not finite"), 1, "{:?}", log.warnings());
+    // Cleared, it is the setup's again
+    played.skeleton.clear_constraint_override("leg");
+    played.step(0.1);
+    assert_eq!(leg_values(&played.skeleton).max_stretch, None);
   }
 
   #[test]

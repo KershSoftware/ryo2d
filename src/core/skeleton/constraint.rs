@@ -86,6 +86,11 @@ pub struct IkSetup {
   /// One or two bones: scale the first along its length when the target
   /// is beyond reach
   pub stretch: bool,
+  /// One or two bones: the most stretch takes the scale to, as a factor of
+  /// the reach (at least 1). Past it the limb is stretched by that much and
+  /// points at the target. Left out there is no limit. Not keyed; the game's
+  /// override can set it
+  pub max_stretch: Option<f32>,
   /// Scale across the length by the same factor whenever stretch or
   /// compress is on, by the setup, an animation's key or the game's
   /// override. A setup may set it with neither: it is not keyed or
@@ -156,6 +161,7 @@ impl Default for IkSetup {
       bend: None,
       compress: false,
       stretch: false,
+      max_stretch: None,
       uniform: false,
     }
   }

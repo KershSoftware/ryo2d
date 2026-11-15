@@ -204,8 +204,11 @@ Every field with a default may be left out. The whole format, each default in it
        bend: Positive,                                     // two bones: Positive or
                                                            // Negative; a chain: those
                                                            // or Pose (its default)
-       compress: false, stretch: false, uniform: false),   // compress: one bone; the
+       compress: false, stretch: false, uniform: false,    // compress: one bone; the
                                                            // others: not a chain
+       max_stretch: 1.5),                                  // stretch at most this times the
+                                                           // reach (at least 1; left out: no
+                                                           // limit); not a chain
     Transform(name: "level", bones: ["arm"], target: "aim",
               mix: (rotate: 1, x: 0, y: 0, scale_x: 0, scale_y: 0, shear_y: 0),   // all 0
               offset: (rotation: 0, x: 0, y: 0, scale_x: 0, scale_y: 0, shear_y: 0), // all 0
@@ -1102,6 +1105,7 @@ if let Some(mut skeleton) = ctx.world.get_mut::<Skeleton>(hero) {
 | `softness` | 0 | two bones | A distance short of full reach. While the target is within it of full reach, the tip slows as the limb straightens and never snaps straight; a target past full reach is followed by a tip that nears full reach and stays a little short of it, the joint still bent. 0: the tip follows the target all the way |
 | `stretch` | false | one or two bones | When the target is beyond reach, scale the first bone along its length so the tip reaches it. On two bones, only with `softness` 0 and a first bone whose own scale is even and unsheared |
 | `compress` | false | one bone | When the target is nearer than the bone's length, scale the bone down so its tip is on it |
+| `max_stretch` | none | one or two bones | The most a stretch multiplies the scale by, as a factor of the reach, at least 1: `1.5` stretches to half again the reach. A target beyond it leaves the limb stretched by that much, straight, pointing at the target. Not keyed: a key leaves it as the setup's; the game's override can set it |
 | `uniform` | false | one or two bones | With stretch or compress, scale the bone across its length by the same factor, so it grows or shrinks evenly. It is not keyed or overridden: it takes effect whenever stretch or compress is on, by the setup, a key or the game's override, so a setup may set it with neither |
 
 - **Every bone an IK constraint turns inherits normally** (`BoneInherit::Normal`), and each bone after the first is an immediate child of the one before.
@@ -1171,7 +1175,7 @@ fn leg() -> Option<SkeletonData> {
 }
 ```
 
-`IkSetup { mix, softness, bend_positive, compress, stretch, uniform }` has the defaults of the table above.
+`IkSetup { mix, softness, bend_positive, compress, stretch, max_stretch, uniform }` has the defaults of the table above.
 
 ### Two bones: exact, with one limit
 
@@ -1329,9 +1333,9 @@ if let Some(mut skeleton) = ctx.world.get_mut::<Skeleton>(hero) {
 
 `override_constraint(name, SkeletonConstraintOverride)` sets the constraint every step until `clear_constraint_override(name)` gives it back to the animation, from the next step:
 
-- `SkeletonConstraintOverride::Ik(IkConstraintOverride { mix, softness, bend_positive, compress, stretch })` and `SkeletonConstraintOverride::Transform(TransformConstraintOverride { rotate, x, y, scale_x, scale_y, shear_y })`, every field an `Option` (`Default`: nothing set). Each value given replaces what the animations key, or the setup's where none does, a switch included; each left `None` is the animated one. Its kind must be the constraint's.
+- `SkeletonConstraintOverride::Ik(IkConstraintOverride { mix, softness, bend_positive, compress, stretch, max_stretch })` and `SkeletonConstraintOverride::Transform(TransformConstraintOverride { rotate, x, y, scale_x, scale_y, shear_y })`, every field an `Option` (`Default`: nothing set). Each value given replaces what the animations key, or the setup's where none does, a switch included; each left `None` is the animated one. Its kind must be the constraint's.
 - It shows from the skeleton's next step, as a bone override does. Setting a constraint again replaces its override.
-- An IK `mix` is taken within 0 to 1 and a `softness` below 0 as 0; a transform mix outside 0 to 1 is kept. A value that is not finite is ignored, with one warning per skeleton. A switch the constraint cannot have, which would fail to load in a file (`stretch` on a chain, `compress` on two bones or a chain, `bend_positive: Some(false)` or a `softness` on other than two bones), is ignored without a warning.
+- An IK `mix` is taken within 0 to 1 and a `softness` below 0 as 0; a transform mix outside 0 to 1 is kept. A value that is not finite, or a `max_stretch` below 1, is ignored, with one warning per skeleton. A switch the constraint cannot have, which would fail to load in a file (`stretch` on a chain, `compress` on two bones or a chain, `bend_positive: Some(false)` or a `softness` on other than two bones), is ignored without a warning.
 - A name the data lacks warns once per skeleton per name (`skeleton constraint "leg" is not in the skeleton's data; its override is ignored`), and so does a constraint of the other kind (`skeleton constraint "leg" is not of its override's kind (IK or transform); the override is ignored`); either does nothing. Before the data has loaded the override is kept by name, and it is kept by name through a reload.
 - **Limit: an override on an IK bone changes hands as the mix leaves 0**, where a later constraint moves a bone above that bone. At a mix of 0 the override is the bone's, applied afresh; above 0 the constraint has the last word and the bone is carried round by the bone above it (an eye held at 0.3 rad in the world under a hip a later constraint turns a quarter turn points at 0.3 at a mix of 0, and about 1.6 rad further round at 0.01).
 
@@ -1360,7 +1364,7 @@ An animation can key a constraint's values, and they blend through layers and cr
 - **An IK mix is held within 0 to 1 and its softness at 0 or more once every track has applied**, not after each, so an additive layer or a bezier's overshoot cannot carry them out of range. A transform constraint's mixes are not clamped.
 - The game's `override_constraint` is written over whatever the keys leave.
 
-In code, `SkeletonTimeline::Ik { constraint: SkeletonConstraintId, frames: Vec<(f32, IkValues, SkeletonCurve)> }` and `SkeletonTimeline::TransformMix { constraint, frames: Vec<(f32, TransformConstraintMix, SkeletonCurve)> }`. A key gives every value: `IkValues { mix, softness, bend_positive, compress, stretch }`, and `IkValues::of(&setup)` is a setup's. A constraint's id is its place in the order added, from 0:
+In code, `SkeletonTimeline::Ik { constraint: SkeletonConstraintId, frames: Vec<(f32, IkValues, SkeletonCurve)> }` and `SkeletonTimeline::TransformMix { constraint, frames: Vec<(f32, TransformConstraintMix, SkeletonCurve)> }`. A key gives every value: `IkValues { mix, softness, bend_positive, compress, stretch, max_stretch }` (`max_stretch` is the setup's, not keyed), and `IkValues::of(&setup)` is a setup's. A constraint's id is its place in the order added, from 0:
 
 <!-- given: setup: IkSetup -->
 ```rust

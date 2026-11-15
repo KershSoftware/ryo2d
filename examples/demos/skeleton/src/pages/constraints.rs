@@ -27,10 +27,6 @@ const TARGET: Color = Color::rgb(255, 214, 102);
 /// How far above the wrist the `horizon` bone is kept: the overlay's line
 /// from the hand to it is a short tick
 const HORIZON: f32 = 24.0;
-/// The farthest the page sends the arm's target with Stretch on, as a
-/// share of the arm's reach: stretch has no limit of its own, so a pointer
-/// across the screen would pull the arm many times its length
-const MOST_STRETCH: f32 = 1.5;
 
 /// The ground: its mean height on the 1280 x 720 canvas, and the top of the
 /// image drawn for it, clear above its highest point
@@ -310,13 +306,6 @@ impl ConstraintsPage {
       let out = 185.0 + 85.0 * (self.clock * 1.3).sin();
       shoulder + Vec2::new(turn.cos(), turn.sin()) * out
     };
-    if self.stretch {
-      let out = self.target - shoulder;
-      let most = REACH * MOST_STRETCH;
-      if out.length() > most {
-        self.target = shoulder + out.normalize_or_zero() * most;
-      }
-    }
     self.distance = self.target.distance(shoulder);
 
     let Some(mut skeleton) = ctx.world.get_mut::<Skeleton>(arm) else {
@@ -413,7 +402,7 @@ impl ConstraintsPage {
       return format!("{at}: within the softness of full reach, the wrist slows short of it");
     }
     if self.stretch {
-      format!("{at}: out of reach, the upper arm stretched to it")
+      format!("{at}: out of reach, the upper arm stretched toward it, by at most half again")
     } else {
       format!("{at}: out of reach, the arm points at it")
     }

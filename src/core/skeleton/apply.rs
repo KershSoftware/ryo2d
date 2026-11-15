@@ -1712,6 +1712,7 @@ mod tests {
       },
       compress: false,
       stretch,
+      max_stretch: None,
     }
   }
 

@@ -676,6 +676,21 @@ fn ik_values_ok(
       format!("{whose}stretch applies only to one or two bones"),
     ));
   }
+  if let Some(max) = values.max_stretch {
+    finite(item, &[(&format!("{whose}max_stretch"), max)])?;
+    if max < 1.0 {
+      return Err(error(
+        item(),
+        format!("{whose}max_stretch is {max}; it must be at least 1"),
+      ));
+    }
+    if count > 2 {
+      return Err(error(
+        item(),
+        format!("{whose}max_stretch applies only to one or two bones"),
+      ));
+    }
+  }
   if count > 2 && uniform {
     return Err(error(item(), "uniform applies only to one or two bones"));
   }
@@ -1954,6 +1969,73 @@ mod tests {
       r#"constraint "leg""#,
       "softness is inf, not a finite number",
     );
+  }
+
+  #[test]
+  fn a_stretch_limit_below_one_fails() {
+    for (max, reason) in [
+      (0.99, "max_stretch is 0.99; it must be at least 1"),
+      (0.0, "max_stretch is 0; it must be at least 1"),
+      (-2.0, "max_stretch is -2; it must be at least 1"),
+      (f32::NAN, "max_stretch is NaN, not a finite number"),
+      (f32::INFINITY, "max_stretch is inf, not a finite number"),
+    ] {
+      fails(
+        leg(IkSetup {
+          stretch: true,
+          max_stretch: Some(max),
+          ..IkSetup::default()
+        }),
+        r#"constraint "leg""#,
+        reason,
+      );
+    }
+    // A chain has no stretch to limit
+    fails(
+      limb()
+        .bone(
+          "foot",
+          Some("shin"),
+          BoneSetup {
+            length: 5.0,
+            ..BoneSetup::default()
+          },
+        )
+        .ik(
+          "tail",
+          &["thigh", "shin", "foot"],
+          "foot_target",
+          IkSetup {
+            max_stretch: Some(2.0),
+            ..IkSetup::default()
+          },
+        ),
+      r#"constraint "tail""#,
+      "max_stretch applies only to one or two bones",
+    );
+    // At least 1 is allowed, on two bones and on one
+    for max in [1.0, 1.5] {
+      leg(IkSetup {
+        stretch: true,
+        max_stretch: Some(max),
+        ..IkSetup::default()
+      })
+      .build()
+      .expect("valid skeleton");
+    }
+    limb()
+      .ik(
+        "look",
+        &["thigh"],
+        "foot_target",
+        IkSetup {
+          stretch: true,
+          max_stretch: Some(2.0),
+          ..IkSetup::default()
+        },
+      )
+      .build()
+      .expect("valid skeleton");
   }
 
   #[test]
