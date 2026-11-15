@@ -14,7 +14,7 @@ use crate::core::ecs::Vec2;
 use crate::core::graphics::Image;
 use crate::core::skeleton::{
   Animation, Attachment, BoneSetup, BoundingBoxAttachment, ConstraintId, Curve, EventAudio,
-  EventData, EventValues, Frame, IkSetup, IkValues, Influence, Inherit, MeshAttachment,
+  EventData, EventValues, Frame, IkBend, IkSetup, IkValues, Influence, Inherit, MeshAttachment,
   MeshVertices, PointAttachment, Region, RegionAttachment, SkeletonData, SkeletonError, SlotBlend,
   SlotId, SlotSetup, Timeline, TransformMix, TransformOffset, TransformSetup, WeightedVertices,
 };
@@ -100,7 +100,9 @@ use crate::core::ui::Color;
 ///     Ik(name: "reach", bones: ["torso", "arm"], target: "aim",
 ///        mix: 1,                                             // 0 (animated) to 1 (solved)
 ///        softness: 0,                                        // two bones, a distance
-///        bend_positive: true,                                // two bones only
+///        bend: Positive,                                     // two bones: Positive or
+///                                                            // Negative; a chain: those
+///                                                            // or Pose (its default)
 ///        compress: false, stretch: false, uniform: false),   // compress: one bone; the
 ///                                                            // others: not a chain
 ///     // A transform constraint copies the target's rotation, place, scale and shear by a
@@ -152,12 +154,12 @@ use crate::core::ui::Color;
 ///         // offset, the setup shape
 ///         deform: { "flag": [(0.0, []), (0.5, [0, -6, 0, -6, 0, 6], Bezier(0.25, 0, 0.75, 1)), (1.0, [])] },
 ///       ) },
-///       // Constraints by name: an IK constraint's `ik` keys (mix, softness, bend_positive,
+///       // Constraints by name: an IK constraint's `ik` keys (mix, softness, bend,
 ///       // compress, stretch) or a transform constraint's `transform` keys (its six mixes).
 ///       // A value a key leaves out is the constraint's setup value. The numbers ease to
 ///       // the next key by its curve; the switches change at their key
 ///       constraints: {
-///         "reach": (ik: [(0.0, (mix: 1)), (0.5, (mix: 0.5, softness: 4, bend_positive: false), Stepped)]),
+///         "reach": (ik: [(0.0, (mix: 1)), (0.5, (mix: 0.5, softness: 4, bend: Negative), Stepped)]),
 ///         "level": (transform: [(0.0, (rotate: 1)), (1.0, (rotate: 0.5, x: 0.25))]),
 ///       },
 ///       // Every slot, back to front, or None for the setup order
@@ -422,10 +424,6 @@ fn one() -> f32 {
   1.0
 }
 
-fn yes() -> bool {
-  true
-}
-
 fn white() -> ColorFile {
   ColorFile(Color::WHITE)
 }
@@ -449,6 +447,24 @@ enum BlendFile {
   Screen,
 }
 
+/// An IK constraint's bend, as written
+#[derive(Deserialize, Clone, Copy)]
+enum IkBendFile {
+  Positive,
+  Negative,
+  Pose,
+}
+
+impl IkBendFile {
+  fn bend(self) -> IkBend {
+    match self {
+      Self::Positive => IkBend::Positive,
+      Self::Negative => IkBend::Negative,
+      Self::Pose => IkBend::Pose,
+    }
+  }
+}
+
 /// A constraint, as written: `Ik(..)` or `Transform(..)`
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -461,8 +477,8 @@ enum ConstraintFile {
     mix: f32,
     #[serde(default)]
     softness: f32,
-    #[serde(default = "yes")]
-    bend_positive: bool,
+    #[serde(default)]
+    bend: Option<IkBendFile>,
     #[serde(default)]
     compress: bool,
     #[serde(default)]
@@ -683,7 +699,7 @@ struct SlotTimelinesFile {
 struct IkKeyFile {
   mix: Option<f32>,
   softness: Option<f32>,
-  bend_positive: Option<bool>,
+  bend: Option<IkBendFile>,
   compress: Option<bool>,
   stretch: Option<bool>,
 }
@@ -917,7 +933,7 @@ impl SkeletonFile {
           target,
           mix,
           softness,
-          bend_positive,
+          bend,
           compress,
           stretch,
           uniform,
@@ -928,7 +944,7 @@ impl SkeletonFile {
           IkSetup {
             mix: *mix,
             softness: *softness,
-            bend_positive: *bend_positive,
+            bend: bend.map(IkBendFile::bend),
             compress: *compress,
             stretch: *stretch,
             uniform: *uniform,
@@ -1197,16 +1213,17 @@ impl SkeletonFile {
         // constraint fail as validation refuses them
         let setup = match setup {
           ConstraintFile::Ik {
+            bones,
             mix,
             softness,
-            bend_positive,
+            bend,
             compress,
             stretch,
             ..
           } => IkValues {
             mix: *mix,
             softness: *softness,
-            bend_positive: *bend_positive,
+            bend: bend.map_or(IkBend::default_for(bones.len()), IkBendFile::bend),
             compress: *compress,
             stretch: *stretch,
           },
@@ -1217,7 +1234,7 @@ impl SkeletonFile {
           frames: frames(keys, |key| IkValues {
             mix: key.mix.unwrap_or(setup.mix),
             softness: key.softness.unwrap_or(setup.softness),
-            bend_positive: key.bend_positive.unwrap_or(setup.bend_positive),
+            bend: key.bend.map_or(setup.bend, IkBendFile::bend),
             compress: key.compress.unwrap_or(setup.compress),
             stretch: key.stretch.unwrap_or(setup.stretch),
           }),
@@ -1312,9 +1329,10 @@ mod tests {
   use crate::core::graphics::Image;
   use crate::core::skeleton::{
     Animation, Attachment, BoneId, BoneSetup, BoundingBoxAttachment, ConstraintId, Curve,
-    EventAudio, EventData, EventValues, IkSetup, IkValues, Influence, Inherit, MeshAttachment,
-    MeshVertices, PointAttachment, Region, RegionAttachment, SkeletonData, SlotBlend, SlotId,
-    SlotSetup, Timeline, TransformMix, TransformOffset, TransformSetup, WeightedVertices,
+    EventAudio, EventData, EventValues, IkBend, IkSetup, IkValues, Influence, Inherit,
+    MeshAttachment, MeshVertices, PointAttachment, Region, RegionAttachment, SkeletonData,
+    SlotBlend, SlotId, SlotSetup, Timeline, TransformMix, TransformOffset, TransformSetup,
+    WeightedVertices,
   };
   use crate::core::ui::Color;
 
@@ -1588,7 +1606,7 @@ mod tests {
     },
     constraints: [
       Ik(name: "limb", bones: ["thigh", "shin"], target: "aim", mix: 0.75, softness: 2.5,
-         bend_positive: false, stretch: true, uniform: true),
+         bend: Negative, stretch: true, uniform: true),
       Transform(name: "copy", bones: ["head", "arm"], target: "aim",
                 mix: (rotate: 0.5, x: 0.25, y: -0.5, scale_x: 1, scale_y: 2, shear_y: 0.1),
                 offset: (rotation: 45, x: 1, y: 2, scale_x: 0.5, scale_y: -0.5, shear_y: 30),
@@ -1626,7 +1644,7 @@ mod tests {
         },
         constraints: {
           "copy": (transform: [(0.25, (rotate: -1, shear_y: 3), Bezier(0.25, 0, 0.75, 1)), (1.0, (x: 2))]),
-          "limb": (ik: [(0.0, (mix: 0.5)), (0.5, (softness: 1, bend_positive: true, stretch: false), Stepped), (1.0, (mix: 0, softness: 0))]),
+          "limb": (ik: [(0.0, (mix: 0.5)), (0.5, (softness: 1, bend: Positive, stretch: false), Stepped), (1.0, (mix: 0, softness: 0))]),
         },
         draw_order: [(0.25, ["head", "torso", "gear", "glow"]), (0.75, None)],
         events: [
@@ -1785,7 +1803,7 @@ mod tests {
         IkSetup {
           mix: 0.75,
           softness: 2.5,
-          bend_positive: false,
+          bend: Some(IkBend::Negative),
           compress: false,
           stretch: true,
           uniform: true,
@@ -1944,7 +1962,7 @@ mod tests {
     let limb = IkValues {
       mix: 0.75,
       softness: 2.5,
-      bend_positive: false,
+      bend: IkBend::Negative,
       compress: false,
       stretch: true,
     };
@@ -2074,7 +2092,7 @@ mod tests {
               0.5,
               IkValues {
                 softness: 1.0,
-                bend_positive: true,
+                bend: IkBend::Positive,
                 stretch: false,
                 ..limb
               },
@@ -2167,7 +2185,7 @@ mod tests {
           (name: "look_target", parent: "root"),
         ],
         constraints: [
-          Ik(name: "leg", bones: ["thigh", "shin"], target: "foot_target", bend_positive: false, softness: 6),
+          Ik(name: "leg", bones: ["thigh", "shin"], target: "foot_target", bend: Negative, softness: 6),
           Ik(name: "look", bones: ["head"], target: "look_target", mix: 0.5, stretch: true, uniform: true),
           Transform(name: "level", bones: ["pelvis"], target: "torso", mix: (rotate: 0.6), offset: (rotation: 90), local: true),
         ],
@@ -2198,7 +2216,7 @@ mod tests {
         &["thigh", "shin"],
         "foot_target",
         IkSetup {
-          bend_positive: false,
+          bend: Some(IkBend::Negative),
           softness: 6.0,
           ..IkSetup::default()
         },
@@ -2239,6 +2257,106 @@ mod tests {
   }
 
   #[test]
+  fn the_bend_setting_loads_keys_and_overrides() {
+    use glam::Affine2;
+
+    use crate::core::skeleton::{Constraint, ConstraintOverride, IkOverride, Skeleton};
+    // Two bones bent the negative way, a chain and one bone leaving it out;
+    // keys that leave it out and keys that set it
+    let mut world = registry_over(files(
+      r#"(
+        bones: [
+          (name: "root"),
+          (name: "thigh", parent: "root", length: 10),
+          (name: "shin", parent: "thigh", x: 10, length: 10),
+          (name: "tail_1", parent: "root", x: -10, length: 10),
+          (name: "tail_2", parent: "tail_1", x: 10, length: 10),
+          (name: "tail_3", parent: "tail_2", x: 10, length: 10),
+          (name: "neck", parent: "root", y: 40, length: 5),
+          (name: "foot_target", parent: "root", x: 12),
+          (name: "tail_target", parent: "root", x: 5),
+        ],
+        constraints: [
+          Ik(name: "leg", bones: ["thigh", "shin"], target: "foot_target", bend: Negative),
+          Ik(name: "tail", bones: ["tail_1", "tail_2", "tail_3"], target: "tail_target"),
+          Ik(name: "look", bones: ["neck"], target: "foot_target"),
+        ],
+        animations: { "walk": (
+          duration: 1.0,
+          constraints: {
+            "leg": (ik: [(0.0, (mix: 1)), (0.5, (bend: Positive))]),
+            "tail": (ik: [(0.0, (mix: 1)), (0.5, (bend: Negative))]),
+          },
+        ) },
+      )"#,
+    ));
+    let handle = match AssetsView::new(&mut world).load_now::<SkeletonData>(PATH) {
+      Ok(handle) => handle,
+      Err(error) => panic!("{}", error.report()),
+    };
+    let assets = world.resource::<Assets<SkeletonData>>();
+    let (Some(data), Some(version)) = (assets.get(&handle), assets.version(&handle)) else {
+      panic!("not in the store");
+    };
+    // The setup's, or the default for its bone count
+    let found = |name: &str| {
+      data
+        .constraint(name)
+        .and_then(|id| data.constraints().get(id.index()))
+    };
+    let bend = |name: &str| match found(name) {
+      Some(Constraint::Ik(ik)) => ik.setup.bend,
+      other => panic!("{name}: {other:?}"),
+    };
+    assert_eq!(bend("leg"), Some(IkBend::Negative));
+    assert_eq!(bend("tail"), Some(IkBend::Pose));
+    assert_eq!(bend("look"), Some(IkBend::Positive));
+    // A key that leaves it out takes the setup's
+    let Some(walk) = data.animation("walk") else {
+      panic!("no walk");
+    };
+    let keyed: Vec<Vec<IkBend>> = walk
+      .timelines
+      .iter()
+      .filter_map(|timeline| match timeline {
+        Timeline::Ik { frames, .. } => Some(frames.iter().map(|frame| frame.1.bend).collect()),
+        _ => None,
+      })
+      .collect();
+    assert_eq!(
+      keyed,
+      vec![
+        vec![IkBend::Negative, IkBend::Positive],
+        vec![IkBend::Pose, IkBend::Negative]
+      ]
+    );
+
+    // An override bends it: the knee and the tail's middle joint, on the
+    // line along x to their targets, go to the side asked for (y below 0
+    // the positive side, above it the negative). A bend the constraint
+    // cannot have is passed over
+    let mut skeleton = Skeleton::new(handle.clone());
+    let sides = |skeleton: &mut Skeleton| {
+      skeleton.appear(data, (handle.id(), version), None, Affine2::IDENTITY.into());
+      let y = |bone: &str| skeleton.bone_world(bone).map_or(0.0, |at| at.translation.y);
+      (y("shin").signum(), y("tail_2").signum())
+    };
+    assert_eq!(sides(&mut skeleton), (1.0, -1.0));
+    let bent = |bend| {
+      ConstraintOverride::Ik(IkOverride {
+        bend: Some(bend),
+        ..IkOverride::default()
+      })
+    };
+    skeleton.override_constraint("leg", bent(IkBend::Positive));
+    skeleton.override_constraint("tail", bent(IkBend::Negative));
+    assert_eq!(sides(&mut skeleton), (-1.0, 1.0));
+    skeleton.override_constraint("leg", bent(IkBend::Pose));
+    skeleton.override_constraint("tail", bent(IkBend::Positive));
+    assert_eq!(sides(&mut skeleton), (1.0, -1.0));
+  }
+
+  #[test]
   fn constraint_timelines_load_and_match_the_builder_s() {
     // The brief's example: a value a key leaves out is the setup's (the
     // leg's mix 0.8, softness 3, bent the positive way; the pelvis's rotate
@@ -2261,7 +2379,7 @@ mod tests {
           duration: 0.5,
           bones: { "torso": (rotate: [(0.0, 10)]) },
           constraints: {
-            "leg": (ik: [(0.0, (mix: 1)), (0.3, (mix: 0, bend_positive: false), Bezier(0.3, 0, 0.7, 1))]),
+            "leg": (ik: [(0.0, (mix: 1)), (0.3, (mix: 0, bend: Negative), Bezier(0.3, 0, 0.7, 1))]),
             "pelvis": (transform: [(0.0, (rotate: 0.6)), (0.5, (rotate: 0.9, x: 0.2))]),
           },
         ) },
@@ -2317,7 +2435,7 @@ mod tests {
               0.3,
               IkValues {
                 mix: 0.0,
-                bend_positive: false,
+                bend: IkBend::Negative,
                 ..setup
               },
               Curve::Bezier {

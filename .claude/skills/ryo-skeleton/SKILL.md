@@ -201,7 +201,9 @@ Every field with a default may be left out. The whole format, each default in it
     Ik(name: "reach", bones: ["torso", "arm"], target: "aim",
        mix: 1,                                             // 0 (animated) to 1 (solved)
        softness: 0,                                        // two bones, a distance
-       bend_positive: true,                                // two bones only
+       bend: Positive,                                     // two bones: Positive or
+                                                           // Negative; a chain: those
+                                                           // or Pose (its default)
        compress: false, stretch: false, uniform: false),   // compress: one bone; the
                                                            // others: not a chain
     Transform(name: "level", bones: ["arm"], target: "aim",
@@ -249,12 +251,12 @@ Every field with a default may be left out. The whole format, each default in it
         // offset, the setup shape
         deform: { "flag": [(0.0, []), (0.5, [0, -6, 0, -6, 0, 6], Bezier(0.25, 0, 0.75, 1)), (1.0, [])] },
       ) },
-      // Constraints by name: an IK constraint's `ik` keys (mix, softness, bend_positive,
+      // Constraints by name: an IK constraint's `ik` keys (mix, softness, bend,
       // compress, stretch) or a transform constraint's `transform` keys (its six mixes).
       // A value a key leaves out is the constraint's setup value. The numbers ease to
       // the next key by its curve; the switches change at their key
       constraints: {
-        "reach": (ik: [(0.0, (mix: 1)), (0.5, (mix: 0.5, softness: 4, bend_positive: false), Stepped)]),
+        "reach": (ik: [(0.0, (mix: 1)), (0.5, (mix: 0.5, softness: 4, bend: Negative), Stepped)]),
         "level": (transform: [(0.0, (rotate: 1)), (1.0, (rotate: 0.5, x: 0.25))]),
       },
       // Every slot, back to front, or None for the setup order
@@ -1264,7 +1266,7 @@ Relative adds the target's whole own rotation, its setup rotation with it: give 
 
 ```ron
   constraints: [
-    Ik(name: "arm", bones: ["upper", "fore"], target: "target", bend_positive: false),
+    Ik(name: "arm", bones: ["upper", "fore"], target: "target", bend: Negative),
     Transform(name: "level", bones: ["hand"], target: "horizon", mix: (rotate: 1)),
   ],
 ```
@@ -1309,7 +1311,7 @@ if let Some(mut skeleton) = ctx.world.get_mut::<Skeleton>(hero) {
   skeleton.override_constraint(
     "arm",
     SkeletonConstraintOverride::Ik(IkConstraintOverride {
-      bend_positive: Some(false),
+      bend: Some(IkBend::Negative),
       softness: Some(20.0),
       ..Default::default()
     }),

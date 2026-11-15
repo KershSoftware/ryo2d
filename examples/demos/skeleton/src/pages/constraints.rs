@@ -349,7 +349,11 @@ impl ConstraintsPage {
       SkeletonConstraintOverride::Ik(IkConstraintOverride {
         mix: Some(self.mix),
         softness: Some(self.softness),
-        bend_positive: Some(self.bend == 1),
+        bend: Some(if self.bend == 1 {
+          IkBend::Positive
+        } else {
+          IkBend::Negative
+        }),
         stretch: Some(self.stretch),
         ..Default::default()
       }),

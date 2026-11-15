@@ -9,7 +9,7 @@ use super::attachment::{Attachment, MeshAttachment, MeshVertices};
 use super::builder::{PendingConstraint, PendingKind, SkeletonDataBuilder};
 use super::constrain::ConstraintBones;
 use super::constraint::{
-  Constraint, ConstraintId, IkConstraint, IkSetup, MAX_CONSTRAINTS, MAX_IK_BONES,
+  Constraint, ConstraintId, IkBend, IkConstraint, IkSetup, MAX_CONSTRAINTS, MAX_IK_BONES,
   TransformConstraint,
 };
 use super::curve::Curve;
@@ -530,12 +530,16 @@ fn constraint_ok(
   }
   let name = pending.name.clone();
   Ok(match pending.kind {
-    PendingKind::Ik(setup) => Constraint::Ik(IkConstraint {
-      name,
-      bones: ids,
-      target,
-      setup,
-    }),
+    PendingKind::Ik(setup) => {
+      // Left out, the bend is the default for the bone count, held so
+      let bend = Some(setup.bend_for(ids.len()));
+      Constraint::Ik(IkConstraint {
+        name,
+        bones: ids,
+        target,
+        setup: IkSetup { bend, ..setup },
+      })
+    }
     PendingKind::Transform(setup) => Constraint::Transform(TransformConstraint {
       name,
       bones: ids,
@@ -601,7 +605,11 @@ fn ik_ok(
       ),
     ));
   }
-  ik_values_ok(item, "", ids, bones, &IkValues::of(setup), setup.uniform)
+  let values = IkValues {
+    bend: setup.bend_for(count),
+    ..IkValues::of(setup)
+  };
+  ik_values_ok(item, "", ids, bones, &values, setup.uniform)
 }
 
 /// Checks an IK constraint's keyed values, a setup's or a key's (`whose`
@@ -640,10 +648,14 @@ fn ik_values_ok(
       ),
     ));
   }
-  if count != 2 && !values.bend_positive {
+  if !values.bend.fits(count) {
+    let applies = match values.bend {
+      IkBend::Pose => "a chain",
+      _ => "two bones or a chain",
+    };
     return Err(error(
       item(),
-      format!("{whose}bend_positive false applies only to two bones"),
+      format!("{whose}bend {:?} applies only to {applies}", values.bend),
     ));
   }
   if count != 2 && values.softness > 0.0 {
@@ -1124,7 +1136,7 @@ mod tests {
   };
   use super::super::builder::{BoneSetup, SkeletonDataBuilder, SlotSetup};
   use super::super::constraint::{
-    Constraint, ConstraintId, IkSetup, MAX_CONSTRAINTS, MAX_IK_BONES, TransformMix,
+    Constraint, ConstraintId, IkBend, IkSetup, MAX_CONSTRAINTS, MAX_IK_BONES, TransformMix,
     TransformOffset, TransformSetup,
   };
   use super::super::curve::Curve;
@@ -1962,11 +1974,11 @@ mod tests {
     let item = |name| format!("constraint {name:?}");
     fails(
       one(IkSetup {
-        bend_positive: false,
+        bend: Some(IkBend::Negative),
         ..IkSetup::default()
       }),
       &item("look"),
-      "bend_positive false applies only to two bones",
+      "bend Negative applies only to two bones or a chain",
     );
     fails(
       one(IkSetup {
@@ -1975,14 +1987,6 @@ mod tests {
       }),
       &item("look"),
       "softness applies only to two bones",
-    );
-    fails(
-      chain(IkSetup {
-        bend_positive: false,
-        ..IkSetup::default()
-      }),
-      &item("tail"),
-      "bend_positive false applies only to two bones",
     );
     fails(
       chain(IkSetup {
@@ -2026,7 +2030,7 @@ mod tests {
     );
     // What is allowed
     leg(IkSetup {
-      bend_positive: false,
+      bend: Some(IkBend::Negative),
       softness: 3.0,
       stretch: true,
       uniform: true,
@@ -2048,6 +2052,94 @@ mod tests {
     })
     .build()
     .expect("valid skeleton");
+  }
+
+  #[test]
+  fn pose_on_two_bones_and_a_bend_on_one_bone_fail() {
+    let one = |setup| limb().ik("look", &["thigh"], "foot_target", setup);
+    let chain = |setup| {
+      limb()
+        .bone(
+          "foot",
+          Some("shin"),
+          BoneSetup {
+            length: 5.0,
+            ..BoneSetup::default()
+          },
+        )
+        .ik("tail", &["thigh", "shin", "foot"], "foot_target", setup)
+    };
+    let bent = |bend| IkSetup {
+      bend: Some(bend),
+      ..IkSetup::default()
+    };
+    let item = |name| format!("constraint {name:?}");
+    fails(
+      leg(bent(IkBend::Pose)),
+      &item("leg"),
+      "bend Pose applies only to a chain",
+    );
+    fails(
+      one(bent(IkBend::Pose)),
+      &item("look"),
+      "bend Pose applies only to a chain",
+    );
+    fails(
+      one(bent(IkBend::Negative)),
+      &item("look"),
+      "bend Negative applies only to two bones or a chain",
+    );
+    // What is allowed, and what a setup that leaves it out takes: the
+    // positive way for one bone and two, the pose's way for a chain
+    let built = |builder: SkeletonDataBuilder| match builder.build() {
+      Ok(data) => match &data.constraints()[0] {
+        Constraint::Ik(ik) => ik.setup.bend,
+        Constraint::Transform(_) => panic!("an IK constraint"),
+      },
+      Err(error) => panic!("{error}"),
+    };
+    assert_eq!(built(one(IkSetup::default())), Some(IkBend::Positive));
+    assert_eq!(built(one(bent(IkBend::Positive))), Some(IkBend::Positive));
+    assert_eq!(built(leg(IkSetup::default())), Some(IkBend::Positive));
+    for bend in [IkBend::Positive, IkBend::Negative] {
+      assert_eq!(built(leg(bent(bend))), Some(bend));
+    }
+    assert_eq!(built(chain(IkSetup::default())), Some(IkBend::Pose));
+    for bend in [IkBend::Positive, IkBend::Negative, IkBend::Pose] {
+      assert_eq!(built(chain(bent(bend))), Some(bend));
+    }
+
+    // A key follows the same rules
+    let one_key = |constraint, bend| {
+      keyed(vec![ik_keys(
+        constraint,
+        vec![ik_value(|_| {}), ik_value(|key| key.bend = bend)],
+      )])
+    };
+    fails(
+      one_key(LEG, IkBend::Pose),
+      WALK_0_IK,
+      "key 1's bend Pose applies only to a chain",
+    );
+    fails(
+      one_key(LOOK, IkBend::Pose),
+      WALK_0_IK,
+      "key 1's bend Pose applies only to a chain",
+    );
+    fails(
+      one_key(LOOK, IkBend::Negative),
+      WALK_0_IK,
+      "key 1's bend Negative applies only to two bones or a chain",
+    );
+    for (constraint, bend) in [
+      (LEG, IkBend::Negative),
+      (TAIL, IkBend::Negative),
+      (TAIL, IkBend::Pose),
+    ] {
+      if let Err(error) = one_key(constraint, bend).build() {
+        panic!("{bend:?}: {error}");
+      }
+    }
   }
 
   #[test]
@@ -2338,7 +2430,7 @@ mod tests {
           ik_value(|key| {
             key.mix = 1.0;
             key.softness = 5.0;
-            key.bend_positive = false;
+            key.bend = IkBend::Negative;
             key.stretch = true;
           }),
         ],
@@ -2397,8 +2489,8 @@ mod tests {
       ),
       (
         LOOK,
-        |key| key.bend_positive = false,
-        "key 1's bend_positive false applies only to two bones",
+        |key| key.bend = IkBend::Negative,
+        "key 1's bend Negative applies only to two bones or a chain",
       ),
       (
         LOOK,

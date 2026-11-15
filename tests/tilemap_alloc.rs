@@ -1671,7 +1671,7 @@ fn crowd_rig(image: Handle<Image>, extra: Extra) -> SkeletonData {
         &["arm_b", "hand_b"],
         "goal_b",
         IkSetup {
-          bend_positive: false,
+          bend: Some(IkBend::Negative),
           ..IkSetup::default()
         },
       )
@@ -1846,7 +1846,11 @@ fn steer(skeleton: &mut Skeleton, at: Vec2, index: usize, frame: usize) {
     let mix = if odd { 0.5 } else { 0.9 };
     let limb = IkConstraintOverride {
       mix: (index % 2 == 1).then_some(mix),
-      bend_positive: Some(odd),
+      bend: Some(if odd {
+        IkBend::Positive
+      } else {
+        IkBend::Negative
+      }),
       ..IkConstraintOverride::default()
     };
     skeleton.override_constraint("limb_a", SkeletonConstraintOverride::Ik(limb));

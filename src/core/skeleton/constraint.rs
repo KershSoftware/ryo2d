@@ -76,9 +76,11 @@ pub struct IkSetup {
   /// Two bones: a distance from full reach within which the tip slows as
   /// the bones straighten
   pub softness: f32,
-  /// Two bones: which way the joint bends, judged in the space of the
-  /// first bone's parent
-  pub bend_positive: bool,
+  /// Which way it bends: [`IkBend::Positive`] or [`IkBend::Negative`] for
+  /// two bones, any of the three for a chain, and only the default for one
+  /// bone. Left out it is [`IkBend::Positive`] for one bone and two and
+  /// [`IkBend::Pose`] for a chain: the built data holds it so
+  pub bend: Option<IkBend>,
   /// One bone: scale it down when the target is nearer than its length
   pub compress: bool,
   /// One or two bones: scale the first along its length when the target
@@ -91,12 +93,67 @@ pub struct IkSetup {
   pub uniform: bool,
 }
 
+impl IkSetup {
+  /// Its bend for a constraint of `bones` bones: as set, or the default
+  /// for that many
+  pub(crate) fn bend_for(&self, bones: usize) -> IkBend {
+    self.bend.unwrap_or(IkBend::default_for(bones))
+  }
+}
+
+/// Which way an IK constraint bends, judged in the space of its first
+/// bone's parent; positive is clockwise on screen
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum IkBend {
+  /// Two bones: the joint bends the positive way. A chain: it keeps to the
+  /// positive side, an even arc from straight whatever its pose
+  Positive,
+  /// Two bones: the joint bends the negative way. A chain: it keeps to the
+  /// negative side
+  Negative,
+  /// A chain: it closes the way its animated pose bends, and opens that
+  /// pose toward straight for a farther target
+  Pose,
+}
+
+impl IkBend {
+  /// What a constraint of `bones` bones bends by when its setup leaves it
+  /// out: the pose's way for a chain, the positive way otherwise
+  pub(crate) fn default_for(bones: usize) -> Self {
+    if bones > 2 {
+      Self::Pose
+    } else {
+      Self::Positive
+    }
+  }
+
+  /// Whether a constraint of `bones` bones can have it: one bone only the
+  /// positive way, two either way but not the pose's, a chain any
+  pub(crate) fn fits(self, bones: usize) -> bool {
+    match bones {
+      0 | 1 => self == Self::Positive,
+      2 => self != Self::Pose,
+      _ => true,
+    }
+  }
+
+  /// The side a chain keeps, 1 the positive and -1 the negative, or none
+  /// for the pose's way
+  pub(crate) fn side(self) -> Option<f32> {
+    match self {
+      Self::Positive => Some(1.0),
+      Self::Negative => Some(-1.0),
+      Self::Pose => None,
+    }
+  }
+}
+
 impl Default for IkSetup {
   fn default() -> Self {
     Self {
       mix: 1.0,
       softness: 0.0,
-      bend_positive: true,
+      bend: None,
       compress: false,
       stretch: false,
       uniform: false,

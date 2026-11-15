@@ -53,7 +53,7 @@ pub use component::{
   BoneOverride, ConstraintOverride, IkOverride, Skeleton, Space, TransformMixOverride,
 };
 pub use constraint::{
-  Constraint, ConstraintId, IkConstraint, IkSetup, MAX_CONSTRAINTS, MAX_IK_BONES,
+  Constraint, ConstraintId, IkBend, IkConstraint, IkSetup, MAX_CONSTRAINTS, MAX_IK_BONES,
   TransformConstraint, TransformMix, TransformOffset, TransformSetup,
 };
 pub use curve::Curve;

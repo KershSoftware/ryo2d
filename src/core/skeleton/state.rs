@@ -1663,6 +1663,7 @@ fn finite_time(value: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
+  use crate::core::skeleton::IkBend;
   use std::sync::Arc;
 
   use super::*;
@@ -4782,10 +4783,14 @@ mod tests {
       length: 10.0,
       ..BoneSetup::default()
     };
-    let ik = |mix: f32, softness: f32, bend_positive: bool, stretch: bool| IkValues {
+    let ik = |mix: f32, softness: f32, positive: bool, stretch: bool| IkValues {
       mix,
       softness,
-      bend_positive,
+      bend: if positive {
+        IkBend::Positive
+      } else {
+        IkBend::Negative
+      },
       compress: false,
       stretch,
     };
@@ -4885,7 +4890,7 @@ mod tests {
   /// The leg's switches: bent the positive way, stretching
   fn switches(rig: &Rig) -> (bool, bool) {
     let values = leg(rig);
-    (values.bend_positive, values.stretch)
+    (values.bend == IkBend::Positive, values.stretch)
   }
 
   #[test]

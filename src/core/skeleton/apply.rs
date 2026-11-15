@@ -297,7 +297,7 @@ pub(crate) fn apply_layer(
           );
           // The switches are stepped, as attachment keys are
           if direction == MixDirection::In {
-            values.bend_positive = key.bend_positive;
+            values.bend = key.bend;
             values.compress = key.compress;
             values.stretch = key.stretch;
           }
@@ -688,6 +688,7 @@ fn stepped_key<T>(frames: &[(f32, T)], time: f32) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
+  use crate::core::skeleton::IkBend;
   use std::f32::consts::{PI, TAU};
   use std::sync::Arc;
 
@@ -1700,11 +1701,15 @@ mod tests {
     }
   }
 
-  fn ik_key(mix: f32, softness: f32, bend_positive: bool, stretch: bool) -> IkValues {
+  fn ik_key(mix: f32, softness: f32, positive: bool, stretch: bool) -> IkValues {
     IkValues {
       mix,
       softness,
-      bend_positive,
+      bend: if positive {
+        IkBend::Positive
+      } else {
+        IkBend::Negative
+      },
       compress: false,
       stretch,
     }
@@ -1743,22 +1748,22 @@ mod tests {
     let full = apply_at(0.25, 1.0, MixDirection::In);
     close(full.mix, 0.75);
     close(full.softness, 3.0);
-    assert!(!full.bend_positive && full.stretch && !full.compress);
+    assert!(full.bend == IkBend::Negative && full.stretch && !full.compress);
     // At half alpha the numbers move half way from the setup's (0.5 and 2)
     let half = apply_at(0.25, 0.5, MixDirection::In);
     close(half.mix, 0.625);
     close(half.softness, 2.5);
-    assert!(!half.bend_positive && half.stretch);
+    assert!(half.bend == IkBend::Negative && half.stretch);
     // The switches change at their key and not before it
     let before = apply_at(0.999, 1.0, MixDirection::In);
-    assert!(!before.bend_positive && before.stretch);
+    assert!(before.bend == IkBend::Negative && before.stretch);
     let at = apply_at(1.0, 1.0, MixDirection::In);
-    assert!(at.bend_positive && !at.stretch);
+    assert!(at.bend == IkBend::Positive && !at.stretch);
     close(at.mix, 0.0);
     // Mixing out, the switches stay the setup's
     let out = apply_at(0.25, 1.0, MixDirection::Out);
     close(out.mix, 0.75);
-    assert!(out.bend_positive && !out.stretch);
+    assert!(out.bend == IkBend::Positive && !out.stretch);
   }
 
   #[test]
@@ -1857,6 +1862,6 @@ mod tests {
     close(mix.rotate, 0.4);
     close(mix.x, -0.25);
     // The switches are stepped whatever the blend
-    assert!(!values.bend_positive);
+    assert_eq!(values.bend, IkBend::Negative);
   }
 }

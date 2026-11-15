@@ -386,6 +386,7 @@ fn solve(
         length,
         target,
         values.mix,
+        values.bend.side(),
         &mut state.joints,
       );
       for (bone, solved) in ik.bones.iter().zip(&state.chain) {
@@ -438,6 +439,7 @@ fn place_listed(
 
 #[cfg(test)]
 mod tests {
+  use crate::core::skeleton::IkBend;
   use std::f32::consts::FRAC_PI_2;
   use std::sync::Arc;
 
@@ -1655,7 +1657,7 @@ mod tests {
     let soft = IkSetup {
       mix: 0.75,
       softness: 4.0,
-      bend_positive: false,
+      bend: Some(IkBend::Negative),
       stretch: true,
       ..IkSetup::default()
     };

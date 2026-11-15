@@ -10,7 +10,7 @@ use glam::{Affine2, Mat2, Vec2};
 use super::apply::shortest;
 use super::attachment::Attachment;
 use super::constrain::{Constrained, constrain};
-use super::constraint::{ConstraintId, MAX_CONSTRAINTS};
+use super::constraint::{Constraint, ConstraintId, IkBend, MAX_CONSTRAINTS};
 use super::data::{BoneId, BoneSet, DataVersion, SkeletonData, SkeletonIndex, SlotId};
 use super::pose::{BonePose, ConstraintValues, Pose};
 use super::scope::SkeletonStore;
@@ -122,8 +122,9 @@ pub struct IkOverride {
   /// Two bones: a distance from full reach within which the tip slows; not
   /// below 0
   pub softness: Option<f32>,
-  /// Two bones: which way the joint bends
-  pub bend_positive: Option<bool>,
+  /// Which way it bends: either way for two bones, a side or the pose's
+  /// way for a chain
+  pub bend: Option<IkBend>,
   /// One bone: scale it down when the target is nearer than its length
   pub compress: Option<bool>,
   /// One or two bones: scale the first along its length when the target is
@@ -192,13 +193,15 @@ impl ConstraintOverride {
     )
   }
 
-  /// Writes the values it gives over `values`, when they are of its kind
-  fn apply(&self, values: &mut ConstraintValues) {
+  /// Writes the values it gives over `values`, when they are of its kind:
+  /// those of a constraint of `bones` bones. A bend that many bones cannot
+  /// have is passed over
+  fn apply(&self, values: &mut ConstraintValues, bones: usize) {
     match (self, values) {
       (Self::Ik(o), ConstraintValues::Ik(values)) => {
         set(&mut values.mix, o.mix);
         set(&mut values.softness, o.softness);
-        set(&mut values.bend_positive, o.bend_positive);
+        set(&mut values.bend, o.bend.filter(|bend| bend.fits(bones)));
         set(&mut values.compress, o.compress);
         set(&mut values.stretch, o.stretch);
       }
@@ -675,8 +678,9 @@ impl Skeleton {
   /// An IK mix is taken within 0 to 1 and a softness below 0 as 0. A value
   /// that is not finite is ignored, with one warning per skeleton. A switch
   /// the constraint cannot have (`stretch` on a chain, `compress` on two
-  /// bones or a chain, `bend_positive` false or a `softness` on other than
-  /// two bones) is ignored in silence: the solve does not read it.
+  /// bones or a chain, a `softness` on other than two bones, a `bend` of
+  /// `Pose` on two bones or any but `Positive` on one) is ignored in
+  /// silence.
   ///
   /// A name the data lacks, or a constraint of the other kind, warns once
   /// per skeleton per name and does nothing to the constraint, nor to an
@@ -1000,7 +1004,7 @@ impl Skeleton {
         .id
         .and_then(|bone| self.pose.bones.get(bone.index()).copied());
     }
-    self.apply_constraint_overrides();
+    self.apply_constraint_overrides(data);
     self.place(data, stand);
     if let Some(carried) = carried {
       // A bone with no transform from the pose before draws where it is
@@ -1018,13 +1022,17 @@ impl Skeleton {
 
   /// Writes the game's constraint overrides over the constraints' values
   /// as animation left them, for the constraint pass in `place`
-  fn apply_constraint_overrides(&mut self) {
+  fn apply_constraint_overrides(&mut self, data: &SkeletonData) {
     for set in &self.constraint_overrides {
-      if let Some(values) = set
-        .id
-        .and_then(|constraint| self.pose.constraints.get_mut(constraint.index()))
-      {
-        set.value.apply(values);
+      let Some(constraint) = set.id else {
+        continue;
+      };
+      let bones = match data.constraints().get(constraint.index()) {
+        Some(Constraint::Ik(ik)) => ik.bones.len(),
+        _ => 0,
+      };
+      if let Some(values) = self.pose.constraints.get_mut(constraint.index()) {
+        set.value.apply(values, bones);
       }
     }
   }
@@ -1040,7 +1048,7 @@ impl Skeleton {
   /// So it gives the pose a step gives there, however often it runs
   pub(crate) fn place_again(&mut self, data: &SkeletonData, stand: Stand) {
     self.constrained.restore(&mut self.pose);
-    self.apply_constraint_overrides();
+    self.apply_constraint_overrides(data);
     for set in &mut self.overrides {
       // One set since the last step has no animated values yet: it takes
       // them from the pose as it stands, so it is applied once, and afresh
@@ -2407,7 +2415,7 @@ mod tests {
     let ik = IkValues {
       mix: 0.5,
       softness: 1.0,
-      bend_positive: false,
+      bend: IkBend::Negative,
       compress: false,
       stretch: false,
     };
@@ -2499,7 +2507,7 @@ mod tests {
     let leg = leg_values(&played.skeleton);
     close(leg.mix, 0.25);
     close(leg.softness, 1.0);
-    assert!(!leg.bend_positive);
+    assert_eq!(leg.bend, IkBend::Negative);
     let level = level_mix(&played.skeleton);
     close(level.rotate, 0.5);
     close(level.x, 1.0);
@@ -2529,20 +2537,20 @@ mod tests {
   fn an_override_forces_a_switch() {
     let mut played = walking();
     played.step(0.1);
-    assert!(!leg_values(&played.skeleton).bend_positive);
+    assert_eq!(leg_values(&played.skeleton).bend, IkBend::Negative);
     // The animation keys the leg bent the other way, not stretching: the
     // override bends it the positive way and stretches it
     played.skeleton.override_constraint(
       "leg",
       ik_override(IkOverride {
-        bend_positive: Some(true),
+        bend: Some(IkBend::Positive),
         stretch: Some(true),
         ..IkOverride::default()
       }),
     );
     played.step(0.1);
     let leg = leg_values(&played.skeleton);
-    assert!(leg.bend_positive && leg.stretch && !leg.compress);
+    assert!(leg.bend == IkBend::Positive && leg.stretch && !leg.compress);
     close(leg.mix, 0.5);
   }
 

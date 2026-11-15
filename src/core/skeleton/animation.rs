@@ -114,7 +114,7 @@ pub enum Timeline {
     frames: Vec<Frame<Vec<f32>>>,
   },
   /// An IK constraint's values. `mix` and `softness` ease to the next key
-  /// by the key's curve; `bend_positive`, `compress` and `stretch` are
+  /// by the key's curve; `bend`, `compress` and `stretch` are
   /// stepped, changing at their key. A key sets no switch its constraint
   /// could not have, and its `mix` is 0 to 1 and its `softness` not
   /// negative, or the data does not build
