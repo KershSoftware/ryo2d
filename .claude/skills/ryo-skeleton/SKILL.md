@@ -360,7 +360,7 @@ ryo2d sheet assets/rigs/hero.skeleton.ron --animations jump,slash --once jump,sl
 3. Read the PNG it writes (`NAME.sheet.png` in the current folder) and judge each row: the pose at each moment and the arcs from cell to cell, a part off its joint or turned wrong, a limb through the body, a foot sliding along the ground line where it should be planted, a knee bent the wrong way, a cape or tail swinging by its springs as it should.
 4. Fix what is wrong and run it again. Then play it in the game.
 
-**What the sheet shows.** One row an animation and one column a moment, `k × length / N` for `k` from 0 (eight by default), so a loop's first frame is not drawn again at its end; each cell is labelled with the animation's name and the time. A moment is reached by stepping the animation from its start at the engine's fixed rate, after one loop round, so constraints and springs are as they would be in play. Every cell has one scale and the skeleton's origin at one place, on a faint ground line, so root motion and a jump's height read. It draws headlessly with the GPU, and the file must be in a project's assets folder (its images are paths from there). The options are in `ryo-cli` (Contact sheets of skeletons). An IK target the game moves stays where the setup puts it, as the sheet has no game.
+**What the sheet shows.** One row an animation and one column a moment, `k × length / N` for `k` from 0 (eight by default), so a loop's first frame is not drawn again at its end; each cell is labelled with the animation's name and the time. A moment is reached by stepping the animation from its start at the engine's default 60 steps a second unless `--hz` (`SheetOptions::fixed_hz` in code; give a game's own fixed rate), after one loop round, so constraints and springs are as they would be in play. Every cell has one scale and the skeleton's origin at one place, on a faint ground line, so root motion and a jump's height read. It draws headlessly with the GPU, and the file must be in a project's assets folder (its images are paths from there). The options are in `ryo-cli` (Contact sheets of skeletons). An IK target the game moves stays where the setup puts it, as the sheet has no game.
 
 For a rig built in code, the same sheet is `ryo2d::testing::skeleton_sheet`:
 
@@ -1495,7 +1495,7 @@ fn hair(builder: SkeletonDataBuilder) -> SkeletonDataBuilder {
 
 - A spring moves one bone and collides with nothing: hair passes through a shoulder.
 - Its state is not saved or networked: it settles from rest after a load.
-- It is tuned at the engine's fixed rate (inertia acts once a step): a game that changes its fixed rate may need to retune its springs.
+- It is tuned at the engine's fixed rate (inertia acts once a step): a game that changes its fixed rate may need to retune its springs, and `ryo2d sheet --hz N` shows them at that rate.
 - A skeleton riding another's socket sees its carrier's motion a step late.
 - Past 64 sub-steps a step (a strength of about 3.7 million at 60 Hz) a stiffer spring swings no stiffer.
 

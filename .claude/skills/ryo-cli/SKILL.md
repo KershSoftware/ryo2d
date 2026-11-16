@@ -43,7 +43,7 @@ ryo2d sheet assets/rigs/hero.skeleton.ron --animations walk,run --moments 6 --bo
 ryo2d sheet assets/rigs/hero.skeleton.ron --animations jump --once jump --skins ranger
 ```
 
-It draws a skeleton's animations headlessly as a grid and writes a PNG: one row an animation, one column a moment, each cell labelled with the animation's name and the time. The moments are `k × length / N` for `k` from 0, so a loop does not repeat its first frame. Each moment is reached by stepping the animation from its start at the engine's fixed rate, after one loop round, so springs and constraints show as they would in play. Every cell has one scale and the skeleton's origin at one place, on a faint ground line, so root motion reads. A skeleton with no animations shows its setup pose. Run it after writing or changing an animation, and look at the image (`ryo-skeleton`, Authoring).
+It draws a skeleton's animations headlessly as a grid and writes a PNG: one row an animation, one column a moment, each cell labelled with the animation's name and the time. The moments are `k × length / N` for `k` from 0, so a loop does not repeat its first frame. Each moment is reached by stepping the animation from its start at the engine's default 60 steps a second unless `--hz`, after one loop round, so springs and constraints show as they would in play. Every cell has one scale and the skeleton's origin at one place, on a faint ground line, so root motion reads. A skeleton with no animations shows its setup pose. Run it after writing or changing an animation, and look at the image (`ryo-skeleton`, Authoring).
 
 | Option | What |
 |--------|------|
@@ -53,11 +53,12 @@ It draws a skeleton's animations headlessly as a grid and writes a PNG: one row 
 | `--once a,b` | Animations played once, not looped: no loop round first, and one more cell at their length, so a landing or a recovery shows. Give every one-shot (a jump, an attack) here |
 | `--bones` | Draws the bones overlay over the art, as `debug:skeletons` draws it (bones, joints, outlines, the constraints' marks); it works in a build without the developer tools |
 | `--cell WxH` | Each cell's size in pixels, its label strip included (default: sized to fit the poses of the whole sheet) |
+| `--hz N` | The fixed rate to step at, 1 to 1000 steps a second: give a game's own `EngineBuilder::fixed_hz` so its springs show as in that game (default: 60) |
 | `--out PATH` | Where to write the PNG (default: `NAME.sheet.png` in the current folder, not beside the file, so nothing generated lands in the assets a release ships) |
 
 - **The file must be in a project's assets folder**: its images are asset paths from there. A file outside it is refused with a message, before anything is drawn.
 - It draws with the GPU: a machine with none gets a message, not a crash.
-- An unknown animation or skin is an error that lists the ones the skeleton has; an unknown option, a `--moments` that is not a whole number and a `--cell` not written `WxH` are errors naming the trouble. A sheet past 256 megapixels is refused before anything is drawn.
+- An unknown animation or skin is an error that lists the ones the skeleton has; an unknown option, a `--moments` or `--hz` that is not a whole number and a `--cell` not written `WxH` are errors naming the trouble. A sheet past 256 megapixels is refused before anything is drawn.
 - An IK target a game moves stays at its setup place: the sheet has no game to move it.
 - The same sheet is a library function for a skeleton built in code, `ryo2d::testing::skeleton_sheet` (`ryo-api`, Testing).
 

@@ -40,6 +40,8 @@ const MIN_CELL: UVec2 = UVec2::new(32, SHEET_LABEL + 16);
 const MAX_CELL: u32 = 8192;
 /// The most moments a row has
 const MAX_MOMENTS: u32 = 1000;
+/// The fastest fixed rate a sheet steps at, in steps a second
+const MAX_HZ: u32 = 1000;
 /// How far past its moment, in steps, a cell is aimed
 const NUDGE: f32 = 0.01;
 /// The most pixels a sheet has (256 Mpx, a gigabyte of RGBA)
@@ -78,6 +80,10 @@ pub struct SheetOptions {
   /// Each cell's size in pixels, its label strip included; `None` sizes
   /// the cells to fit the poses
   pub cell: Option<UVec2>,
+  /// The fixed rate the cells are stepped at, in steps a second (1 to
+  /// 1000), so springs show as in a game that runs at it; `None` for the
+  /// engine's default of 60
+  pub fixed_hz: Option<u32>,
 }
 
 impl Default for SheetOptions {
@@ -89,6 +95,7 @@ impl Default for SheetOptions {
       once: Vec::new(),
       bones: false,
       cell: None,
+      fixed_hz: None,
     }
   }
 }
@@ -256,7 +263,8 @@ struct Layout {
 /// Each cell is a skeleton of its own on a headless engine, drawn as the
 /// game draws it, its constraints applied. Its moment, `k × length /
 /// moments`, is reached by stepping its animation from its start at the
-/// engine's fixed rate, so springs show as they would in play. An
+/// engine's default 60 steps a second, or at [`SheetOptions::fixed_hz`]
+/// when it is given, so springs show as they would in play. An
 /// animation is played looping and first run once round, so its springs
 /// are warmed up, unless [`SheetOptions::once`] names it: then it plays
 /// once from its start, with a last cell at its length. A sheet past 256
@@ -284,10 +292,13 @@ pub fn skeleton_sheet(
     .moments
     .saturating_add(u32::from(!options.once.is_empty()));
   sheet_size(columns, 1, canvas)?;
-  let builder = EngineBuilder::new()
+  let mut builder = EngineBuilder::new()
     .resolution(canvas.x, canvas.y)
     .pixel_art_off()
     .start_scene(SheetScene);
+  if let Some(hz) = options.fixed_hz {
+    builder = builder.fixed_hz(hz);
+  }
   let (builder, build) = match skeleton.source {
     Source::File { assets, path } => (builder.asset_source(DiskSource::new(assets)), Ok(path)),
     Source::Built(build) => (builder.asset_source(MemorySource::new()), Err(build)),
@@ -353,6 +364,13 @@ fn check_options(options: &SheetOptions) -> Result<(), SheetError> {
   }
   if options.animations.as_ref().is_some_and(Vec::is_empty) {
     return Err(SheetError::Options("no animations named".to_owned()));
+  }
+  if let Some(hz) = options.fixed_hz
+    && !(1..=MAX_HZ).contains(&hz)
+  {
+    return Err(SheetError::Options(format!(
+      "the fixed rate must be 1 to {MAX_HZ} steps a second, not {hz}"
+    )));
   }
   Ok(())
 }
@@ -937,6 +955,16 @@ mod tests {
       })
       .contains("no animations")
     );
+    for hz in [0, MAX_HZ + 1] {
+      assert!(
+        message(SheetOptions {
+          fixed_hz: Some(hz),
+          ..SheetOptions::default()
+        })
+        .contains("fixed rate"),
+        "{hz}"
+      );
+    }
     assert!(message(SheetOptions::default()).is_empty());
   }
 }

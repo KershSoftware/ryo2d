@@ -316,6 +316,40 @@ fn a_sheet_shows_springs() {
 }
 
 #[test]
+fn a_sheet_steps_springs_at_the_fixed_rate_asked_for() {
+  // The sprung tail's cell at 0.25 s stepped at 30 a second trails
+  // otherwise than at the default 60; 60 asked for is the default itself
+  let cell = UVec2::new(160, 120);
+  let drawn = |fixed_hz: Option<u32>| {
+    let options = SheetOptions {
+      moments: 4,
+      cell: Some(cell),
+      fixed_hz,
+      ..SheetOptions::default()
+    };
+    let rig = SheetSkeleton::built(|world: &mut World| tail_rig(world, true));
+    sheet(rig, &options)
+  };
+  let lag = |sheet: &RgbaImage| {
+    let (x, y) = cell_at(0, 1, cell);
+    let art = (x, y + SHEET_LABEL, cell.x, cell.y - SHEET_LABEL);
+    let body = centre_of(sheet, art, RED).expect("the body");
+    let tip = centre_of(sheet, art, GREEN).expect("the tip");
+    tip - body
+  };
+  let (Some(default), Some(sixty), Some(thirty)) = (drawn(None), drawn(Some(60)), drawn(Some(30)))
+  else {
+    return;
+  };
+  assert!(default == sixty, "60 a second is the default");
+  let (at_60, at_30) = (lag(&default), lag(&thirty));
+  assert!(
+    at_60.distance(at_30) > 1.0,
+    "the tip at 60 a second {at_60}, at 30 {at_30}"
+  );
+}
+
+#[test]
 fn a_one_shot_is_not_warmed_and_ends_with_its_last_pose() {
   let cell = UVec2::new(160, 120);
   let options = |once: bool| SheetOptions {

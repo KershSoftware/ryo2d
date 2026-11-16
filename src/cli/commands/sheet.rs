@@ -10,7 +10,7 @@ use crate::core::config::Workspace;
 use crate::testing::{SheetError, SheetOptions, SheetSkeleton, skeleton_sheet};
 
 /// The flags the command takes, for the message about one it does not
-const FLAGS: &str = "--animations, --moments, --skins, --once, --bones, --cell, --out";
+const FLAGS: &str = "--animations, --moments, --skins, --once, --bones, --cell, --hz, --out";
 
 /// What the command was asked for
 #[derive(Debug, Clone, PartialEq)]
@@ -124,6 +124,13 @@ fn parse(args: &[String]) -> Result<SheetArgs, String> {
           .map_err(|_| format!("--moments takes a whole number, not {given:?}"))?;
       }
       "--cell" => options.cell = Some(cell(&value(word)?)?),
+      "--hz" => {
+        let given = value(word)?;
+        let hz = given
+          .parse()
+          .map_err(|_| format!("--hz takes a whole number of steps a second, not {given:?}"))?;
+        options.fixed_hz = Some(hz);
+      }
       "--out" => out = Some(PathBuf::from(value(word)?)),
       "--bones" => options.bones = true,
       flag if flag.starts_with('-') => {
@@ -172,6 +179,8 @@ OPTIONS:
     --bones            Draw the bones overlay over the art
     --cell WxH         Each cell's size in pixels, label included
                        (default: sized to fit the poses)
+    --hz N             The fixed rate to step at, as the game's
+                       EngineBuilder::fixed_hz (default: 60)
     --out PATH         Where to write the PNG
                        (default: NAME.sheet.png in the current folder)
     -h, --help         Show this help message
@@ -180,11 +189,12 @@ DESCRIPTION:
     Draws each animation at evenly spaced moments, k x length / N for k
     from 0, each cell labelled with the animation's name and the time. A
     moment is reached by stepping the animation from its start at the
-    engine's fixed rate, after one loop round (none for an animation given
-    to --once, which also gets a cell at its end), so springs and
-    constraints show as in play. Every cell has one scale and the skeleton's origin at
-    one place, on a faint ground line, so root motion reads. A skeleton
-    with no animations shows its setup pose.
+    engine's default 60 steps a second unless --hz, after one loop round
+    (none for an animation given to --once, which also gets a cell at its
+    end), so springs and constraints show as in play. Every cell has one
+    scale and the skeleton's origin at one place, on a faint ground line,
+    so root motion reads. A skeleton with no animations shows its setup
+    pose.
 
     The file must be in a project's assets folder: its images are paths
     from there. The sheet draws with the GPU.
@@ -246,6 +256,8 @@ mod tests {
       "jump",
       "--cell",
       "200x240",
+      "--hz",
+      "30",
       "--out",
       "sheets/hero.png",
     ]))
@@ -261,6 +273,7 @@ mod tests {
           once: vec!["jump".to_owned()],
           bones: true,
           cell: Some(UVec2::new(200, 240)),
+          fixed_hz: Some(30),
         },
         out: Some(PathBuf::from("sheets/hero.png")),
       }
@@ -281,6 +294,7 @@ mod tests {
     assert!(error(&["a.skeleton.ron", "--moments", "six"]).contains("whole number"));
     assert!(error(&["a.skeleton.ron", "--cell", "200"]).contains("WIDTHxHEIGHT"));
     assert!(error(&["a.skeleton.ron", "--cell", "200xtall"]).contains("WIDTHxHEIGHT"));
+    assert!(error(&["a.skeleton.ron", "--hz", "fast"]).contains("--hz takes"));
   }
 
   #[test]
