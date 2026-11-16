@@ -11,7 +11,9 @@
 //! socket each, a mix started on some every frame) against the same entities
 //! as sprites, of regions alone, with a weighted mesh among them whose
 //! shape a deform keys, and with IK and transform constraints applied in
-//! every step, their targets moved by the game. For the skeletons the GPU's
+//! every step, their targets moved by the game, and with two springs, a
+//! chain kept to a side, a stretch limit, an unevenly scaled first bone and
+//! event sounds. For the skeletons the GPU's
 //! are compared too, site by site: no call the engine makes into the GPU
 //! API may allocate more for the skeletons' frame than for the sprites',
 //! but for a small room.
@@ -37,6 +39,7 @@ use std::f32::consts::{PI, TAU};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use ryo2d::core::audio::AudioLogKind;
 use ryo2d::core::tilemap::padded::PaddedTilesets;
 use ryo2d::prelude::*;
 use ryo2d::testing::{HeadlessEngine, asset_world};
@@ -470,6 +473,10 @@ struct Frame {
   /// Those made inside the GPU API, by where the engine called into it:
   /// the GPU API's function and the engine's that called it
   gpu: BTreeMap<String, usize>,
+  /// Those made inside the audio engine (a function of `audio::` on the
+  /// stack): a sound's play makes its voice and its log entry. Counted
+  /// apart from the rest, so they are in none of the other kinds
+  audio: usize,
 }
 
 /// A stack's function names, leaf first
@@ -515,10 +522,18 @@ fn traced_after(engine: &mut HeadlessEngine, calls: impl FnOnce(&mut HeadlessEng
         .any(|drawer| name.replace(['<', '>'], "").starts_with(drawer))
   };
   let mut timed = 0;
+  let mut audio = 0;
   for trace in traces {
     let text = trace.to_string();
     let frames = functions(&text);
     let ours = frames.iter().position(|f| f.contains("ryo2d::"));
+    if frames
+      .iter()
+      .any(|f| f.starts_with("ryo2d::core::audio::") || f.starts_with("<ryo2d::core::audio::"))
+    {
+      audio += 1;
+      continue;
+    }
     if GPU.iter().any(|gpu| text.contains(gpu)) {
       if text.contains("Queue>::write_buffer") || text.contains("Queue>::submit") {
         timed += 1;
@@ -562,6 +577,7 @@ fn traced_after(engine: &mut HeadlessEngine, calls: impl FnOnce(&mut HeadlessEng
     lighting_gpu,
     timed,
     gpu,
+    audio,
   }
 }
 
@@ -1490,6 +1506,66 @@ enum Extra {
   Mesh,
   /// Constraints of every kind ([`CONSTRAINED`])
   Constraints,
+  /// What a rig is authored with beside them ([`authored_bones`]): two
+  /// springs, a chain kept to a side, a stretch limit, an unevenly scaled
+  /// first bone, and an event that names a sound
+  Authored,
+}
+
+/// The sound the authored crowd's step event names
+const STEP_SOUND: &str = "audio/step.wav";
+
+/// The authored rig's bones beside its chain, each with its parent and
+/// setup, every one hanging from the root at its origin unless placed: a
+/// strand of two bones on the chain's last, each swayed by a spring; a
+/// chain of four parts of 5 kept to the positive side, reaching for
+/// `goal_tail`; an arm of parts 6 and 5 that stretches to `goal_arm` by at
+/// most [`MOST_STRETCH`]; and a leg whose first bone is sheared and whose
+/// second stands off its axis, its target held where the first bone's
+/// animated stretch across moves the knee's branch under it
+fn authored_bones() -> Vec<(&'static str, &'static str, BoneSetup)> {
+  let bone = |x: f32, y: f32, rotation: f32, length: f32| BoneSetup {
+    x,
+    y,
+    rotation,
+    length,
+    ..BoneSetup::default()
+  };
+  let goal = Vec2::from_angle(0.4) * 10.0;
+  vec![
+    ("hair_1", "b11", bone(5.0, 0.0, 0.0, 5.0)),
+    ("hair_2", "hair_1", bone(5.0, 0.0, 0.0, 5.0)),
+    ("tail_1", "b0", bone(0.0, 0.0, 2.0, 5.0)),
+    ("tail_2", "tail_1", bone(5.0, 0.0, -0.3, 5.0)),
+    ("tail_3", "tail_2", bone(5.0, 0.0, 0.3, 5.0)),
+    ("tail_4", "tail_3", bone(5.0, 0.0, -0.3, 5.0)),
+    ("goal_tail", "b0", bone(14.0, 0.0, 0.0, 0.0)),
+    ("arm", "b0", bone(0.0, 0.0, 0.5, 6.0)),
+    ("hand", "arm", bone(6.0, 0.0, 0.6, 5.0)),
+    ("goal_arm", "b0", bone(8.0, 0.0, 0.0, 0.0)),
+    (
+      "thigh",
+      "b0",
+      BoneSetup {
+        shear_x: -0.3,
+        ..bone(0.0, 0.0, 0.3, 5.0)
+      },
+    ),
+    ("shin", "thigh", bone(5.0, 1.5, 0.9, 5.0)),
+    ("goal_leg", "b0", bone(goal.x, goal.y, 0.0, 0.0)),
+  ]
+}
+
+/// The most the authored arm stretches, as a factor of its reach of 11
+const MOST_STRETCH: f32 = 1.2;
+
+/// The id of the authored bone `name`: the chain's twelve come first
+fn authored(name: &str) -> BoneId {
+  let at = authored_bones()
+    .iter()
+    .position(|(bone, ..)| *bone == name)
+    .unwrap_or_else(|| panic!("no authored bone {name}"));
+  BoneId(12 + at as u8)
 }
 
 /// The constrained rig's bones beside its chain, each with its parent, its
@@ -1538,7 +1614,13 @@ fn goals(index: usize, frame: usize) -> [Vec2; 3] {
 /// every crossfade. With [`Extra::Constraints`], the bones of
 /// [`CONSTRAINED`] and, in order, an IK constraint on each limb (the first
 /// one's mix keyed by both of the base track's animations), one on the
-/// chain, and a transform constraint of each mode
+/// chain, and a transform constraint of each mode. With
+/// [`Extra::Authored`], the bones of [`authored_bones`], a spring on each
+/// of the strand's two (a gust through the first keyed by both of the base
+/// track's animations), the chain kept to its positive side, the arm's
+/// stretch limited, the leg reaching for its held target while the same
+/// animations stretch its first bone across, to twice and back every 0.2
+/// s, and the step event naming [`STEP_SOUND`]
 fn crowd_rig(image: Handle<Image>, extra: Extra) -> SkeletonData {
   let mesh = extra == Extra::Mesh;
   let turn = |bone: u8, keys: &[(f32, f32)]| SkeletonTimeline::Rotate {
@@ -1582,6 +1664,35 @@ fn crowd_rig(image: Handle<Image>, extra: Extra) -> SkeletonData {
           (0.25, mix(0.4), SkeletonCurve::Linear),
           (0.5, mix(1.0), SkeletonCurve::Linear),
         ],
+      });
+    }
+    // A gust through the first spring, and the leg's first bone stretched
+    // across and back, keyed by the same animations
+    if extra == Extra::Authored && deform.is_some() {
+      let gust = |wind: f32| SpringValues {
+        wind,
+        ..SpringValues::of(&hair())
+      };
+      timelines.push(SkeletonTimeline::Spring {
+        constraint: SkeletonConstraintId(0),
+        frames: vec![
+          (0.0, gust(0.0), SkeletonCurve::Linear),
+          (0.25, gust(400.0), SkeletonCurve::Linear),
+          (0.5, gust(0.0), SkeletonCurve::Linear),
+        ],
+      });
+      timelines.push(SkeletonTimeline::Scale {
+        bone: authored("thigh"),
+        frames: (0..=5)
+          .map(|key| {
+            let across = if key % 2 == 0 { 1.0 } else { 2.0 };
+            (
+              key as f32 * 0.1,
+              Vec2::new(1.0, across),
+              SkeletonCurve::Linear,
+            )
+          })
+          .collect(),
       });
     }
     if !events.is_empty() {
@@ -1706,8 +1817,45 @@ fn crowd_rig(image: Handle<Image>, extra: Extra) -> SkeletonData {
         copy(true, true, half),
       );
   }
+  let mut step = SkeletonEventData::new("step");
+  if extra == Extra::Authored {
+    for (name, parent, setup) in authored_bones() {
+      builder = builder.bone(name, Some(parent), setup);
+    }
+    let stretch = IkSetup {
+      stretch: true,
+      max_stretch: Some(MOST_STRETCH),
+      ..IkSetup::default()
+    };
+    let side = IkSetup {
+      bend: Some(IkBend::Positive),
+      ..IkSetup::default()
+    };
+    let tip = SpringSetup {
+      rotate: 0.8,
+      scale_x: 0.3,
+      gravity: 40.0,
+      ..SpringSetup::default()
+    };
+    builder = builder
+      .spring("hair_a", "hair_1", hair())
+      .spring("hair_b", "hair_2", tip)
+      .ik(
+        "tail",
+        &["tail_1", "tail_2", "tail_3", "tail_4"],
+        "goal_tail",
+        side,
+      )
+      .ik("reach", &["arm", "hand"], "goal_arm", stretch)
+      .ik("leg", &["thigh", "shin"], "goal_leg", IkSetup::default());
+    step.audio = Some(SkeletonEventAudio {
+      path: Arc::from(STEP_SOUND),
+      volume: 0.5,
+      balance: 0.0,
+    });
+  }
   builder
-    .event(SkeletonEventData::new("step"))
+    .event(step)
     .animation(clip("idle", 12, 0.2, &[0.0, 0.2, 0.4], Some(1.0)))
     .animation(clip("walk", 12, 0.4, &[0.1, 0.3], Some(2.0)))
     .animation(clip("wave", 4, 0.6, &[0.25], None))
@@ -1716,11 +1864,22 @@ fn crowd_rig(image: Handle<Image>, extra: Extra) -> SkeletonData {
     .expect("a valid rig")
 }
 
+/// The authored rig's first spring: its bone's place and turn sway
+fn hair() -> SpringSetup {
+  SpringSetup {
+    x: 0.5,
+    y: 0.5,
+    rotate: 1.0,
+    ..SpringSetup::default()
+  }
+}
+
 /// `count` skeletons in a lit room, each with a socket that has a child; or
 /// (`skeletons` false) the same entities as plain sprites, each with a
 /// child that has a child: the baseline, which makes the allocations the
 /// entity drawer and the engine's queries make for any entities. Each
-/// skeleton's rig has the `extra` of [`crowd_rig`]
+/// skeleton's rig has the `extra` of [`crowd_rig`], and with
+/// [`Extra::Authored`] every other one has [`SkeletonSounds`]
 struct Crowd {
   count: usize,
   skeletons: bool,
@@ -1759,6 +1918,10 @@ impl Scene for Crowd {
           Renderable::skeleton(),
         ));
         ctx.world.entity_mut(socket).insert(BoneSocket::new("b11"));
+        // Half the authored crowd plays its events' sound
+        if self.extra == Extra::Authored && i % 2 == 0 {
+          ctx.world.entity_mut(carrier).insert(SkeletonSounds::new());
+        }
       } else {
         ctx
           .world
@@ -1967,6 +2130,167 @@ fn constraints_act(crowd: &mut HeadlessEngine, frame: usize, when: &str) {
   );
 }
 
+/// The same crowd authored with the rest ([`Extra::Authored`]): two springs
+/// a skeleton, a gust through the first keyed by the animations and an
+/// override of the second changed every 30 frames; a chain kept to its
+/// positive side; an arm whose stretch is limited, its target moved in and
+/// out past the limit; a leg whose first bone the animations stretch
+/// across, so its knee follows its last bend and swings where the branch
+/// is lost; and every other skeleton playing its step event's sound
+#[test]
+fn fifty_skeletons_with_springs_sounds_and_the_ik_changes_allocate_nothing_per_frame() {
+  skeletons_allocate_nothing(Extra::Authored);
+}
+
+/// A tone the step event's sound plays
+const TONE: &[u8] = include_bytes!("fixtures/audio/tone.wav");
+
+/// Where the authored crowd's skeleton `index` puts its arm's target in
+/// `frame`, from its entity's origin (the arm's first joint): 7 to 17 away,
+/// so inside its reach of 11, stretched toward it, and past the limit of
+/// 13.2 in turn
+fn arm_goal(index: usize, frame: usize) -> Vec2 {
+  let t = (frame + 7 * index) as f32 * 0.05;
+  Vec2::from_angle(-t + 1.0) * (12.0 + 5.0 * (0.9 * t).cos())
+}
+
+/// What the game does to the authored crowd's skeleton `index` before
+/// `frame`: puts the chain's target where [`goals`] puts the constrained
+/// crowd's and the arm's where [`arm_goal`] says, in the world, and every
+/// 30 frames changes its override of the second spring (its gravity and
+/// its mix)
+fn steer_authored(skeleton: &mut Skeleton, at: Vec2, index: usize, frame: usize) {
+  let [.., tail] = goals(index, frame);
+  for (bone, goal) in [("goal_tail", tail), ("goal_arm", arm_goal(index, frame))] {
+    let put = BoneOverride {
+      translation: Some(at + goal),
+      space: BoneSpace::World,
+      ..BoneOverride::default()
+    };
+    skeleton.override_bone(bone, put);
+  }
+  if (frame + index).is_multiple_of(30) {
+    let odd = (frame + index) / 30 % 2 == 1;
+    let sway = SpringOverride {
+      gravity: Some(if odd { 120.0 } else { 20.0 }),
+      mix: Some(if odd { 0.6 } else { 1.0 }),
+      ..SpringOverride::default()
+    };
+    skeleton.override_constraint("hair_b", SkeletonConstraintOverride::Spring(sway));
+  }
+}
+
+/// The latest voice of the step sound the crowd's audio log holds: 0 for
+/// none, and higher as more start
+fn step_voices(crowd: &HeadlessEngine) -> u32 {
+  crowd
+    .audio_log()
+    .iter()
+    .filter(|entry| entry.kind == AudioLogKind::Start && entry.source == STEP_SOUND)
+    .map(|entry| entry.voice)
+    .max()
+    .unwrap_or(0)
+}
+
+/// Asserts that what the authored crowd is authored with acts, as its last
+/// step left it: each spring has turned its bone off its animated turn
+/// under its parent (the animations key neither) in four skeletons in five
+/// at the least; the chain's three joints turn the positive way, each as
+/// much as the others, and its tip is on its target; the arm's tip is on
+/// its target inside the limit, and past it at the limit on the line to
+/// the target, both seen in this step. Gives how many legs are on their
+/// target and how many point at it past it, which only a swinging knee
+/// leaves
+fn authored_act(crowd: &mut HeadlessEngine, frame: usize, when: &str) -> [usize; 2] {
+  let world = crowd.world_mut();
+  let mut skeletons = world.query::<(&Skeleton, &Transform)>();
+  let (mut swayed, mut capped, mut inside, mut legs) = ([0; 2], 0, 0, [0; 2]);
+  for (index, (skeleton, transform)) in skeletons.iter(world).enumerate() {
+    let at = transform.translation;
+    let bone = |name: &str| {
+      skeleton
+        .bone_world(name)
+        .unwrap_or_else(|| panic!("{when}: skeleton {index} has no {name}"))
+    };
+    let turn = |parent: &str, child: &str| {
+      let own = bone(parent).inverse() * bone(child);
+      own.matrix2.x_axis.to_angle()
+    };
+    let close = |what: &str, actual: Vec2, expected: Vec2| {
+      assert!(
+        actual.distance(expected) < 0.01,
+        "{when}: skeleton {index}'s {what} is at {actual}, not {expected}"
+      );
+    };
+    for (spring, (parent, child)) in [("b11", "hair_1"), ("hair_1", "hair_2")]
+      .into_iter()
+      .enumerate()
+    {
+      if turn(parent, child).abs() > 0.001 {
+        swayed[spring] += 1;
+      }
+    }
+    // The chain: kept to its side, an even arc, on its target
+    let turns = [
+      turn("tail_1", "tail_2"),
+      turn("tail_2", "tail_3"),
+      turn("tail_3", "tail_4"),
+    ];
+    let (least, most) = (
+      turns[0].min(turns[1]).min(turns[2]),
+      turns[0].max(turns[1]).max(turns[2]),
+    );
+    assert!(
+      least > 0.0 && most - least < 0.001,
+      "{when}: skeleton {index}'s chain turns {turns:?}, not the positive way alike"
+    );
+    let [.., tail] = goals(index, frame);
+    close("goal_tail", bone("goal_tail").translation, at + tail);
+    close(
+      "tail_4's tip",
+      bone("tail_4").transform_point2(Vec2::new(5.0, 0.0)),
+      at + tail,
+    );
+    // The arm: on its target, or at its limit on the line to it
+    let origin = bone("arm").translation;
+    let goal = at + arm_goal(index, frame);
+    close("goal_arm", bone("goal_arm").translation, goal);
+    let tip = bone("hand").transform_point2(Vec2::new(5.0, 0.0));
+    let (away, limit) = (goal.distance(origin), 11.0 * MOST_STRETCH);
+    if away > limit + 0.01 {
+      capped += 1;
+      let toward = origin + (goal - origin).normalize() * limit;
+      close("hand's tip, capped,", tip, toward);
+    } else if away < limit - 0.01 {
+      inside += 1;
+      close("hand's tip", tip, goal);
+    }
+    // The leg: on its target, or pointing at it past it, which only a
+    // swing leaves (a target beyond the reach leaves the tip short)
+    let (hip, leg_goal) = (bone("thigh").translation, bone("goal_leg").translation);
+    let foot = bone("shin").transform_point2(Vec2::new(5.0, 0.0));
+    if foot.distance(leg_goal) < 0.01 {
+      legs[0] += 1;
+    } else if foot.distance(hip) > leg_goal.distance(hip) + 0.01 {
+      legs[1] += 1;
+    }
+  }
+  println!(
+    "{when}: springs swayed {swayed:?} of {CROWD}; arms capped {capped}, inside {inside}; legs on \
+     their target {}, swinging past it {}",
+    legs[0], legs[1]
+  );
+  assert!(
+    swayed.iter().all(|&swayed| swayed * 5 >= CROWD * 4),
+    "{when}: the springs turned their bones in {swayed:?} of {CROWD} skeletons"
+  );
+  assert!(
+    capped > 0 && inside > 0,
+    "{when}: {capped} arms past their limit and {inside} inside it"
+  );
+  legs
+}
+
 /// How far the vertices of the skeleton's [`ribbon`] are from where its
 /// bones alone put them (the setup shape, skinned), at most: what its
 /// deform moves it by. None for a skeleton that shows no mesh
@@ -2004,9 +2328,13 @@ fn counted(names: &[String]) -> BTreeMap<&str, usize> {
 /// sprites do not
 fn skeletons_allocate_nothing(extra: Extra) {
   let (mesh, constrained) = (extra == Extra::Mesh, extra == Extra::Constraints);
+  let authored = extra == Extra::Authored;
   let start = |skeletons| {
+    let files = MemorySource::new();
+    files.insert(STEP_SOUND, TONE);
     let builder = EngineBuilder::new()
       .resolution(640, 360)
+      .asset_source(files)
       .start_scene(Crowd {
         count: CROWD,
         skeletons,
@@ -2017,6 +2345,12 @@ fn skeletons_allocate_nothing(extra: Extra) {
   let (Some(mut crowd), Some(mut empty)) = (start(true), start(false)) else {
     return;
   };
+  // The step's sound is loaded before the first step, so every event of a
+  // skeleton with sounds plays it
+  let _tone = authored.then(|| match crowd.assets().load_now::<AudioClip>(STEP_SOUND) {
+    Ok(clip) => clip,
+    Err(error) => panic!("{STEP_SOUND}: {}", error.report()),
+  });
   let mut animations = crowd
     .world_mut()
     .query::<(&mut SkeletonAnimation, &mut Skeleton, &Transform)>();
@@ -2027,6 +2361,9 @@ fn skeletons_allocate_nothing(extra: Extra) {
       mix(&mut animation, index, frame);
       if constrained {
         steer(&mut skeleton, transform.translation, index, frame);
+      }
+      if authored {
+        steer_authored(&mut skeleton, transform.translation, index, frame);
       }
     }
   };
@@ -2060,12 +2397,20 @@ fn skeletons_allocate_nothing(extra: Extra) {
   if constrained {
     constraints_act(&mut crowd, warm - 1, "before the traced frames");
   }
+  let mut legs = [0; 2];
+  if authored {
+    legs = authored_act(&mut crowd, warm - 1, "before the traced frames");
+  }
+  let voices_before = step_voices(&crowd);
+  if authored {
+    assert!(voices_before > 0, "no step sound played in the warm-up");
+  }
   for frame in warm..warm + 12 {
     let drawn = traced_after(&mut crowd, |engine| steady(engine, frame));
     let nothing = traced(&mut empty);
     let own = |frame: &Frame| frame.own.values().sum::<usize>();
     // Inside the GPU API: all of them, and those the encoder's finish made
-    let inside = |frame: &Frame| frame.count - own(frame);
+    let inside = |frame: &Frame| frame.count - own(frame) - frame.audio;
     let encoded = |frame: &Frame| {
       let finish = frame
         .gpu
@@ -2076,7 +2421,7 @@ fn skeletons_allocate_nothing(extra: Extra) {
     println!(
       "frame {frame}: {CROWD} skeletons {} allocations ({} the engine's own), as sprites {} ({} its \
        own); inside the GPU API {} ({} as the encoder finished), the sprites' {} ({}); the skeletons' \
-       own path made {} of them",
+       own path made {} of them; {} were the audio engine's, playing the step sound",
       drawn.count,
       own(&drawn),
       nothing.count,
@@ -2086,6 +2431,7 @@ fn skeletons_allocate_nothing(extra: Extra) {
       inside(&nothing),
       encoded(&nothing),
       drawn.skeleton_gpu.len(),
+      drawn.audio,
     );
     // All four are told together, so a failure names the site, the
     // function of the skeletons' path nearest it, and the GPU's share
@@ -2109,6 +2455,27 @@ fn skeletons_allocate_nothing(extra: Extra) {
     if constrained {
       constraints_act(&mut crowd, frame, &format!("frame {frame}"));
     }
+    if authored {
+      let [on, past] = authored_act(&mut crowd, frame, &format!("frame {frame}"));
+      legs = [legs[0] + on, legs[1] + past];
+    }
+  }
+  if authored {
+    // The legs reached for their target, and a knee swung where its first
+    // bone's stretch lost its branch
+    assert!(
+      legs[0] > 0 && legs[1] > 0,
+      "of the legs seen, {} were on their target and {} swung past it",
+      legs[0],
+      legs[1]
+    );
+    // The traced frames played the step sound: its voices went on starting
+    let voices = step_voices(&crowd);
+    assert!(
+      voices > voices_before,
+      "the traced frames started no voice of {STEP_SOUND}: the latest was {voices_before} before \
+       them and {voices} after"
+    );
   }
   if mesh {
     // And it was so to the end: the frames traced drew a deforming mesh

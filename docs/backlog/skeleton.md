@@ -2,7 +2,7 @@
 
 ## Measured
 
-What is measured: skeletons against the spec's targets (`docs/specs/2026-11-12-skeleton-design.md`, Targets), by `cargo bench --bench skeleton` (release) and by the allocation tests `fifty_animated_skeletons_allocate_nothing_per_frame`, `fifty_skeletons_with_a_deforming_mesh_allocate_nothing_per_frame` and `fifty_skeletons_with_constraints_allocate_nothing_per_frame` in `tests/tilemap_alloc.rs`. Meshes and constraints have sections of their own below (Meshes, Constraints), each with the comparison of the figures without them against the build before them.
+What is measured: skeletons against the spec's targets (`docs/specs/2026-11-12-skeleton-design.md`, Targets), by `cargo bench --bench skeleton` (release) and by the allocation tests `fifty_animated_skeletons_allocate_nothing_per_frame`, `fifty_skeletons_with_a_deforming_mesh_allocate_nothing_per_frame`, `fifty_skeletons_with_constraints_allocate_nothing_per_frame` and `fifty_skeletons_with_springs_sounds_and_the_ik_changes_allocate_nothing_per_frame` in `tests/tilemap_alloc.rs`. Meshes, constraints, and springs with culling and the IK changes have sections of their own below (Meshes, Constraints, Springs, culling and the IK changes), each with the comparison of the figures without them against the build before them.
 
 Machine: Apple M5 Pro, 18 cores, shared with other work.
 
@@ -255,6 +255,62 @@ Every case is inside the 5%; the nearest are the socket-spawn pass with a socket
 **Allocations.** `fifty_skeletons_with_constraints_allocate_nothing_per_frame` (`tests/tilemap_alloc.rs`) is the allocation crowd with constraints of every kind on bones beside its chain: two limbs of two bones by IK (the first one's mix keyed by both of the base track's animations, so blended through every crossfade), a chain of four bones by IK, and a transform constraint in each of the four modes (world, world relative, own values, own values relative). Before every frame the game puts the three targets at new places by world-space bone overrides, and every 30 frames a skeleton changes its overrides of the first limb (its mix and its bend) and of the world-mode transform constraint (its rotate mix), so the twelve traced frames hold changes on several skeletons. Before the traced frames and after each, the test asserts every skeleton's second limb and chain have their tips on their targets, within 0.01, where the game put the targets in that step. The comparison with the sprites' frame is the other two tests': 390 allocations a frame (229 the engine's own) against the sprites' 392 (231), none from the skeletons' path.
 
 It passed at once. Planted allocations, one at a time, each named by the test and removed: one in `constrain` fails with 50 a frame at `<alloc::vec::Vec<u8>>::with_capacity <- ryo2d::core::skeleton::constrain::constrain` in a debug build, and in a release build at `<ryo2d::core::skeleton::component::Skeleton>::place`, where the compiler inlines `constrain` (the stack names only the caller); one in `ik::chain` fails with 50 a frame at `<alloc::vec::Vec<u8>>::with_capacity <- ryo2d::core::skeleton::ik::chain` in both.
+
+### Springs, culling and the IK changes
+
+The scene is the crowd's. The new case:
+
+- `skeletons_update_springs`: the crowd with two springs a skeleton, on the spine's last bone and the bone that hangs from it (each moving its place by half its lag and turning fully toward its lagging tip), every entity moving on an ellipse 24 across and 12 high round its place, about once every two seconds, so the springs follow the entity as well as the animation. Guarded at the update's 1,000 µs. After the measured steps the bench counts the skeletons whose spine's last bone stands off the place its parent gives it, which no animation moves: those whose spring is swaying it. Fewer than three in four is a miss; every run had all 200.
+
+The offscreen guard (`skeletons_extract_offscreen` held to a tenth of the crowd's extract in the same run) stays in, and held in every run.
+
+#### Against the build before springs
+
+The cases that exist in both benches, measured in one sitting: `main` at `bf1a5986` exported with `git archive` and its bench built apart (its own target directory), the two benches run alternately, main first. Two more builds ran in the same rotation to find where the step's cost goes (below): `bee38c63`, exported the same way, and this tree's bench with two temporary run-time switches, one that skips finding the box and one that skips the sounds system (removed after; no switch is in the code). Each run is about nine seconds, so nine rounds were run, not three, and every figure is the median of nine. The one-minute load before the first round's runs read 10.36, 8.29, 7.24, 6.28 and 5.77, the second's 5.55 to 3.60 and the third's 3.48 to 2.62, all above 3 and so flagged; rounds four to nine read 1.43 to 2.07, none flagged. Medians in microseconds:
+
+| Bench | Main | This tree | Difference |
+|-------|------|-----------|------------|
+| `skeletons_update` | 483.5 | 493.1 | +2.0% |
+| `skeletons_extract` | 161.9 | 162.4 | +0.3% |
+| `skeletons_extract_shadow` | 190.1 | 188.6 | -0.8% |
+| `skeletons_extract_shadow_update` | 483.0 | 495.7 | +2.6% |
+| `skeletons_extract_offscreen` | 156.3 | 5.4 | -96.5% |
+| `skeletons_extract_offscreen_update` | 480.2 | 492.2 | +2.5% |
+| `skeletons_extract_images` | 269.2 | 276.3 | +2.6% |
+| `skeletons_extract_images_update` | 483.2 | 494.8 | +2.4% |
+| `skeletons_extract_plain` | 99.6 | 101.6 | +2.0% |
+| `skeletons_extract_plain_update` | 481.8 | 493.3 | +2.4% |
+| `skeletons_update_sockets` | 492.1 | 504.5 | +2.5% |
+| `skeletons_extract_sockets` | 161.9 | 160.8 | -0.7% |
+| `skeletons_update_constraints` | 533.5 | 547.6 | +2.6% |
+| `one_skeleton_update` | 3.7 | 3.8 | +2.7% |
+| `skeleton_pass_socket_spawn` | 2.7 | 2.6 | -3.7% |
+| `skeleton_pass_socket_spawn_sockets` | 8.5 | 8.6 | +1.2% |
+| `skeletons_update_mesh` | 589.4 | 609.1 | +3.3% |
+| `skeletons_extract_mesh` | 283.4 | 280.3 | -1.1% |
+| `skeletons_extract_mesh_shadow` | 353.6 | 355.3 | +0.5% |
+| `skeletons_update_springs` (this tree only) | | 531.6 | |
+
+Every case is inside the 5%. The nearest is `skeletons_update_mesh`, +3.3%. `skeleton_pass_200` and `skeleton_pass_2000` read 0.1 and 0.5 µs in both. The render step and its parts are context, not compared, and moved under 4% either way. Two springs a skeleton cost about 38 µs a step for the 200 skeletons over the crowd without them (531.6 against 493.1), about 0.1 µs a spring.
+
+**Where the update's cost goes.** The step reads about 10 µs (2%) over main for skeletons without the new features. The two switches put it:
+
+| Build | `skeletons_update` | `skeletons_update_mesh` |
+|-------|--------------------|-------------------------|
+| `main` (`bf1a5986`) | 483.5 | 589.4 |
+| `bee38c63` | 476.3 (-1.5%) | 582.1 (-1.2%) |
+| This tree, the box and the sounds system skipped | 485.8 (+0.5%) | 594.0 (+0.8%) |
+| This tree, the box skipped | 486.2 (+0.6%) | 593.9 (+0.8%) |
+| This tree | 493.1 (+2.0%) | 609.1 (+3.3%) |
+
+- **The box** is most of it: about 7 µs a step for the 200 skeletons (0.035 µs a skeleton), and about 15 µs with a mesh on each, where the box also reads the deform offsets. It is the one change every skeleton gets, and it is what takes the off-screen crowd's drawing from 156 µs to 5.4.
+- **The sounds system**, with no `SkeletonSounds` in the world, is within the noise: switched off it moved the step by 0.4 µs, against a spread of several µs between runs of one build. Its own measure, about 0.1 µs a step, stands.
+- **The rest**, about 2 to 3 µs over main with both skipped, is not pinned. It is under 1% of the step, inside what two builds of the same engine code read apart: `bee38c63`, which has the springs and the IK changes and neither the box nor the sounds system, reads 7 µs *under* main in every one of the nine rounds (474.5 to 479.2 against 473.0 to 486.0), though it does more than main, not less.
+- So the 15 µs over `bee38c63` that the box's own measure left unexplained is the box's remaining cost after it was made cheaper (about 7 µs here), a few µs not pinned, and `bee38c63`'s own low reading, which this sitting puts about 7 µs below main. Nothing was changed for speed.
+
+**Allocations.** `fifty_skeletons_with_springs_sounds_and_the_ik_changes_allocate_nothing_per_frame` (`tests/tilemap_alloc.rs`) is the allocation crowd with what a rig is now authored with, on bones beside its chain: a strand of two bones on the chain's last, each with a spring (a gust through the first, its wind keyed 0 to 400 and back by both of the base track's animations, and every 30 frames a skeleton changes its override of the second, its gravity and its mix); a chain of four parts kept to its positive side; an arm of two bones whose stretch is limited to 1.2 times its reach, its target moved every frame from inside its reach to past the limit; a leg whose first bone is sheared and whose second stands off its axis, its target held while the same animations stretch the first bone across to twice and back every 0.2 s, so its knee follows its last bend and swings where the branch is lost; and every other skeleton with `SkeletonSounds`, its step event naming a loaded clip. Before the traced frames and after each it asserts that each acts: both springs have turned their bones off their animated turn in four skeletons in five at the least (all 50 in every check); the chain's three joints turn the positive way, each as much as the others, and its tip is on its target; the arm's tip is on its target inside the limit and, past it, at the limit on the line to the target, both seen in every check (about 24 capped and 26 inside); over the checks a leg on its target and a leg swinging past it are both seen (12 on it and 4 past it in each); and the step sound's voices went on starting through the traced frames, by the audio log.
+
+Its frames make 408 to 410 allocations against the sprites' 392, and the engine's own are the same 229 (the sprites' 231). The 16 to 18 more are the audio engine's: a play of the step sound starts a voice in the audio backend and logs its start, or its refusal, with the sound's path (the headless engine's audio log is on from the start). They are counted apart, as a stack with a function of the audio module on it, and printed beside the others; none is made by the skeletons' path, the sounds system's own code included. An allocation planted once in the spring's arm of the constraint pass fails it at 100 a frame (two springs on each of 50 skeletons), at `<alloc::vec::Vec<u8>>::with_capacity <- ryo2d::core::skeleton::constrain::constrain`, release; the plant was removed.
 
 ### Reading the figures
 

@@ -56,6 +56,11 @@
 //!   constraint, the three targets moved by world-space bone overrides
 //!   before every step; a step whose tips are not on their targets is a
 //!   miss, so the constraints are known to act in the steps measured;
+//! - `skeletons_update_springs`: the crowd with two springs a skeleton (the
+//!   spine's last bone and the bone hanging from it, each swaying its turn
+//!   and its place), every entity moving on a loop of its own, so the
+//!   springs follow the entity's movement as well as the animation's; the
+//!   springs are checked to have moved the bones they hold;
 //! - `skeleton_pass_200` and `skeleton_pass_2000`: the frame pass that
 //!   poses new skeletons (`pose_new_skeletons`) in a steady frame, per call,
 //!   run outside a frame;
@@ -124,6 +129,8 @@ struct Case {
   mesh: bool,
   /// The constraints of [`LIMBS`] and their targets moved every step
   constraints: bool,
+  /// The springs of [`SPRUNG`], and every entity moving ([`drift`])
+  springs: bool,
 }
 
 impl Case {
@@ -137,6 +144,7 @@ impl Case {
       plain: false,
       mesh: false,
       constraints: false,
+      springs: false,
     }
   }
 }
@@ -262,8 +270,9 @@ fn ribbon() -> MeshAttachment {
 /// amount), so a deform plays in every step and two are blended through
 /// every crossfade of the base track. With `constraints`, the IK
 /// constraints of [`LIMBS`] and then a transform constraint that copies the
-/// turn of the first limb's second bone (`b28`), in the world, onto `b26`
-fn rig(images: &[Handle<Image>], mesh: bool, constraints: bool) -> SkeletonData {
+/// turn of the first limb's second bone (`b28`), in the world, onto `b26`.
+/// With `springs`, a spring on each bone of [`SPRUNG`], parent first
+fn rig(images: &[Handle<Image>], mesh: bool, constraints: bool, springs: bool) -> SkeletonData {
   let turn = |bone: usize, amount: f32| SkeletonTimeline::Rotate {
     bone: BoneId(bone as u8),
     frames: vec![
@@ -412,6 +421,17 @@ fn rig(images: &[Handle<Image>], mesh: bool, constraints: bool) -> SkeletonData 
     };
     builder = builder.transform_constraint("copy", &["b26"], "b28", turn);
   }
+  if springs {
+    let sway = SpringSetup {
+      x: 0.5,
+      y: 0.5,
+      rotate: 1.0,
+      ..SpringSetup::default()
+    };
+    for (name, bone) in SPRUNG {
+      builder = builder.spring(name, bone, sway);
+    }
+  }
   builder
     .event(SkeletonEventData::new("step"))
     .animation(clip("idle", idle))
@@ -457,7 +477,9 @@ impl Scene for Crowd {
         })
         .collect()
     };
-    let data = ctx.assets().add(rig(&images, case.mesh, case.constraints));
+    let data = ctx
+      .assets()
+      .add(rig(&images, case.mesh, case.constraints, case.springs));
     let shift = if case.offscreen { OFF_SCREEN } else { 0.0 };
     for i in 0..case.skeletons {
       let at = Vec2::new(
@@ -484,6 +506,13 @@ impl Scene for Crowd {
       }
       if case.constraints {
         ctx.world.entity_mut(skeleton).insert(Goals::default());
+      }
+      if case.springs {
+        ctx.world.entity_mut(skeleton).insert(Drift {
+          home: at,
+          phase: i as f32 * 0.7,
+          steps: 0,
+        });
       }
       if case.sockets {
         let socket = ctx
@@ -534,6 +563,48 @@ const LIMBS: [(&str, [&str; 3]); 3] = [
   ("limb_b", ["b20", "b29", "b22"]),
   ("point", ["b27", "b27", "b23"]),
 ];
+
+/// The springs of the springs case, each named, with its bone: the spine's
+/// last bone and the bone that hangs from it
+const SPRUNG: [(&str, &str); 2] = [("sway_spine", "b9"), ("sway_tip", "b18")];
+
+/// Where a moving entity of the springs case circles, and how far round
+#[derive(Component)]
+struct Drift {
+  home: Vec2,
+  phase: f32,
+  steps: u32,
+}
+
+/// Before each step, moves every entity of the springs case on an ellipse
+/// round its home, 24 across and 12 high, about once every two seconds, so
+/// its springs lag the movement
+fn drift(mut entities: Query<(&mut Transform, &mut Drift)>) {
+  for (mut transform, mut drift) in &mut entities {
+    drift.steps += 1;
+    let turn = drift.steps as f32 * 0.05 + drift.phase;
+    transform.translation = drift.home + Vec2::new(12.0 * turn.cos(), 6.0 * turn.sin());
+  }
+}
+
+/// How many skeletons of the springs case have the spine's last bone off
+/// the place its parent gives it (4 along, which no animation moves): those
+/// whose spring is swaying it, as the last step left them
+fn swayed(engine: &mut HeadlessEngine) -> usize {
+  let world = engine.world_mut();
+  let mut skeletons = world.query::<&Skeleton>();
+  skeletons
+    .iter(world)
+    .filter(|skeleton| {
+      let (Some(parent), Some(bone)) = (skeleton.bone_world("b8"), skeleton.bone_world("b9"))
+      else {
+        return false;
+      };
+      let own = parent.inverse() * bone;
+      own.translation.distance(Vec2::new(BONE_LENGTH, 0.0)) > 0.001
+    })
+    .count()
+}
 
 /// The length of every bone of the rig: how far its tip is along its x axis
 const BONE_LENGTH: f32 = 4.0;
@@ -661,6 +732,12 @@ fn start(case: Case) -> Option<HeadlessEngine> {
       Phase::FixedUpdate,
       end.after(FixedSet::Skeletons).before(FixedSet::Particles),
     );
+  if case.springs {
+    builder = builder.add_systems(
+      Phase::FixedUpdate,
+      drift.after(FixedSet::Game).before(FixedSet::Transforms),
+    );
+  }
   if case.constraints {
     builder = builder
       .add_systems(
@@ -703,6 +780,9 @@ struct Figures {
   reached: Reached,
   /// The fixed steps measured
   steps: usize,
+  /// The skeletons whose spring sways the spine's last bone, after the last
+  /// step
+  swayed: usize,
 }
 
 impl Figures {
@@ -765,6 +845,7 @@ fn measure(case: Case) -> Option<Figures> {
     deformed: deformed(&mut engine),
     reached: *engine.world().resource::<Reached>(),
     steps,
+    swayed: swayed(&mut engine),
   })
 }
 
@@ -1022,6 +1103,26 @@ fn main() {
       guards::miss(format!(
         "skeletons_update_constraints: {missed} of {steps} steps had a tip off its target (at most \
          {worst:.4}), of {measured} measured"
+      ));
+    }
+  }
+  if let Some(figures) = measure(Case {
+    springs: true,
+    ..Case::crowd()
+  }) {
+    println!("skeletons_update_springs: {:.1} µs", figures.update);
+    held("skeletons_update_springs", figures.update, UPDATE_MAX);
+    // The springs act: they sway the bone that no animation moves off its
+    // place in three skeletons in four at the least
+    let skeletons = Case::crowd().skeletons;
+    println!(
+      "skeletons_springs_swayed: {} of {skeletons} skeletons",
+      figures.swayed
+    );
+    if figures.swayed * 4 < skeletons * 3 {
+      guards::miss(format!(
+        "skeletons_update_springs: the springs swayed {} of {skeletons} skeletons",
+        figures.swayed
       ));
     }
   }
