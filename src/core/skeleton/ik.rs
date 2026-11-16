@@ -9,7 +9,7 @@
 
 use std::f32::consts::PI;
 
-use glam::{Affine2, Vec2};
+use glam::{Affine2, DVec2, Vec2};
 
 use super::apply::shortest;
 use super::constraint::{IkBend, IkSetup};
@@ -23,9 +23,10 @@ const NO_LENGTH: f32 = 1e-6;
 /// be brought back through it
 const FLAT: f32 = 1e-12;
 
-/// How far apart a bone's two scales, or its two shears, may be while it
-/// still counts as even
-const EVEN: f32 = 1e-4;
+/// How far apart a bone's two scales may be, as a share of the larger, and
+/// its two shears, in radians, while it still counts as even: as far as
+/// rounding takes them, and no farther
+const EVEN: f32 = 1e-6;
 
 /// How near one line a chain's joints count as on it, as a share of the
 /// chain's length: a pose that near a line has no bend of its own. A
@@ -199,12 +200,16 @@ pub(crate) fn one_bone(
 /// target when `second` lies on `first`'s axis or with `uniform`, and
 /// otherwise on the line, a little short of the target.
 ///
-/// Exact when `first` scales every direction alike. When its own scale is
-/// uneven or it is sheared, part two's length changes as `second` turns.
-/// The triangle is still solved once, with part two as long as it is in
-/// the pose passed in, so `second` is pointed the right way and comes out
-/// another length: the tip misses along part two, by at most the spread
-/// between the longest and the shortest that `first` makes it.
+/// The triangle is exact while `first` scales every direction alike
+/// (`even`, to a rounding), and is used only then. When `first`'s own
+/// scale is uneven or it is sheared, part two's length changes as `second`
+/// turns, and the bend is found in `first`'s own space instead, where both
+/// parts are rigid (`uneven_rotations`): from the side's farthest bend,
+/// walked toward folded to the first bend whose distance is the target's.
+/// A target beyond that farthest reach leaves the limb at that bend, and
+/// one nearer than the walk reaches before the distance stops falling
+/// leaves it at that nearest bend, pointing at the target either way.
+/// Softness measures from the farthest reach; stretch does not apply.
 ///
 /// Only the bones' rotations and `first`'s scale are written. Nothing is,
 /// when the mix is 0 or less, when the target is on `first`'s origin, when
@@ -248,6 +253,20 @@ pub(crate) fn two_bones(
     let rotation = turned(second.rotation, aim, mix);
     if rotation.is_finite() {
       second.rotation = rotation;
+    }
+    return;
+  }
+  if !even(first) {
+    // Part two's length changes as the second bone turns: the bend is
+    // found in the first bone's own space, where both parts are rigid
+    let Some((solved, aim)) = uneven_rotations(first, second, length, to_target, values) else {
+      return;
+    };
+    let first_rotation = turned(first.rotation, solved, mix);
+    let second_rotation = turned(second.rotation, aim, mix);
+    if first_rotation.is_finite() && second_rotation.is_finite() {
+      first.rotation = first_rotation;
+      second.rotation = second_rotation;
     }
     return;
   }
@@ -320,6 +339,234 @@ pub(crate) fn two_bones(
   first.scale_y = scale_y;
   second.rotation = second_rotation;
 }
+
+/// The most an uneven limb's bend changes in one step of its walks, in
+/// radians: steps are shorter wherever the tip's distance could turn sooner
+const BEND_STEP: f64 = std::f64::consts::FRAC_PI_4;
+
+/// How far an uneven limb's walk steps over a turn of the tip's distance,
+/// where it is not sure to keep rising or falling for even this far, in
+/// radians
+const BEND_SETTLED: f64 = std::f64::consts::PI / 65_536.0;
+
+/// The most steps of each of an uneven limb's two walks
+const BEND_WALK: usize = 96;
+
+/// How many times the step that holds an uneven limb's bend is halved
+const BEND_HALVINGS: usize = 30;
+
+/// The rotations, before the mix, that bring the tip of `second` onto a
+/// target `to_target` from `first`'s origin (or as near as it reaches)
+/// under a `first` that does not scale every direction alike. `None` when
+/// the limb's numbers are not finite.
+///
+/// In `first`'s own space both parts are rigid, so the tip's distance from
+/// its origin follows the bend alone (`Bent`). The side's farthest bend is
+/// found, and softness measures its reach from there. A target beyond that
+/// reach leaves the limb at that bend; a nearer one is met at the first
+/// bend, walking from there toward folded, whose distance is the target's,
+/// or left at the bend where the distance stops falling, if that comes
+/// first. `first` is then turned so that the tip points at the target
+fn uneven_rotations(
+  first: &BonePose,
+  second: &BonePose,
+  length: f32,
+  to_target: Vec2,
+  values: IkValues,
+) -> Option<(f32, f32)> {
+  let limb = Bent::of(first, second, length, values.bend)?;
+  let distance = f64::from(to_target.length());
+  let (far, most, _) = limb.farthest();
+  let reach = most.sqrt();
+  let softness = if values.softness > 0.0 {
+    f64::from(values.softness).min(reach)
+  } else {
+    0.0
+  };
+  let begins = reach - softness;
+  let d = if softness > 0.0 && distance > begins {
+    begins - softness * (-(distance - begins) / softness).exp_m1()
+  } else {
+    distance
+  };
+  let bend = if d >= reach {
+    far
+  } else {
+    limb.fall(far, d * d).0
+  };
+  let tip = limb.tip(bend);
+  let solved = to_target.to_angle() - tip.y.atan2(tip.x) as f32;
+  let along = limb.heading + limb.side * bend;
+  let aim = pointing(second, Vec2::new(along.cos() as f32, along.sin() as f32));
+  Some((solved, aim))
+}
+
+/// A limb of two bones seen in its first bone's own space, where both parts
+/// are rigid: part two is bent from part one by an angle there (0 lays it
+/// along part one, half a turn folds it back), and the tip's distance from
+/// the first bone's origin follows that bend alone. Bends are measured on
+/// the side asked for, 0 to half a turn. Worked in `f64`, so that the
+/// distance near its turns, where it changes slowest, is not lost in
+/// rounding.
+///
+/// Brought out through the first bone's linear part less its rotation, the
+/// tip is `one + along × cos(side × bend) + across × sin(side × bend)`, so
+/// the square of its distance is a sum of a constant and cosines of the
+/// bend and of twice the bend. How fast its slope can change is then
+/// bounded by those cosines' sizes (`bound`), which sizes the walks' steps
+/// so that no turn of the distance hides inside one, as a chain's closing
+/// walk is sized (`fall`)
+struct Bent {
+  /// Part one, from the first bone's origin to the second's
+  one: DVec2,
+  /// Part two laid along part one, unbent
+  along: DVec2,
+  /// Part two bent a quarter turn the positive way in the first bone's
+  /// space
+  across: DVec2,
+  /// The way part one points in the first bone's space
+  heading: f64,
+  /// 1 or -1: the way, in the first bone's space, that bends the limb to
+  /// the side asked for in its parent's. That is the positive way for
+  /// `Positive` under a first bone that does not mirror
+  side: f64,
+  /// The most the third derivative of the square of the tip's distance can
+  /// be, as the bend changes
+  bound: f64,
+}
+
+impl Bent {
+  /// The limb of `first` and `second` (its tip `length` along `second`'s x
+  /// axis) bent to `bend`'s side. `None` when its numbers are not finite
+  fn of(first: &BonePose, second: &BonePose, length: f32, bend: IkBend) -> Option<Self> {
+    let unturned = first.linear_turned(0.0).as_dmat2();
+    let place = DVec2::new(f64::from(second.x), f64::from(second.y));
+    let heading = place.y.atan2(place.x);
+    let reach = f64::from(length) * f64::from(second.scale_x).abs();
+    let straight = DVec2::new(heading.cos(), heading.sin()) * reach;
+    let wanted = if bend == IkBend::Negative { -1.0 } else { 1.0 };
+    let (one, along, across) = (
+      unturned * place,
+      unturned * straight,
+      unturned * straight.perp(),
+    );
+    let once = 2.0 * one.dot(along).hypot(one.dot(across));
+    let twice = (0.5 * (along.length_squared() - across.length_squared())).hypot(along.dot(across));
+    let bound = once + 8.0 * twice;
+    let given = one.is_finite() && along.is_finite() && across.is_finite();
+    (given && bound.is_finite()).then_some(Self {
+      one,
+      along,
+      across,
+      heading,
+      side: wanted * unturned.determinant().signum(),
+      bound,
+    })
+  }
+
+  /// Where the tip is at `bend`, from the first bone's origin, in its
+  /// parent's space with the first bone unturned
+  fn tip(&self, bend: f64) -> DVec2 {
+    let (sin, cos) = (self.side * bend).sin_cos();
+    self.one + self.along * cos + self.across * sin
+  }
+
+  /// The square of the tip's distance at `bend`, how fast it changes as the
+  /// bend grows, and how fast that changes
+  fn at(&self, bend: f64) -> (f64, f64, f64) {
+    let (sin, cos) = (self.side * bend).sin_cos();
+    let bent = self.along * cos + self.across * sin;
+    let tip = self.one + bent;
+    let rate = (self.across * cos - self.along * sin) * self.side;
+    (
+      tip.length_squared(),
+      2.0 * tip.dot(rate),
+      2.0 * (rate.length_squared() - tip.dot(bent)),
+    )
+  }
+
+  /// The side's farthest bend, the square of its distance, and the steps
+  /// walked. The walk goes from straight to folded, each step only as far
+  /// as the distance is sure to keep rising or keep falling (`sure_falling`,
+  /// either way), and never more than `BEND_STEP`; where neither is sure
+  /// for `BEND_SETTLED`, at a turn, it steps that far over it. The farthest
+  /// place walked is taken. It walks at most `BEND_WALK` steps, and a limb
+  /// that takes more has its farthest bend sought short of folded
+  fn farthest(&self) -> (f64, f64, usize) {
+    let (mut bend, mut here) = (0.0, self.at(0.0));
+    let (mut far, mut most) = (0.0, here.0);
+    let mut steps = 0;
+    while bend < PI_WIDE && steps < BEND_WALK {
+      let (_, slope, rate) = here;
+      let sure = sure_falling(slope, rate, self.bound).max(sure_falling(-slope, -rate, self.bound));
+      let step = if sure < BEND_SETTLED {
+        BEND_SETTLED
+      } else {
+        sure.min(BEND_STEP)
+      };
+      bend = (bend + step).min(PI_WIDE);
+      here = self.at(bend);
+      steps += 1;
+      if here.0 > most {
+        (far, most) = (bend, here.0);
+      }
+    }
+    (far, most, steps)
+  }
+
+  /// The first bend past `far` (the farthest) toward folded at which the
+  /// square of the tip's distance is `squared`, below the farthest's, and
+  /// the steps walked. Each step goes only as far as the distance is sure
+  /// to fall, and never more than `BEND_STEP`, so that the crossing found
+  /// is the first and halving its step finds it. Where the distance is not
+  /// sure to fall for `BEND_SETTLED`, it is at a turn: past the top of one
+  /// (the farthest bend, found to within such a step) the walk steps over
+  /// it; at the bottom of one the distance has stopped falling, and that
+  /// nearest bend is given. Folded is the nearest when the distance falls
+  /// all the way. After `BEND_WALK` steps the walk stops where it is, short
+  /// of the crossing
+  fn fall(&self, far: f64, squared: f64) -> (f64, usize) {
+    let (mut held, mut here) = (far, self.at(far));
+    for steps in 0..BEND_WALK {
+      if held >= PI_WIDE {
+        return (PI_WIDE, steps);
+      }
+      let (_, slope, rate) = here;
+      let sure = sure_falling(slope, rate, self.bound);
+      let step = if sure >= BEND_SETTLED {
+        sure.min(BEND_STEP)
+      } else if rate < 0.0 {
+        BEND_SETTLED
+      } else {
+        return (held, steps);
+      };
+      let next = (held + step).min(PI_WIDE);
+      let there = self.at(next);
+      if there.0 <= squared {
+        return (self.halved(held, next, squared), steps + 1);
+      }
+      (held, here) = (next, there);
+    }
+    (held, BEND_WALK)
+  }
+
+  /// The bend between `held`, where the square of the tip's distance is
+  /// above `squared`, and `crossed`, where it is not
+  fn halved(&self, mut held: f64, mut crossed: f64, squared: f64) -> f64 {
+    for _ in 0..BEND_HALVINGS {
+      let middle = 0.5 * (held + crossed);
+      if self.at(middle).0 > squared {
+        held = middle;
+      } else {
+        crossed = middle;
+      }
+    }
+    0.5 * (held + crossed)
+  }
+}
+
+/// Half a turn, in `f64`
+const PI_WIDE: f64 = std::f64::consts::PI;
 
 /// Turns a chain of bones, each the child of the one before, so that the
 /// tip of the last (`length` along its x axis) reaches for `target`, a
@@ -700,21 +947,24 @@ fn turning_bound(sizes: &[Vec2]) -> f64 {
 /// `slope + bend × t + bound × t² / 2`, which is below 0 up to its first
 /// root. None, where it is not falling there
 fn falling_for(slope: f32, bend: f32, bound: f64) -> f32 {
-  let (slope, bend) = (f64::from(slope), f64::from(bend));
+  sure_falling(f64::from(slope), f64::from(bend), bound) as f32
+}
+
+/// `falling_for` in `f64`
+fn sure_falling(slope: f64, bend: f64, bound: f64) -> f64 {
   if !(slope < 0.0 || (slope == 0.0 && bend < 0.0)) {
     return 0.0;
   }
   if bound <= 0.0 {
-    return f32::MAX;
+    return f64::from(f32::MAX);
   }
   let root = (bend * bend - 2.0 * bound * slope).sqrt();
   // Each form where it does not take one near number from another
-  let sure = if bend <= 0.0 {
+  if bend <= 0.0 {
     (root - bend) / bound
   } else {
     -2.0 * slope / (bend + root)
-  };
-  sure as f32
+  }
 }
 
 /// Walks a chain's family from the place `from`, where the tip is `here`
@@ -821,8 +1071,8 @@ fn scale_factor(distance: f32, reach: f32, mix: f32, max: Option<f32>) -> f32 {
 /// neither skews it
 fn even(bone: &BonePose) -> bool {
   let skew = bone.shear_x - bone.shear_y;
-  (bone.scale_x.abs() - bone.scale_y.abs()).abs() <= EVEN
-    && (skew - PI * (skew / PI).round()).abs() <= EVEN
+  let (x, y) = (bone.scale_x.abs(), bone.scale_y.abs());
+  (x - y).abs() <= EVEN * x.max(y) && (skew - PI * (skew / PI).round()).abs() <= EVEN
 }
 
 fn finite(bone: &BonePose) -> bool {
@@ -850,7 +1100,7 @@ fn given(length: f32, target: Vec2, values: IkValues) -> bool {
 
 #[cfg(test)]
 mod tests {
-  use std::f32::consts::{FRAC_PI_2, FRAC_PI_3, FRAC_PI_6, PI, TAU};
+  use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
   use super::*;
 
@@ -1905,7 +2155,8 @@ mod tests {
     };
     let reach = unstretched("softness", first, soft);
     assert!(reach < 70.0, "softness: {reach}");
-    // with a first bone whose scales differ by more than 1e-4;
+    // with a first bone whose scales differ by more than a millionth of
+    // the larger;
     let uneven = BonePose {
       scale_x: 1.2,
       ..first
@@ -1916,19 +2167,33 @@ mod tests {
       ..first
     };
     unstretched("a first bone uneven by 0.001", nearly, stretch);
+    let barely = BonePose {
+      scale_x: 1.000002,
+      ..first
+    };
+    unstretched("a first bone uneven by 0.000002", barely, stretch);
     // or one whose axes its shear takes out of square.
     let sheared = BonePose {
       shear_x: 0.3,
       ..first
     };
     unstretched("a sheared first bone", sheared, stretch);
-    // Scales within 1e-4 of each other count as even
+    // Scales within a rounding (a millionth of the larger) of each other
+    // count as even, and so do shears half a turn apart as `f32` rounds
+    // them
     let even = BonePose {
-      scale_x: 1.00005,
+      scale_x: 1.0000005,
       ..first
     };
     let (a, _) = solved((even, second), 30.0, target, stretch, false);
-    assert!(a.scale_x > 1.4, "even within 1e-4: {}", a.scale_x);
+    assert!(a.scale_x > 1.4, "even within a millionth: {}", a.scale_x);
+    let flipped = BonePose {
+      shear_x: 2.3,
+      shear_y: 2.3 + PI,
+      ..first
+    };
+    let (a, _) = solved((flipped, second), 30.0, target, stretch, false);
+    assert!(a.scale_x > 1.4, "shears half a turn apart: {}", a.scale_x);
     // And equal shears turn a bone without taking its axes out of square,
     // so it stretches, and its tip is on the target
     let turned = BonePose {
@@ -2398,22 +2663,6 @@ mod tests {
     }
   }
 
-  /// How far the tip is from the first bone's origin with the limb folded,
-  /// and with it straight: the second bone (unsheared, its scale above 0)
-  /// turned back along its own place in the first, and along it
-  fn reaches(first: &BonePose, second: &BonePose, length: f32) -> (f32, f32) {
-    let along = Vec2::new(second.x, second.y).to_angle();
-    let origin = Vec2::new(first.x, first.y);
-    let at = |rotation: f32| {
-      let turned = BonePose {
-        rotation,
-        ..*second
-      };
-      tip(first, &turned, length).distance(origin)
-    };
-    (at(along + PI), at(along))
-  }
-
   /// A first bone at `ORIGIN` with this scale and x shear
   fn uneven(scale_x: f32, scale_y: f32, shear_x: f32) -> BonePose {
     BonePose {
@@ -2428,177 +2677,624 @@ mod tests {
   /// it
   const PLACES: [Vec2; 2] = [Vec2::new(40.0, 0.0), Vec2::new(40.0, 12.0)];
 
-  /// The spread between the longest and the shortest that `first` makes
-  /// part two as the second bone turns through a full turn
-  fn spread(first: &BonePose, second: &BonePose, length: f32) -> f32 {
-    let lengths = (0..720).map(|half_degree| {
-      let turned = BonePose {
-        rotation: (half_degree as f32 * 0.5).to_radians(),
-        ..*second
-      };
-      tip(first, &turned, length).distance(joint(first, &turned))
-    });
-    let (shortest, longest) = lengths.fold((f32::MAX, 0.0_f32), |(low, high), length| {
-      (low.min(length), high.max(length))
-    });
-    longest - shortest
+  /// The first bones these tests try that do not scale every direction
+  /// alike: unevenly scaled, sheared either way, and mirrored by an uneven
+  /// scale
+  fn uneven_firsts() -> [(&'static str, BonePose); 9] {
+    [
+      ("a scale of (1.2, 1)", uneven(1.2, 1.0, 0.0)),
+      ("a scale of (1.5, 1)", uneven(1.5, 1.0, 0.0)),
+      ("a scale of (2, 1)", uneven(2.0, 1.0, 0.0)),
+      ("a scale of (1, 1.5)", uneven(1.0, 1.5, 0.0)),
+      ("an x shear of 0.3", uneven(1.0, 1.0, 0.3)),
+      ("an x shear of -0.3", uneven(1.0, 1.0, -0.3)),
+      ("an x shear of 0.6", uneven(1.0, 1.0, 0.6)),
+      ("an x shear of -0.6", uneven(1.0, 1.0, -0.6)),
+      ("a scale of (-1.5, 1)", uneven(-1.5, 1.0, 0.0)),
+    ]
   }
 
-  /// The worst miss of a limb of length 30 under `first`, as a share of its
-  /// straight reach: over a second bone at each of `PLACES`, started at
-  /// every twelfth of a turn; and both bend sides, toward targets in four
-  /// directions at every twentieth of the way from the folded reach to the
-  /// straight reach, both reaches among them. No miss may be more than the
-  /// spread of part two's length. Every pose solved, there and beyond the
-  /// straight reach, must be finite, bent to the side asked for, and
-  /// changed in its rotations alone
-  fn worst_share(what: &str, first: BonePose) -> f32 {
-    let mut worst = 0.0_f32;
-    for place in PLACES {
-      for twelfth in 0..12 {
-        let second = bone(place.x, place.y, twelfth as f32 * FRAC_PI_6);
-        let (folded, straight) = reaches(&first, &second, 30.0);
-        let spread = spread(&first, &second, 30.0);
-        for twentieth in 0..=26 {
-          let fraction = twentieth as f32 * 0.05;
-          let distance = folded + (straight - folded) * fraction;
-          for quarter in 0..4 {
-            let target = ORIGIN + Vec2::from_angle(0.4 + quarter as f32 * FRAC_PI_2) * distance;
-            for positive in [true, false] {
-              let what = format!(
-                "{what}, second bone at {place} turned {twelfth} twelfths, {fraction} of the way, target {target}, bend positive: {positive}"
-              );
-              let values = IkValues {
-                bend: bent(positive),
-                ..values()
-              };
-              let (a, b) = solved((first, second), 30.0, target, values, false);
-              assert!(
-                bits(&a)
-                  .into_iter()
-                  .chain(bits(&b))
-                  .all(|value| f32::from_bits(value).is_finite()),
-                "{what}: {a:?} {b:?}"
-              );
-              let turn = bend(&a, &b, 30.0) * if positive { 1.0 } else { -1.0 };
-              assert!(turn > -1.0, "{what}: a cross of {turn}");
-              assert_only_turned(&first, &a, &what);
-              assert_only_turned(&second, &b, &what);
-              if twentieth <= 20 {
-                let miss = tip(&a, &b, 30.0).distance(target);
-                assert!(
-                  miss < spread + 0.01,
-                  "{what}: a miss of {miss}, above the spread of {spread}"
-                );
-                worst = worst.max(miss / straight);
-              }
-            }
-          }
-        }
+  /// The second bone turned so that part two is bent by `bend` from part
+  /// one in the first bone's own space: 0 lays it along the line from the
+  /// first bone's origin to the second's
+  fn bent_by(second: &BonePose, bend: f32) -> BonePose {
+    let flipped = if second.scale_x < 0.0 { PI } else { 0.0 };
+    BonePose {
+      rotation: Vec2::new(second.x, second.y).to_angle() - second.shear_x + flipped + bend,
+      ..*second
+    }
+  }
+
+  /// How far the second bone's tip is from the first bone's origin, worked
+  /// in `f64` from the bones' own values (the first bone's linear part times
+  /// the second's place and its tip's offset), so that a sampled distance
+  /// does not show `f32` rounding as a turn
+  fn tip_distance(first: &BonePose, second: &BonePose, length: f32) -> f64 {
+    let wide = |value: f32| f64::from(value);
+    let (rotation, along) = (wide(first.rotation), wide(second.rotation + second.shear_x));
+    let reach = wide(length) * wide(second.scale_x);
+    let (x, y) = (
+      wide(second.x) + reach * along.cos(),
+      wide(second.y) + reach * along.sin(),
+    );
+    let (sx, sy) = (wide(first.scale_x), wide(first.scale_y));
+    let (ax, ay) = (
+      rotation + wide(first.shear_x),
+      rotation + wide(first.shear_y),
+    );
+    let out_x = ax.cos() * sx * x - ay.sin() * sy * y;
+    let out_y = ax.sin() * sx * x + ay.cos() * sy * y;
+    out_x.hypot(out_y)
+  }
+
+  /// How many bends of a side's half turn `side_reaches` samples
+  const SAMPLED: usize = 8192;
+
+  /// A limb's reaches on one bend side, found by sampling and not by the
+  /// solve: the second bone is bent through `SAMPLED` steps of the half
+  /// turn on that side, from straight to folded. Gives the farthest its tip
+  /// gets from the first bone's origin, and the nearest it comes going on
+  /// from that bend toward folded while its distance falls
+  fn side_reaches(first: &BonePose, second: &BonePose, length: f32, positive: bool) -> (f32, f32) {
+    let wanted = if positive { 1.0 } else { -1.0 };
+    let way = if bend(first, &bent_by(second, FRAC_PI_2), length) * wanted > 0.0 {
+      1.0
+    } else {
+      -1.0
+    };
+    let at = |step: usize| {
+      let bend = way * PI * step as f32 / SAMPLED as f32;
+      tip_distance(first, &bent_by(second, bend), length)
+    };
+    let (mut far_at, mut farthest) = (0, at(0));
+    for step in 1..=SAMPLED {
+      let distance = at(step);
+      if distance > farthest {
+        (far_at, farthest) = (step, distance);
       }
     }
-    worst
+    let mut nearest = farthest;
+    for step in far_at + 1..=SAMPLED {
+      let distance = at(step);
+      if distance >= nearest {
+        break;
+      }
+      nearest = distance;
+    }
+    (farthest as f32, nearest as f32)
   }
 
-  /// The farthest the tip moves in one step as a target is walked straight
-  /// out in steps of `step`, from 1 away from the first bone's origin to
-  /// 1.2 times the limb's straight reach, so through its folded reach and
-  /// its straight one: over three lines, both bend sides, a second bone at
-  /// each of `PLACES`, started at every sixth of a turn
-  fn largest_tip_step(first: BonePose, step: f32) -> f32 {
-    let mut largest = 0.0_f32;
-    for place in PLACES {
-      for sixth in 0..6 {
-        let second = bone(place.x, place.y, sixth as f32 * FRAC_PI_3);
-        let (_, straight) = reaches(&first, &second, 30.0);
-        let steps = ((straight * 1.2 - 1.0) / step) as usize;
-        for line in [0.4_f32, 2.0, -1.2] {
+  #[test]
+  fn an_uneven_first_bone_reaches_its_target() {
+    // Under a first bone whose own scale is uneven, or whose axes are
+    // sheared out of square, part two's length changes as the second bone
+    // turns. In that bone's own space both parts are rigid, so the tip's
+    // distance from its origin follows the bend between them alone: the
+    // solve finds the side's farthest bend, walks from it toward folded to
+    // the bend whose distance is the target's, and turns the first bone so
+    // the tip is on the target. Every target from the side's nearest (as
+    // far as the distance falls from the farthest bend) out to its farthest
+    // is met to 0.01, found here by sampling the bend, not by the solve: on
+    // each of nine first bones, a second bone on the first's axis and off
+    // it, started two ways, both bend sides, four directions, at every
+    // twentieth of the way between those reaches. Beyond the farthest the
+    // limb lies at that bend, pointing at the target; nearer than the
+    // nearest, at that bend, pointing at it
+    let mut solves = 0;
+    for (what, first) in uneven_firsts() {
+      for place in PLACES {
+        for start in [0.0, 2.5] {
+          let second = bone(place.x, place.y, start);
           for positive in [true, false] {
+            let (farthest, nearest) = side_reaches(&first, &second, 30.0, positive);
             let values = IkValues {
               bend: bent(positive),
               ..values()
             };
-            let mut last: Option<Vec2> = None;
-            for index in 0..=steps {
-              let target = ORIGIN + Vec2::from_angle(line) * (1.0 + index as f32 * step);
-              let (a, b) = solved((first, second), 30.0, target, values, false);
-              let tip = tip(&a, &b, 30.0);
-              if let Some(last) = last {
-                largest = largest.max(tip.distance(last));
+            let mut distances: Vec<f32> = (0..=20)
+              .map(|twentieth| nearest + (farthest - nearest) * twentieth as f32 / 20.0)
+              .collect();
+            distances.push(farthest * 1.2);
+            if nearest > 1.0 {
+              distances.push(nearest * 0.5);
+            }
+            for quarter in 0..4 {
+              let toward = Vec2::from_angle(0.4 + quarter as f32 * FRAC_PI_2);
+              for &distance in &distances {
+                let target = ORIGIN + toward * distance;
+                let what = format!(
+                  "{what}, second bone at {place} turned {start}, bend positive: {positive}, target {distance} away toward {toward} (reaches {nearest} to {farthest})"
+                );
+                let (a, b) = solved((first, second), 30.0, target, values, false);
+                assert!(
+                  bits(&a)
+                    .into_iter()
+                    .chain(bits(&b))
+                    .all(|value| f32::from_bits(value).is_finite()),
+                  "{what}: {a:?} {b:?}"
+                );
+                assert_only_turned(&first, &a, &what);
+                assert_only_turned(&second, &b, &what);
+                let turn = bend(&a, &b, 30.0) * if positive { 1.0 } else { -1.0 };
+                assert!(turn > -1.0, "{what}: a cross of {turn}");
+                let expected = ORIGIN + toward * distance.clamp(nearest, farthest);
+                assert_near(tip(&a, &b, 30.0), expected, &what);
+                solves += 1;
               }
-              last = Some(tip);
             }
           }
         }
       }
     }
-    largest
+    assert!(solves > 6_000, "{solves} solves");
   }
 
   #[test]
-  fn an_uneven_first_bone_misses_by_a_bounded_amount() {
-    // The recorded limit. Under a first bone whose own scale is uneven, or
-    // whose axes are sheared out of square, part two's length changes as
-    // the second bone turns. The triangle is solved once, with part two as
-    // long as it is in the pose passed in, so the second bone is pointed
-    // the right way and comes out another length: the tip is off its
-    // target, along part two, by the difference.
-    //
-    // That difference is at most the spread between the longest and the
-    // shortest the first bone makes part two, which `worst_share` holds
-    // every miss to. Under a scale of (a, 1), with part two 30 long
-    // unscaled, the spread is 30 (a - 1); and with the second bone 40
-    // along the first's axis the straight reach is 70 a. So the miss is at
-    // most 3 (a - 1) / 7 a of the reach: 7.1% at (1.2, 1) and 21.4% at
-    // (2, 1), and the worst miss found comes close to it.
-    //
-    // The lower bounds are deliberate: a solve that removes the limit fails
-    // here on purpose, and must restate the limit in the module notes and
-    // the design
-    let pinned = [
-      ("a scale of (1.2, 1)", uneven(1.2, 1.0, 0.0), 0.05, 0.1),
-      ("a scale of (2, 1)", uneven(2.0, 1.0, 0.0), 0.15, 0.3),
+  fn an_uneven_first_bone_reaches_without_a_jump_as_its_target_moves() {
+    // The bend follows the target's distance alone, and the walk that finds
+    // it starts from the same farthest bend whatever the target, so the
+    // limb follows a moving target without a jump: out beyond its farthest
+    // reach, in to inside its nearest, and round. Each rig's target is
+    // walked in steps of a thousandth of its farthest reach along two lines
+    // from 1.2 times that reach to inside its nearest, one straight across,
+    // and circles at the farthest reach and beyond it, between the two
+    // reaches, at the nearest and inside it, and at the distance the limb
+    // has straight (inside the farthest for a bone scaled (1, 2), whose
+    // farthest bend is not straight). The chain tests' halving rule finds
+    // no joint jumping 1% of the farthest reach, and the tip is on every
+    // target it can reach
+    let rigs = [
+      (
+        "a scale of (1, 2)",
+        uneven(1.0, 2.0, 0.0),
+        bone(40.0, 0.0, 0.9),
+        30.0,
+      ),
+      (
+        "a scale of (2, 1), parts of 50 and 100",
+        uneven(2.0, 1.0, 0.0),
+        bone(50.0, 0.0, 0.9),
+        100.0,
+      ),
+      (
+        "an x shear of 0.3",
+        uneven(1.0, 1.0, 0.3),
+        bone(40.0, 12.0, 0.9),
+        30.0,
+      ),
+      (
+        "an x shear of -0.3",
+        uneven(1.0, 1.0, -0.3),
+        bone(40.0, 12.0, 0.9),
+        30.0,
+      ),
+      (
+        "an x shear of 0.6",
+        uneven(1.0, 1.0, 0.6),
+        bone(40.0, 0.0, 0.9),
+        30.0,
+      ),
+      (
+        "an x shear of -0.6",
+        uneven(1.0, 1.0, -0.6),
+        bone(40.0, 0.0, 0.9),
+        30.0,
+      ),
     ];
-    for (what, first, least, most) in pinned {
-      let share = worst_share(what, first);
-      assert!(
-        share > least && share < most,
-        "{what}: the worst miss is {share} of the reach, outside {least} to {most}"
-      );
+    let mut solves = 0;
+    for (rig, first, second, length) in rigs {
+      for positive in [true, false] {
+        let (farthest, nearest) = side_reaches(&first, &second, length, positive);
+        let straight = tip_distance(&first, &bent_by(&second, 0.0), length) as f32;
+        let (inner, near) = (nearest / farthest, (nearest * 0.5 / farthest).max(0.02));
+        let mut strokes = vec![
+          Stroke::Line(Vec2::new(1.2, 0.0), Vec2::new(near, 0.0)),
+          Stroke::Line(Vec2::new(-0.72, -0.96), Vec2::new(-0.6, -0.8) * near),
+          Stroke::Line(Vec2::new(-1.1, 0.25), Vec2::new(1.1, 0.25)),
+          Stroke::Circle(Vec2::ZERO, 1.1),
+          Stroke::Circle(Vec2::ZERO, 1.0),
+          Stroke::Circle(Vec2::ZERO, straight / farthest),
+          Stroke::Circle(Vec2::ZERO, 0.5 * (inner + 1.0)),
+          Stroke::Circle(Vec2::ZERO, inner),
+        ];
+        if inner > 0.05 {
+          strokes.push(Stroke::Circle(Vec2::ZERO, 0.8 * inner));
+        }
+        let values = IkValues {
+          bend: bent(positive),
+          ..values()
+        };
+        for (index, stroke) in strokes.into_iter().enumerate() {
+          let steps = (stroke.length() / 0.001).ceil() as usize;
+          let mut missed = 0;
+          let solve = |along: f32, joints: &mut Vec<Vec2>| {
+            let target = stroke.at(along, farthest);
+            let (a, b) = solved((first, second), length, target, values, false);
+            joints.clear();
+            joints.extend([ORIGIN, joint(&a, &b), tip(&a, &b, length)]);
+            let reachable =
+              (nearest + 0.002 * farthest..=farthest).contains(&target.distance(ORIGIN));
+            if reachable && joints[2].distance(target) > 0.01 {
+              missed += 1;
+            }
+            solves += 1;
+          };
+          let jump = largest_jump(steps, 0.001, farthest, solve);
+          let what = format!("{rig}, bend positive: {positive}, stroke {index}");
+          assert!(
+            jump < 0.01,
+            "{what}: a joint jumps {jump} of the farthest reach"
+          );
+          assert_eq!(missed, 0, "{what}: steps off a target the limb can reach");
+        }
+      }
     }
-    // Every other bone tried is as finite, and held to its spread: 15 at
-    // (1.5, 1) and at (1, 1.5), 60 at (3, 1), 8.97 under an x shear of 0.3
-    // and 17.7 under one of 0.6
-    for (what, first) in [
-      ("a scale of (1.5, 1)", uneven(1.5, 1.0, 0.0)),
-      ("a scale of (3, 1)", uneven(3.0, 1.0, 0.0)),
-      ("a scale of (1, 1.5)", uneven(1.0, 1.5, 0.0)),
-      ("an x shear of 0.3", uneven(1.0, 1.0, 0.3)),
-      ("an x shear of 0.6", uneven(1.0, 1.0, 0.6)),
-    ] {
-      let share = worst_share(what, first);
-      assert!(
-        share < 0.35,
-        "{what}: the worst miss is {share} of the reach"
-      );
-    }
+    assert!(solves > 100_000, "{solves} solves");
+  }
 
-    // Through its reaches the tip follows a target steeply, and without a
-    // jump. Under a scale of (1.5, 1), a target walked out through both
-    // reaches in steps of 0.1 never moves the tip more than 2 in a step,
-    // and in steps of 0.01 never more than 0.7. A smaller step moves the
-    // tip less, though not in proportion: where the solve passes from bent
-    // to straight or to folded, the joint's place goes as a square root of
-    // the target's, as it does under an even bone, and here the tip shows
-    // it
-    let first = uneven(1.5, 1.0, 0.0);
-    for (step, most) in [(0.1, 2.0), (0.01, 0.7)] {
-      let largest = largest_tip_step(first, step);
-      assert!(
-        largest < most,
-        "a scale of (1.5, 1): the tip moved {largest} for a step of {step}, above {most}"
+  /// `two_bones` as it stood before an uneven first bone was solved
+  /// exactly, kept to hold an even first bone to it, bit for bit. It calls
+  /// the live `pointing`, `turned`, `scale_factor`, `even` and the other
+  /// helpers, so what it guards is `two_bones`' own body
+  fn two_bones_as_it_stood(
+    first: &mut BonePose,
+    second: &mut BonePose,
+    length: f32,
+    target: Vec2,
+    values: IkValues,
+    uniform: bool,
+  ) {
+    if !(finite(first) && finite(second) && given(length, target, values)) || values.mix <= 0.0 {
+      return;
+    }
+    let mix = values.mix.min(1.0);
+    let to_target = target - Vec2::new(first.x, first.y);
+    let distance = to_target.length();
+    let unturned = first.linear_turned(0.0);
+    let determinant = unturned.determinant();
+    if distance <= NO_LENGTH || !determinant.is_finite() || determinant.abs() <= FLAT {
+      return;
+    }
+    let axis = Vec2::from_angle(second.rotation + second.shear_x) * second.scale_x;
+    let part_one = unturned * Vec2::new(second.x, second.y);
+    let part_two = unturned * (axis * length);
+    let (l1, l2) = (part_one.length(), part_two.length());
+    if !(l1.is_finite() && l2.is_finite()) || l2 <= NO_LENGTH || length <= 0.0 {
+      return;
+    }
+    if l1 <= NO_LENGTH {
+      let carried = first.linear_turned(first.rotation);
+      let aim = pointing(second, carried.inverse() * to_target);
+      let rotation = turned(second.rotation, aim, mix);
+      if rotation.is_finite() {
+        second.rotation = rotation;
+      }
+      return;
+    }
+    let reach = l1 + l2;
+    let softness = if values.softness > 0.0 {
+      values.softness.min(reach)
+    } else {
+      0.0
+    };
+    let begins = reach - softness;
+    let d = if softness > 0.0 && distance > begins {
+      begins - softness * (-(distance - begins) / softness).exp_m1()
+    } else {
+      distance
+    };
+    let along = (l1 * l1 - l2 * l2 + d * d) / (2.0 * d);
+    let off = (l1 * l1 - along * along).max(0.0).sqrt();
+    let toward = to_target / distance;
+    let negative = values.bend == IkBend::Negative;
+    let side = toward.perp() * if negative { -off } else { off };
+    let one = toward * along - side;
+    let two = toward * (d - along) + side;
+    let stretches = values.stretch && softness <= 0.0 && distance > reach && even(first);
+    let factor = if stretches {
+      scale_factor(distance, reach, mix, values.max_stretch)
+    } else {
+      1.0
+    };
+    let scale_x = first.scale_x * factor;
+    let scale_y = if uniform {
+      first.scale_y * factor
+    } else {
+      first.scale_y
+    };
+    let rotations = |carrier: &BonePose, held: Vec2| {
+      let solved = one.to_angle() - held.to_angle();
+      let aim = pointing(second, carrier.linear_turned(solved).inverse() * two);
+      (solved, aim)
+    };
+    let (solved, aim) = if stretches {
+      let stretched = BonePose {
+        scale_x,
+        scale_y,
+        ..*first
+      };
+      let held = stretched.linear_turned(0.0) * Vec2::new(second.x, second.y);
+      rotations(&stretched, held)
+    } else {
+      rotations(first, part_one)
+    };
+    let first_rotation = turned(first.rotation, solved, mix);
+    let second_rotation = turned(second.rotation, aim, mix);
+    let written = [first_rotation, second_rotation, scale_x, scale_y];
+    if !written.iter().all(|value| value.is_finite()) {
+      return;
+    }
+    first.rotation = first_rotation;
+    first.scale_x = scale_x;
+    first.scale_y = scale_y;
+    second.rotation = second_rotation;
+  }
+
+  /// A random limb whose first bone scales every direction alike (exactly,
+  /// or within the band `even` allows), a target and values for it
+  fn random_even_limb(seed: &mut u64) -> (BonePose, BonePose, f32, Vec2, IkValues, bool) {
+    let mut next = || random(seed);
+    let sign = |value: f32| if value < 0.5 { -1.0 } else { 1.0 };
+    let scale = 0.3 + 2.0 * next();
+    let off_even = if next() < 0.25 {
+      scale * 0.0000009 * next()
+    } else {
+      0.0
+    };
+    let shear = next() * TAU - PI;
+    let flip = if next() < 0.25 { PI } else { 0.0 };
+    let first = BonePose {
+      x: next() * 40.0 - 20.0,
+      y: next() * 40.0 - 20.0,
+      rotation: next() * TAU - PI,
+      scale_x: scale * sign(next()),
+      scale_y: (scale + off_even) * sign(next()),
+      shear_x: shear,
+      shear_y: shear + flip,
+    };
+    let second = BonePose {
+      x: next() * 60.0,
+      y: if next() < 0.5 {
+        0.0
+      } else {
+        next() * 30.0 - 15.0
+      },
+      rotation: next() * TAU - PI,
+      scale_x: (0.3 + 1.5 * next()) * sign(next()),
+      scale_y: 0.3 + 1.5 * next(),
+      shear_x: if next() < 0.5 { 0.0 } else { next() - 0.5 },
+      shear_y: 0.0,
+    };
+    let length = 5.0 + 40.0 * next();
+    let reach = (Vec2::new(second.x, second.y).length() + length) * scale * 1.5;
+    let target = Vec2::new(first.x, first.y) + Vec2::from_angle(next() * TAU) * (next() * reach);
+    let values = IkValues {
+      mix: [1.0, 0.5, 1.2, 0.0][(next() * 4.0) as usize % 4],
+      softness: if next() < 0.5 { 0.0 } else { next() * 20.0 },
+      bend: bent(next() < 0.5),
+      compress: next() < 0.5,
+      stretch: next() < 0.5,
+      max_stretch: if next() < 0.5 {
+        None
+      } else {
+        Some(1.0 + next())
+      },
+    };
+    (first, second, length, target, values, next() < 0.5)
+  }
+
+  /// How many random limbs `an_even_first_bone_is_unchanged` solves
+  const EVEN_SOLVES: usize = 20_000;
+
+  #[test]
+  fn an_even_first_bone_is_unchanged() {
+    // A first bone that scales every direction alike keeps the closed
+    // form: over random even limbs (mirrored, turned by equal shears or
+    // flipped by shears half a turn apart, a quarter of them within the
+    // band `even` allows, the second bone off the first's axis, scaled and
+    // sheared), with random targets, mixes, softness, stretch, its limit
+    // and `uniform`, both bones come out the same to the bit as the solve
+    // above gives them
+    let mut seed = 0x5EED_0003;
+    for index in 0..EVEN_SOLVES {
+      let (first, second, length, target, values, uniform) = random_even_limb(&mut seed);
+      assert!(even(&first), "{index}: {first:?}");
+      let (mut a, mut b) = (first, second);
+      let (mut c, mut d) = (first, second);
+      two_bones(&mut a, &mut b, length, target, values, uniform);
+      two_bones_as_it_stood(&mut c, &mut d, length, target, values, uniform);
+      assert_eq!(
+        (bits(&a), bits(&b)),
+        (bits(&c), bits(&d)),
+        "{index}: {first:?} {second:?} {length} {target} {values:?} {uniform}"
       );
     }
+  }
+
+  /// `first` and `second` turned onto `target` by the uneven solve's
+  /// rotations at a mix of 1, whatever `first` is
+  fn walked_onto(
+    (mut first, mut second): (BonePose, BonePose),
+    length: f32,
+    target: Vec2,
+    values: IkValues,
+  ) -> (BonePose, BonePose) {
+    let to_target = target - Vec2::new(first.x, first.y);
+    if let Some((solved, aim)) = uneven_rotations(&first, &second, length, to_target, values) {
+      first.rotation = solved;
+      second.rotation = aim;
+    }
+    (first, second)
+  }
+
+  /// The farthest a joint (the second bone's origin or its tip) of one
+  /// solved limb is from the same joint of another
+  fn joints_apart(one: (BonePose, BonePose), other: (BonePose, BonePose), length: f32) -> f32 {
+    let joints = |(a, b): (BonePose, BonePose)| [joint(&a, &b), tip(&a, &b, length)];
+    let (one, other) = (joints(one), joints(other));
+    one[0].distance(other[0]).max(one[1].distance(other[1]))
+  }
+
+  #[test]
+  fn the_walk_meets_the_closed_form_at_an_even_bone() {
+    // Under a first bone that scales every direction alike, the tip's
+    // distance falls all the way from straight to folded, so the walk
+    // starts from straight and meets the bend the law of cosines gives:
+    // over random exactly even limbs, with targets from a tenth of the
+    // limb's reach to 99.5% of it and from 100.5% to 140%, on both sides,
+    // the walk puts the joint and the tip within a ten-thousandth of the
+    // limb's reach of where the closed form does. (Within a rounding of the reach, where softness takes a
+    // distance far beyond it, the two reaches' roundings differ, and near
+    // straight the joint moves as the square root of the distance: there
+    // the joints can stand a few hundredths apart, both tips on the line.)
+    let mut seed = 0x5EED_0004;
+    let mut compared = 0;
+    for _ in 0..8_000 {
+      let (first, second, length, _, values, _) = random_even_limb(&mut seed);
+      if first.scale_x.abs() != first.scale_y.abs() {
+        continue;
+      }
+      let origin = Vec2::new(first.x, first.y);
+      let reach = joint(&first, &second).distance(origin)
+        + tip(&first, &second, length).distance(joint(&first, &second));
+      let toward = Vec2::from_angle(random(&mut seed) * TAU);
+      let along = random(&mut seed);
+      let share = if along < 0.75 {
+        0.1 + 0.895 * along / 0.75
+      } else {
+        1.005 + 1.6 * (along - 0.75)
+      };
+      let target = origin + toward * reach * share;
+      let values = IkValues {
+        mix: 1.0,
+        softness: 0.0,
+        stretch: false,
+        ..values
+      };
+      let closed = solved((first, second), length, target, values, false);
+      let walked = walked_onto((first, second), length, target, values);
+      let apart = joints_apart(closed, walked, length) / reach;
+      assert!(
+        apart < 0.0001,
+        "{first:?} {second:?} {length} {target} {values:?}: {apart} apart"
+      );
+      compared += 1;
+    }
+    assert!(compared > 4_000, "{compared} compared");
+
+    // So where the solve changes method, at the edge of what `even`
+    // allows (a rounding), the limb does not step: a first bone just inside
+    // it and one just outside it put the joints of a limb of parts 40 and
+    // 30 within 0.003 of each other (the closed form's rounding near
+    // straight), toward targets out to beyond its
+    // reach, and never farther apart than the two methods put them on the
+    // one bone just inside. (Toward a target exactly at the folded or the
+    // straight reach, where a joint moves as the square root of a
+    // distance, the two methods' roundings alone set the joints 0.067 and
+    // 0.025 apart on one even bone, and across the edge by as much.)
+    let mut worst = 0.0_f32;
+    for (scale, place) in [(1.0, PLACES[0]), (1.0, PLACES[1]), (2.0, PLACES[1])] {
+      let inside = uneven(scale, scale * (1.0 + 0.9e-6), 0.0);
+      let outside = uneven(scale, scale * (1.0 + 1.2e-6), 0.0);
+      assert!(even(&inside) && !even(&outside));
+      let second = bone(place.x, place.y, 0.9);
+      for positive in [true, false] {
+        let values = IkValues {
+          bend: bent(positive),
+          ..values()
+        };
+        for step in 1..=60 {
+          let target = ORIGIN + Vec2::new(0.6, 0.8) * ((step as f32 * 2.0 + 0.7) * scale);
+          let apart = joints_apart(
+            solved((inside, second), 30.0, target, values, false),
+            solved((outside, second), 30.0, target, values, false),
+            30.0,
+          );
+          let same = joints_apart(
+            solved((inside, second), 30.0, target, values, false),
+            walked_onto((inside, second), 30.0, target, values),
+            30.0,
+          );
+          assert!(
+            apart <= same + 0.001,
+            "{target}: {apart} across the edge, {same} between the methods on one bone"
+          );
+          worst = worst.max(apart);
+        }
+      }
+    }
+    assert!(
+      worst < 0.003,
+      "the limb moves {worst} across the band's edge"
+    );
+  }
+
+  #[test]
+  fn an_uneven_first_bone_walks_a_bounded_number_of_steps() {
+    // Each of the two walks takes at most `BEND_WALK` (96) steps, and
+    // neither needs a third of them here: from straight to folded the
+    // farthest walk takes 27 steps at most and the walk to a target 23,
+    // under first bones scaled up to ten to one either way and sheared by
+    // up to 1.4 rad either way, with parts of 40 and 30 on the first's axis
+    // and off it, 50 and 100, and 10.4 and 60, started three ways, on both
+    // sides, toward targets at every two-hundredth of the way between the
+    // reaches. Neither stops short: the farthest reach the walk finds and
+    // the nearest it gives are within a millionth of the farthest of the
+    // reaches found by sampling the bend. (Over 60,000 random limbs, first
+    // bones scaled up to 200 to one and sheared up to 1.57 rad, the most
+    // was 58 steps, and none stopped short.)
+    let mut firsts = Vec::new();
+    for ratio in [1.2_f32, 1.5, 2.0, 3.0, 4.0, 5.0, 8.0, 10.0] {
+      firsts.push(uneven(ratio, 1.0, 0.0));
+      firsts.push(uneven(1.0, ratio, 0.0));
+    }
+    for shear in [0.3_f32, 0.6, 0.9, 1.2, 1.4] {
+      firsts.push(uneven(1.0, 1.0, shear));
+      firsts.push(uneven(1.0, 1.0, -shear));
+    }
+    let limbs = [
+      (PLACES[0], 30.0),
+      (PLACES[1], 30.0),
+      (Vec2::new(50.0, 0.0), 100.0),
+      (Vec2::new(10.0, 3.0), 60.0),
+    ];
+    let (mut most_far, mut most_fall, mut short) = (0, 0, 0.0_f32);
+    for first in firsts {
+      for (place, length) in limbs {
+        for start in [0.0_f32, 1.0, 2.0] {
+          let second = bone(place.x, place.y, start);
+          for positive in [true, false] {
+            let what = format!(
+              "{first:?}, second bone at {place} turned {start}, bend positive: {positive}"
+            );
+            let Some(limb) = Bent::of(&first, &second, length, bent(positive)) else {
+              panic!("{what}: no limb");
+            };
+            let (farthest, nearest) = side_reaches(&first, &second, length, positive);
+            let (far, most, steps) = limb.farthest();
+            most_far = most_far.max(steps);
+            let (bend, steps) = limb.fall(far, 0.0);
+            most_fall = most_fall.max(steps);
+            short = short
+              .max((farthest - most.sqrt() as f32) / farthest)
+              .max((limb.tip(bend).length() as f32 - nearest) / farthest);
+            for share in 0..=200 {
+              let distance = nearest + (farthest - nearest) * share as f32 / 200.0;
+              most_fall = most_fall.max(limb.fall(far, f64::from(distance).powi(2)).1);
+            }
+          }
+        }
+      }
+    }
+    assert!(most_far <= 32, "the farthest walk took {most_far} steps");
+    assert!(
+      most_fall <= 28,
+      "the walk to a target took {most_fall} steps"
+    );
+    assert!(
+      short < 0.000001,
+      "a walk stopped {short} of the reach short"
+    );
   }
 
   /// A chain's joints in the space of its first bone's parent, each bone's

@@ -590,7 +590,8 @@ Each item's keys are in the plan and are checked by the loader's tests. In outli
 - A skeleton riding another's socket is stepped before the socket moves it, so its springs see the carrier's motion a step late.
 - A chain with a fixed side ignores its animated curve while it reaches (blended back only by mix).
 - Event sounds play from the fixed step, so they can be up to a step late, as every skeleton event is.
-- The exact solve for an uneven first bone walks a fixed number of steps; a very uneven bone (the first bone scaled more than about three to one) may stop short of the first crossing, as the chain's walk can (pinned with its figure).
+- The exact solve for an uneven first bone walks a fixed number of steps (at most 96 each way); a limb that needed more would stop short of its first crossing, as the chain's walk can. None was found: first bones up to ten to one and sheared up to 1.4 rad take at most 27 steps, and 60,000 random limbs up to 200 to one at most 58, none stopping short. It costs about 1 µs a solve, against 0.07 for the closed form.
+- "Even", for the closed form and for stretch, is to a rounding (scales within a millionth of each other, shears within 1e-6 rad), not the 1e-4 the constraints part used: near the folded and the straight reach a joint moves as the square root of a distance, so a band of 1e-4, inside which the closed form misses by up to part two × 1e-4, moved a knee 0.66 of a unit as a bone's scale crossed its edge. A bone between the two is now solved exactly, and no longer stretches.
 
 ### Demo and docs
 
