@@ -412,6 +412,140 @@ fn a_region_on_a_rotated_bone_draws_where_expected() {
   );
 }
 
+/// A limb's image, 4 x 12 pixels: red at its top (rows 0 to 3), blue below,
+/// and its left column green, so a turn or a mirroring shows
+fn limb_image(world: &mut World) -> Handle<Image> {
+  let mut data = Vec::with_capacity(4 * 12 * 4);
+  for y in 0..12 {
+    for x in 0..4 {
+      let colour = match (x, y) {
+        (0, _) => GREEN,
+        (_, 0..4) => RED,
+        _ => BLUE,
+      };
+      data.extend_from_slice(&colour);
+    }
+  }
+  world
+    .resource_mut::<Assets<Image>>()
+    .add(Image::from_rgba(data, 4, 12))
+}
+
+/// The limb's joint and the next joint, in its pixels
+const JOINT: Vec2 = Vec2::new(2.0, 1.0);
+const NEXT_JOINT: Vec2 = Vec2::new(2.0, 11.0);
+
+/// Four limbs, each on its own bone: one at its pixel size, one mirrored
+/// across its bone, one drawn twice as large, and one on a bone turned a
+/// quarter turn. `by_pivot` places each by its joint and the next joint;
+/// otherwise each is placed by its centre, its turn and offset worked out
+/// from the same two pixels (the centre less the joint, turned)
+fn limbs(world: &mut World, by_pivot: bool) -> Handle<SkeletonData> {
+  let image = limb_image(world);
+  let pixels = Vec2::new(4.0, 12.0);
+  let placed = |width: f32, height: f32, scale_y: f32| {
+    let pivoted = RegionAttachment {
+      scale_y,
+      pivot: Some(JOINT),
+      along: Some(NEXT_JOINT),
+      ..RegionAttachment::new(0, width, height)
+    };
+    if by_pivot {
+      return SkeletonAttachment::Region(pivoted);
+    }
+    let per_pixel = Vec2::new(width, height) / pixels;
+    let scale = Vec2::new(1.0, scale_y);
+    let line = (NEXT_JOINT - JOINT) * per_pixel * scale;
+    let rotation = -line.y.atan2(line.x);
+    let from_joint = (pixels / 2.0 - JOINT) * per_pixel * scale;
+    let (sin, cos) = rotation.sin_cos();
+    SkeletonAttachment::Region(RegionAttachment {
+      x: from_joint.x * cos - from_joint.y * sin,
+      y: from_joint.x * sin + from_joint.y * cos,
+      rotation,
+      pivot: None,
+      along: None,
+      ..pivoted
+    })
+  };
+  let bone = |x: f32, y: f32, rotation: f32| BoneSetup {
+    x,
+    y,
+    rotation,
+    ..BoneSetup::default()
+  };
+  let mut builder = SkeletonData::builder()
+    .region(SkeletonRegion {
+      name: Arc::from("limb"),
+      image,
+      x: 0,
+      y: 0,
+      width: 4,
+      height: 12,
+    })
+    .bone("root", None, BoneSetup::default());
+  for (name, at, width, height, scale_y) in [
+    ("plain", bone(8.0, 10.0, 0.0), 4.0, 12.0, 1.0),
+    ("mirrored", bone(8.0, 24.0, 0.0), 4.0, 12.0, -1.0),
+    ("larger", bone(30.0, 40.0, 0.0), 8.0, 24.0, 1.0),
+    ("turned", bone(40.0, 8.0, FRAC_PI_2), 4.0, 12.0, 1.0),
+  ] {
+    let shown = SlotSetup {
+      attachment: Some(Arc::from(name)),
+      ..SlotSetup::default()
+    };
+    builder = builder
+      .bone(name, Some("root"), at)
+      .slot(name, name, shown)
+      .attachment(
+        SkeletonData::DEFAULT_SKIN,
+        name,
+        name,
+        placed(width, height, scale_y),
+      );
+  }
+  let data = builder.build().expect("a valid skeleton");
+  world.resource_mut::<Assets<SkeletonData>>().add(data)
+}
+
+#[test]
+fn a_limb_placed_by_its_pivot_draws_where_its_centre_placing_does() {
+  let drawn = |by_pivot: bool| {
+    let mut engine = engine()?;
+    let world = engine.world_mut();
+    let data = limbs(world, by_pivot);
+    stand(world, data, (0.0, 0.0), Renderable::skeleton());
+    Some(stepped(&mut engine))
+  };
+  let (Some(pivoted), Some(centred)) = (drawn(true), drawn(false)) else {
+    return;
+  };
+  // Each limb runs along its bone from a pixel before its joint: the plain
+  // one from (7, 8) to (19, 12), its red top at the joint and its green
+  // column on its bone's +y side, which the mirrored one has on its -y side
+  let at = |x: u32, y: u32| pivoted.get_pixel(x, y).0;
+  assert_eq!(at(8, 9), RED, "the plain limb's top, at its joint");
+  assert_eq!(at(14, 9), BLUE, "the plain limb below it");
+  assert_eq!(at(14, 11), GREEN, "the plain limb's left column");
+  assert_eq!(at(14, 22), GREEN, "the mirrored limb's left column");
+  assert_eq!(at(14, 25), BLUE, "the mirrored limb");
+  assert_eq!(at(29, 38), RED, "the larger limb's top");
+  assert_eq!(at(50, 38), BLUE, "the larger limb's foot");
+  assert_eq!(at(40, 8), RED, "the turned limb's top, down from its joint");
+  assert_eq!(at(40, 17), BLUE, "the turned limb's foot");
+  assert_eq!(
+    at(40, 20),
+    at(SIZE - 1, SIZE - 1),
+    "past the turned limb's foot"
+  );
+  // And pixel for pixel where the centre placing draws them
+  for y in 0..SIZE {
+    for x in 0..SIZE {
+      assert_eq!(at(x, y), centred.get_pixel(x, y).0, "pixel ({x}, {y})");
+    }
+  }
+}
+
 #[test]
 fn a_draw_order_key_swaps_which_region_is_on_top() {
   let Some(mut engine) = engine() else {

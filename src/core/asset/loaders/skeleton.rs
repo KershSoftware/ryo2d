@@ -64,6 +64,11 @@ use crate::core::ui::Color;
 ///                         x: 0, y: -20, rotation: 0,          // 0, 0, 0
 ///                         scale_x: 1, scale_y: 1,             // 1, 1
 ///                         width: 48, height: 80,              // the region's size
+///                         // The pixel (from the region's top-left, y down) that x, y and
+///                         // rotation place, and a second pixel: the image is turned so the
+///                         // line from one to the other lies along the bone's x axis
+///                         pivot: (24, 4),                     // the region's centre
+///                         along: (24, 76),                    // no such turn
 ///                         color: "#ffffff"),                  // white
 ///       },
 ///       "gear": {
@@ -194,9 +199,13 @@ use crate::core::ui::Color;
 /// ```
 ///
 /// A region attachment's `width` and `height` are its region's size when left
-/// out. A mesh's `hull` is 0 when left out, its positions are in pixels (no
-/// angles occur) and a vertex's weights are normalised as it loads. A
-/// deform names an attachment some skin has in its slot, and its keys are
+/// out. Its `pivot` and `along` are pixels of its region (from its top-left,
+/// y down), so they stay on the same pixels when it is drawn at another
+/// size; an `along` at the pivot (the centre when `pivot` is left out), or
+/// either not finite, fails to load. A mesh's `hull` is 0 when left out,
+/// its positions are in pixels (no angles occur) and a vertex's weights are
+/// normalised as it loads. A deform names an attachment some skin has in
+/// its slot, and its keys are
 /// each empty or one length, an x and a y for each position; that they fit
 /// a mesh is found when the animation plays, since the skins worn decide
 /// what a name shows, and a deform that does not fit the attachment of
@@ -701,6 +710,10 @@ enum AttachmentFile {
     width: Option<f32>,
     #[serde(default)]
     height: Option<f32>,
+    #[serde(default)]
+    pivot: Option<Vec2>,
+    #[serde(default)]
+    along: Option<Vec2>,
     #[serde(default = "white")]
     color: ColorFile,
   },
@@ -1132,6 +1145,8 @@ impl SkeletonFile {
         scale_y,
         width,
         height,
+        pivot,
+        along,
         color,
       } => {
         let index = builder
@@ -1147,6 +1162,8 @@ impl SkeletonFile {
           scale_y: *scale_y,
           width: width.unwrap_or(w as f32),
           height: height.unwrap_or(h as f32),
+          pivot: *pivot,
+          along: *along,
           color: color.0,
         })
       }
@@ -1440,8 +1457,8 @@ mod tests {
   use crate::core::asset::{
     AssetServer, AssetSource, Assets, AssetsView, MemorySource, insert_registry,
   };
-  use crate::core::ecs::Vec2;
   use crate::core::ecs::kernel::World;
+  use crate::core::ecs::{Affine2, Vec2};
   use crate::core::graphics::Image;
   use crate::core::skeleton::{
     Animation, Attachment, BoneId, BoneSetup, BoundingBoxAttachment, ConstraintId, Curve,
@@ -1694,7 +1711,8 @@ mod tests {
       "default": {
         "torso": { "torso": Region(region: "torso", y: -20) },
         "head": { "head": Region(region: "head", x: 1, y: -24, rotation: 180, scale_x: 1.5, scale_y: 2,
-                                 width: 32, height: 30, color: "#80808080") },
+                                 width: 32, height: 30, pivot: (32, 60), along: (40, 2.5),
+                                 color: "#80808080") },
         "gear": {
           "muzzle": Point(x: 3, y: 4, rotation: 90),
           "hit": BoundingBox(vertices: [(0, 0), (10, 0), (10, 10)]),
@@ -2022,6 +2040,8 @@ mod tests {
           scale_y: 2.0,
           width: 32.0,
           height: 30.0,
+          pivot: Some(Vec2::new(32.0, 60.0)),
+          along: Some(Vec2::new(40.0, 2.5)),
           color: Color::new(128, 128, 128, 128),
         }),
       )
@@ -3355,6 +3375,144 @@ mod tests {
   }
 
   /// The loader's rustdoc example, which would otherwise rot unseen
+  /// A file of one region, "leg", 8 x 16 pixels, and the attachments
+  /// `attachments` in a slot "s"
+  fn leg_file(attachments: &str) -> String {
+    format!(
+      r#"(
+        images: {{ "parts": "hero.png" }},
+        regions: {{ "leg": (image: "parts", rect: (8, 4, 8, 16)) }},
+        bones: [(name: "hip")],
+        slots: [(name: "s", bone: "hip")],
+        skins: {{ "default": {{ "s": {{ {attachments} }} }} }},
+      )"#
+    )
+  }
+
+  #[test]
+  fn files_without_pivots_load_unchanged() {
+    let data = loaded(&leg_file(
+      r#"
+      "plain": Region(region: "leg"),
+      "placed": Region(region: "leg", x: 3.5, y: -7.25, rotation: -76.7, scale_x: -1.5, scale_y: 2,
+                       width: 13, height: 21),
+      "#,
+    ));
+    let region = &data.regions()[0];
+    for (name, x, y, rotation, scale, size) in [
+      ("plain", 0.0, 0.0, 0.0, Vec2::ONE, Vec2::new(8.0, 16.0)),
+      (
+        "placed",
+        3.5,
+        -7.25,
+        -76.7f32.to_radians(),
+        Vec2::new(-1.5, 2.0),
+        Vec2::new(13.0, 21.0),
+      ),
+    ] {
+      let Some(Attachment::Region(shown)) = data.skins()[0].attachment(SlotId(0), name) else {
+        panic!("no {name}");
+      };
+      assert_eq!((shown.pivot, shown.along), (None, None), "{name}");
+      // Placed by its centre, bit for bit as a region was before pivots
+      let (sin, cos) = rotation.sin_cos();
+      let size = scale * size;
+      let before = Affine2::from_cols(
+        Vec2::new(cos, sin) * size.x,
+        Vec2::new(-sin, cos) * size.y,
+        Vec2::new(x, y),
+      );
+      assert_eq!(
+        shown.quad(region).to_cols_array(),
+        before.to_cols_array(),
+        "{name}"
+      );
+    }
+  }
+
+  #[test]
+  fn region_pivots_load_as_the_builder_builds_them() {
+    let mut world = registry_over(files(&leg_file(
+      r#"
+      "thigh": Region(region: "leg", x: 2, rotation: 10, scale_y: -1, pivot: (3, 1.5), along: (5, 15)),
+      "shin": Region(region: "leg", width: 16, height: 32, pivot: (4, 0)),
+      "foot": Region(region: "leg", along: (8, 8)),
+      "#,
+    )));
+    let data = match load_in(&mut world) {
+      Ok(data) => data,
+      Err(error) => panic!("{error}"),
+    };
+    let mut assets = AssetsView::new(&mut world);
+    let parts = assets.load_now::<Image>("hero.png").expect("parts");
+    let expected = SkeletonData::builder()
+      .region(Region {
+        name: Arc::from("leg"),
+        image: parts,
+        x: 8,
+        y: 4,
+        width: 8,
+        height: 16,
+      })
+      .bone("hip", None, BoneSetup::default())
+      .slot("s", "hip", SlotSetup::default())
+      .attachment(
+        "default",
+        "s",
+        "thigh",
+        Attachment::Region(RegionAttachment {
+          x: 2.0,
+          rotation: deg(10.0),
+          scale_y: -1.0,
+          pivot: Some(Vec2::new(3.0, 1.5)),
+          along: Some(Vec2::new(5.0, 15.0)),
+          ..RegionAttachment::new(0, 8.0, 16.0)
+        }),
+      )
+      .attachment(
+        "default",
+        "s",
+        "shin",
+        Attachment::Region(RegionAttachment {
+          pivot: Some(Vec2::new(4.0, 0.0)),
+          ..RegionAttachment::new(0, 16.0, 32.0)
+        }),
+      )
+      .attachment(
+        "default",
+        "s",
+        "foot",
+        Attachment::Region(RegionAttachment {
+          along: Some(Vec2::new(8.0, 8.0)),
+          ..RegionAttachment::new(0, 8.0, 16.0)
+        }),
+      )
+      .build()
+      .expect("the twin builds");
+    assert_eq!(data.skins(), expected.skins());
+    assert_eq!(data.regions().len(), 1);
+
+    // Along at the pivot (the centre when the pivot is left out), or a
+    // value not finite, fails naming the file, the attachment and why
+    let item = r#"skin "default" slot "s" attachment "bad""#;
+    for (bad, reason) in [
+      (
+        r#"pivot: (2, 3), along: (2, 3)"#,
+        "its along (2, 3) is its pivot",
+      ),
+      (r#"along: (4, 8)"#, "its along (4, 8) is its pivot"),
+      (r#"pivot: (inf, 3)"#, "pivot is inf"),
+      (r#"along: (1, NaN)"#, "along is NaN"),
+    ] {
+      let error = failure(&leg_file(&format!(
+        r#""bad": Region(region: "leg", {bad}),"#
+      )));
+      assert!(error.contains(PATH), "{error}");
+      assert!(error.contains(item), "{item} in {error}");
+      assert!(error.contains(reason), "{reason} in {error}");
+    }
+  }
+
   #[test]
   fn the_documented_example_loads() {
     let source = include_str!("skeleton.rs");
@@ -3370,6 +3528,14 @@ mod tests {
     assert_eq!(data.skins().len(), 2);
     assert_eq!(data.mix("walk", "run"), 0.2);
     assert_eq!(data.constraints().len(), 3);
+    // Its torso is placed by its neck pixel and its hip pixel
+    let Some(Attachment::Region(torso)) = data.skins()[0].attachment(SlotId(0), "torso") else {
+      panic!("no torso");
+    };
+    assert_eq!(
+      (torso.pivot, torso.along),
+      (Some(Vec2::new(24.0, 4.0)), Some(Vec2::new(24.0, 76.0)))
+    );
     match &data.constraints()[2] {
       crate::core::skeleton::Constraint::Spring(spring) => assert_eq!(
         spring.setup,

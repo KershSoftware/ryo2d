@@ -292,6 +292,27 @@ pub(super) fn build(builder: SkeletonDataBuilder) -> Result<SkeletonData, Skelet
             ("height", region.height),
           ],
         )?;
+        if let Some(pivot) = region.pivot {
+          finite_vec(item, "pivot", pivot)?;
+        }
+        if let Some(along) = region.along {
+          finite_vec(item, "along", along)?;
+          // Left out, the pivot is the region's centre
+          let pivot = region.pivot.unwrap_or_else(|| {
+            regions.get(region.region).map_or(Vec2::ZERO, |pixels| {
+              Vec2::new(pixels.width as f32, pixels.height as f32) / 2.0
+            })
+          });
+          if along == pivot {
+            return Err(error(
+              item(),
+              format!(
+                "its along ({}, {}) is its pivot, so no line runs from one to the other to lie along its bone",
+                along.x, along.y
+              ),
+            ));
+          }
+        }
       }
       Attachment::Mesh(mesh) => {
         if mesh.region >= regions.len() {
@@ -1659,6 +1680,66 @@ mod tests {
       r#"skin "red" slot "hat" attachment "cap""#,
       "region 1 is out of range",
     );
+  }
+
+  /// A region attachment of an 8 x 16 region, placed by `pivot` and `along`
+  fn pivoted(pivot: Option<Vec2>, along: Option<Vec2>) -> SkeletonDataBuilder {
+    rig().region(region("leg", 8, 16)).attachment(
+      "default",
+      "hand",
+      "leg",
+      Attachment::Region(RegionAttachment {
+        pivot,
+        along,
+        ..RegionAttachment::new(0, 8.0, 16.0)
+      }),
+    )
+  }
+
+  const LEG_ITEM: &str = r#"skin "default" slot "hand" attachment "leg""#;
+
+  #[test]
+  fn a_region_pivot_or_along_not_finite_fails() {
+    let (good, bad) = (Vec2::new(4.0, 1.0), Vec2::new(4.0, f32::NAN));
+    fails(
+      pivoted(Some(bad), None),
+      LEG_ITEM,
+      "pivot is NaN, not a finite number",
+    );
+    fails(
+      pivoted(Some(Vec2::new(f32::INFINITY, 1.0)), Some(good)),
+      LEG_ITEM,
+      "pivot is inf",
+    );
+    fails(pivoted(Some(good), Some(bad)), LEG_ITEM, "along is NaN");
+    fails(pivoted(None, Some(bad)), LEG_ITEM, "along is NaN");
+    // A pivot outside the image is allowed: a joint can lie past its edge
+    let outside = Some(Vec2::new(-3.0, 20.0));
+    assert!(pivoted(outside, Some(good)).build().is_ok());
+  }
+
+  #[test]
+  fn a_region_along_at_its_pivot_fails() {
+    let at = Vec2::new(4.0, 1.0);
+    fails(
+      pivoted(Some(at), Some(at)),
+      LEG_ITEM,
+      "its along (4, 1) is its pivot",
+    );
+    // Left out, the pivot is the centre, which along cannot be either
+    fails(
+      pivoted(None, Some(Vec2::new(4.0, 8.0))),
+      LEG_ITEM,
+      "its along (4, 8) is its pivot",
+    );
+    // Any other pixel builds, with the pivot or without
+    assert!(
+      pivoted(Some(at), Some(Vec2::new(4.0, 15.0)))
+        .build()
+        .is_ok()
+    );
+    assert!(pivoted(None, Some(at)).build().is_ok());
+    assert!(pivoted(Some(at), None).build().is_ok());
   }
 
   // Meshes

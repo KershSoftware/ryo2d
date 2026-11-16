@@ -1,8 +1,8 @@
 //! What a slot shows: a region of an image, a mesh of one, a point, or a
 //! bounding box.
 
-use super::data::BoneId;
-use crate::core::ecs::Vec2;
+use super::data::{BoneId, Region};
+use crate::core::ecs::{Affine2, Vec2};
 use crate::core::ui::Color;
 
 /// Something a skin puts in a slot. Its offsets are in its bone's space
@@ -14,8 +14,16 @@ pub enum Attachment {
   BoundingBox(BoundingBoxAttachment),
 }
 
-/// A textured quad from one of the skeleton's image regions, centred on its
-/// offset from the bone
+/// A textured quad from one of the skeleton's image regions, placed on its
+/// bone by its pivot (its centre unless one is given).
+///
+/// `x`, `y` and `rotation` place the pivot: the pivot's pixel lands at
+/// `(x, y)` in the bone's space, and the image turns about it. With
+/// `along`, the image is first turned so the line from its pivot to that
+/// pixel lies along the bone's x axis, so a limb is placed by naming the
+/// pixel of its joint and the pixel of the next joint. Scale and mirroring
+/// act about the pivot, and the line is laid along the bone after them, so
+/// a mirrored limb still lies along its bone
 #[derive(Debug, Clone, PartialEq)]
 pub struct RegionAttachment {
   /// An index into [`SkeletonData::regions`](super::SkeletonData::regions)
@@ -29,6 +37,16 @@ pub struct RegionAttachment {
   /// The quad's size before scale, in the bone's units
   pub width: f32,
   pub height: f32,
+  /// The pixel of the region that `x`, `y` and `rotation` place, from its
+  /// top-left (x right, y down, as the image is drawn); `None` for its
+  /// centre. A region drawn larger than its pixels keeps its pivot on the
+  /// same pixel: pixels become the bone's units by `width` over the
+  /// region's pixel width, and `height` over its pixel height
+  pub pivot: Option<Vec2>,
+  /// A second pixel of the region, in the same pixels as `pivot`: the image
+  /// is turned so the line from the pivot to it lies along the bone's x
+  /// axis, and `rotation` is added to that. `None` for no such turn
+  pub along: Option<Vec2>,
   /// Multiplied with the slot's colour
   pub color: Color,
 }
@@ -46,8 +64,51 @@ impl RegionAttachment {
       scale_y: 1.0,
       width,
       height,
+      pivot: None,
+      along: None,
       color: Color::WHITE,
     }
+  }
+
+  /// Its quad in its bone's space, drawn from `region` (whose pixel size
+  /// turns `pivot` and `along` into the bone's units): the unit quad (-0.5
+  /// to 0.5 on each axis, its top-left the image's) scaled to its size,
+  /// turned, and moved so its pivot is at its offset
+  pub(crate) fn quad(&self, region: &Region) -> Affine2 {
+    let (mut sin, mut cos) = self.rotation.sin_cos();
+    let scale = Vec2::new(self.scale_x, self.scale_y);
+    let size = scale * Vec2::new(self.width, self.height);
+    let mut at = Vec2::new(self.x, self.y);
+    // Placed by its centre, exactly as before pivots, unless it has one;
+    // validation refuses an empty region, so its pixels have a size
+    if (self.pivot.is_some() || self.along.is_some()) && region.width > 0 && region.height > 0 {
+      let pixels = Vec2::new(region.width as f32, region.height as f32);
+      let per_pixel = Vec2::new(self.width, self.height) / pixels;
+      let centre = pixels / 2.0;
+      let pivot = self.pivot.unwrap_or(centre);
+      if let Some(along) = self.along {
+        // Turned back by the line's own direction after the scale, then by
+        // `rotation`: the line lies along the bone's x axis, turned by it
+        let line = (along - pivot) * per_pixel * scale;
+        let length = line.length();
+        if length > 0.0 && length.is_finite() {
+          let back = line / length;
+          (sin, cos) = (sin * back.x - cos * back.y, cos * back.x + sin * back.y);
+        }
+      }
+      // The centre is the pivot's offset less where the scale and turn put
+      // the pivot from the centre
+      let from_centre = (pivot - centre) * per_pixel * scale;
+      at -= Vec2::new(
+        from_centre.x * cos - from_centre.y * sin,
+        from_centre.x * sin + from_centre.y * cos,
+      );
+    }
+    Affine2::from_cols(
+      Vec2::new(cos, sin) * size.x,
+      Vec2::new(-sin, cos) * size.y,
+      at,
+    )
   }
 }
 

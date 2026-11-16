@@ -8,7 +8,7 @@ use std::ops::Range;
 
 use glam::{Affine2, Mat2, Vec2, Vec4};
 
-use super::attachment::{Attachment, MeshAttachment, MeshVertices, RegionAttachment};
+use super::attachment::{Attachment, MeshAttachment, MeshVertices};
 use super::component::Skeleton;
 use super::data::{BoneId, DataVersion, SkeletonData, SlotBlend, SlotId};
 use crate::core::asset::AssetId;
@@ -183,7 +183,7 @@ impl Skeleton {
             image: region.image.id(),
             rect: [region.x, region.y, region.width, region.height],
             blend: slot_data.blend,
-            quad: root * bone * local_quad(shown),
+            quad: root * bone * shown.quad(region),
             color: tinted(slot_color().unwrap_or(Vec4::ONE), shown.color),
           }));
         }
@@ -445,18 +445,6 @@ pub(crate) struct MeshPart<'s> {
   pub(crate) mesh: &'s MeshAttachment,
 }
 
-/// A region attachment's quad in its bone's space: the unit quad scaled to
-/// its size, turned, and moved to its offset
-fn local_quad(shown: &RegionAttachment) -> Affine2 {
-  let (sin, cos) = shown.rotation.sin_cos();
-  let size = Vec2::new(shown.scale_x * shown.width, shown.scale_y * shown.height);
-  Affine2::from_cols(
-    Vec2::new(cos, sin) * size.x,
-    Vec2::new(-sin, cos) * size.y,
-    Vec2::new(shown.x, shown.y),
-  )
-}
-
 /// A slot's colour (float sRGB, which a curve can take past 0 to 1) times
 /// its attachment's: each component clamped to 0 to 1 first, one that is
 /// not a number counting as 0
@@ -533,8 +521,8 @@ mod tests {
   use crate::core::ecs::{Renderable, Transform};
   use crate::core::skeleton::component::{Fired, Flip, Stand};
   use crate::core::skeleton::{
-    BoneOverride, BoneSetup, BoundingBoxAttachment, Influence, PointAttachment, Region, SlotSetup,
-    WeightedVertices,
+    BoneOverride, BoneSetup, BoundingBoxAttachment, Influence, PointAttachment, Region,
+    RegionAttachment, SlotSetup, WeightedVertices,
   };
   use crate::testing::asset_world;
 
@@ -832,6 +820,163 @@ mod tests {
     let root = Affine2::from_scale_angle_translation(Vec2::splat(2.0), FRAC_PI_2, Vec2::X);
     let carried = quads_under((&skeleton, &data, seen), root, None);
     assert!(carried[1].quad.abs_diff_eq(root * sleeve.quad, 1e-3));
+  }
+
+  /// The demo's leg: 93 x 164 pixels, its hip at (31, 18) and its ankle at
+  /// (64, 158)
+  fn leg() -> Region {
+    Region {
+      name: Arc::from("leg"),
+      image: Handle::detached(),
+      x: 0,
+      y: 0,
+      width: 93,
+      height: 164,
+    }
+  }
+
+  const HIP: Vec2 = Vec2::new(31.0, 18.0);
+  const ANKLE: Vec2 = Vec2::new(64.0, 158.0);
+
+  fn pixels(region: &Region) -> Vec2 {
+    Vec2::new(region.width as f32, region.height as f32)
+  }
+
+  /// Where pixel `pixel` of `region` lands under `quad`
+  fn pixel_at(quad: Affine2, region: &Region, pixel: Vec2) -> Vec2 {
+    quad.transform_point2(pixel / pixels(region) - 0.5)
+  }
+
+  fn corners_of(quad: Affine2) -> [Vec2; 4] {
+    [(-0.5, -0.5), (0.5, -0.5), (0.5, 0.5), (-0.5, 0.5)]
+      .map(|(x, y)| quad.transform_point2(Vec2::new(x, y)))
+  }
+
+  /// `placed` as it was placed before pivots, by its centre: the line from
+  /// the pivot to `along` (after the attachment's scale) turned onto the
+  /// bone's x axis gives the rotation, and the centre less the pivot
+  /// (scaled, then turned by that rotation) gives the offset
+  fn by_centre(placed: &RegionAttachment, region: &Region) -> RegionAttachment {
+    let pixels = pixels(region);
+    let per_pixel = Vec2::new(placed.width, placed.height) / pixels;
+    let scale = Vec2::new(placed.scale_x, placed.scale_y);
+    let pivot = placed.pivot.unwrap_or(pixels / 2.0);
+    let mut rotation = placed.rotation;
+    if let Some(along) = placed.along {
+      let line = (along - pivot) * per_pixel * scale;
+      rotation -= line.y.atan2(line.x);
+    }
+    let from_pivot = (pixels / 2.0 - pivot) * per_pixel * scale;
+    let (sin, cos) = rotation.sin_cos();
+    RegionAttachment {
+      x: placed.x + from_pivot.x * cos - from_pivot.y * sin,
+      y: placed.y + from_pivot.x * sin + from_pivot.y * cos,
+      rotation,
+      pivot: None,
+      along: None,
+      ..placed.clone()
+    }
+  }
+
+  #[test]
+  fn a_region_placed_by_its_pivot_matches_the_centre_method() {
+    let region = leg();
+    // The worked values are the demo's notes' own, unrounded: the line from
+    // hip to ankle is 76.7 degrees round, and the centre less the hip,
+    // (15.5, 64), turned back by that is (65.8, -0.4)
+    let leg = RegionAttachment {
+      pivot: Some(HIP),
+      along: Some(ANKLE),
+      ..RegionAttachment::new(0, 93.0, 164.0)
+    };
+    let centre = by_centre(&leg, &region);
+    assert!((centre.rotation.to_degrees() + 76.7).abs() < 0.05);
+    assert!(Vec2::new(centre.x, centre.y).abs_diff_eq(Vec2::new(65.8, -0.4), 0.05));
+
+    // At its pixel size, drawn larger (evenly and not), mirrored across its
+    // bone, offset and turned on it, by both pixels and by the pivot alone
+    for (width, height) in [(93.0, 164.0), (186.0, 328.0), (139.5, 328.0)] {
+      for scale_y in [1.0, -1.0] {
+        for (x, y, rotation) in [(0.0, 0.0, 0.0), (5.0, -3.0, 0.2)] {
+          for along in [Some(ANKLE), None] {
+            let placed = RegionAttachment {
+              x,
+              y,
+              rotation,
+              scale_y,
+              pivot: Some(HIP),
+              along,
+              ..RegionAttachment::new(0, width, height)
+            };
+            let what = format!(
+              "{width} x {height}, scale_y {scale_y}, ({x}, {y}, {rotation}), along {along:?}"
+            );
+            let quad = placed.quad(&region);
+            let want = by_centre(&placed, &region).quad(&region);
+            for (got, want) in corners_of(quad).into_iter().zip(corners_of(want)) {
+              assert!(got.abs_diff_eq(want, 0.01), "{what}: {got} not {want}");
+            }
+            // The pivot's pixel is at the offset
+            let hip = pixel_at(quad, &region, HIP);
+            assert!(
+              hip.abs_diff_eq(Vec2::new(x, y), 0.01),
+              "{what}: hip at {hip}"
+            );
+          }
+        }
+      }
+    }
+  }
+
+  #[test]
+  fn along_lays_the_pivot_line_along_the_bone() {
+    let region = leg();
+    let scales = [
+      (1.0, 1.0),
+      (-1.0, 1.0),
+      (1.0, -1.0),
+      (-1.0, -1.0),
+      (2.0, 0.5),
+      (-1.5, 3.0),
+      (0.5, -2.0),
+    ];
+    for (scale_x, scale_y) in scales {
+      for (width, height) in [(93.0, 164.0), (139.5, 328.0)] {
+        for rotation in [0.0, 0.3] {
+          for pivot in [Some(HIP), None] {
+            let placed = RegionAttachment {
+              x: 4.0,
+              y: 7.0,
+              rotation,
+              scale_x,
+              scale_y,
+              pivot,
+              along: Some(ANKLE),
+              ..RegionAttachment::new(0, width, height)
+            };
+            let what =
+              format!("scale ({scale_x}, {scale_y}), {width} x {height}, {rotation}, {pivot:?}");
+            let quad = placed.quad(&region);
+            let from = pixel_at(quad, &region, pivot.unwrap_or(pixels(&region) / 2.0));
+            let to = pixel_at(quad, &region, ANKLE);
+            assert!(
+              from.abs_diff_eq(Vec2::new(4.0, 7.0), 0.01),
+              "{what}: pivot at {from}"
+            );
+            // The line points along the bone's x axis, turned by `rotation`
+            let line = to - from;
+            let angle = line.y.atan2(line.x);
+            assert!(
+              (angle - rotation).abs() < 0.001,
+              "{what}: the line at {angle}"
+            );
+            // The image is mirrored exactly when its scale mirrors it
+            let mirrored = quad.matrix2.determinant() < 0.0;
+            assert_eq!(mirrored, scale_x * scale_y < 0.0, "{what}");
+          }
+        }
+      }
+    }
   }
 
   #[test]
