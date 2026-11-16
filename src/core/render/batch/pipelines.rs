@@ -274,10 +274,12 @@ const INSTANCE_LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLay
   attributes: &INSTANCE_ATTRIBUTES,
 };
 
-/// A [`Vertex2D`]: position, UV, colour, parameters, perpendicular and the
-/// atlas slot it samples.
-const VERTEX2D_ATTRIBUTES: [wgpu::VertexAttribute; 6] = wgpu::vertex_attr_array![
+/// A [`Vertex2D`]: position, UV, colour, parameters, perpendicular, the
+/// atlas slot it samples, its edge distances and push limit, its round offset
+/// and push, and its flags.
+const VERTEX2D_ATTRIBUTES: [wgpu::VertexAttribute; 9] = wgpu::vertex_attr_array![
   0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32x4, 4 => Float32x2, 5 => Float32x4,
+  6 => Float32x4, 7 => Float32x4, 8 => Uint32,
 ];
 
 const VERTEX2D_LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLayout {

@@ -19,7 +19,7 @@
 
 ## Shader
 
-`shaders/core/line.wgsl` (composed with the camera, colour and sampling includes) has `fs_main` and `fs_textured`. Style (Solid, Soft, Glow) and `TrailEffect` (Lightning, Noise, UvScroll, Ribbon) travel in each vertex's `params` (`render/batch/lines.rs`, `build_effect_params`); displacement moves a vertex along its `across` perpendicular. Its vertex input matches `Vertex2D` (`render/batch/polyline.rs`, 72 bytes). Solid edges anti-alias by pixel coverage, so a one-pixel line stays solid.
+`shaders/core/line.wgsl` (composed with the camera, colour and sampling includes) has `fs_main` and `fs_textured`. Style (Solid, Soft, Glow) and `TrailEffect` (Lightning, Noise, UvScroll, Ribbon) travel in each vertex's `params` (`render/batch/lines.rs`, `build_effect_params`); displacement moves a vertex along its `across` perpendicular. Its vertex input reads the first six of `Vertex2D`'s attributes (`render/batch/polyline.rs`, 108 bytes; the rest are each vertex's edge distances and fringe push). Solid edges anti-alias by pixel coverage, so a one-pixel line stays solid.
 
 ## Tips for AI Agents
 
