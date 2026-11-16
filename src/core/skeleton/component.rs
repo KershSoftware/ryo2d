@@ -9,6 +9,7 @@ use glam::{Affine2, Mat2, Vec2};
 
 use super::apply::shortest;
 use super::attachment::Attachment;
+use super::bounds::{Bounds, pose_bounds};
 use super::constrain::{Constrained, constrain};
 use super::constraint::{Constraint, ConstraintId, IkBend, MAX_CONSTRAINTS};
 use super::data::{BoneId, BoneSet, DataVersion, SkeletonData, SkeletonIndex, SlotId};
@@ -465,6 +466,9 @@ pub struct Skeleton {
   /// step first placed has its current one, and so has every bone after a
   /// pose made outside a step, or a step that follows one it missed
   pub(crate) previous_space: Vec<Affine2>,
+  /// The box its parts stay inside in its own space, drawn at its last pose,
+  /// the pose before or between them; `None` until it is first posed
+  bounds: Option<Bounds>,
   /// The entity's transform that `pose.world` was last computed from, and
   /// the way it was mirrored
   root: Affine2,
@@ -501,6 +505,7 @@ impl Skeleton {
       index: None,
       pose: Pose::default(),
       previous_space: Vec::new(),
+      bounds: None,
       root: Affine2::IDENTITY,
       flip: Flip::default(),
       stepped: 0,
@@ -909,6 +914,22 @@ impl Skeleton {
     self.seen
   }
 
+  /// The box in its own space that its parts stay inside, wherever between
+  /// its last two poses a frame draws them; `None` until it is first posed
+  pub(crate) fn bounds(&self) -> Option<Bounds> {
+    self.bounds
+  }
+
+  /// Finds the box of the pose it has, and the pose before
+  fn find_bounds(&mut self, data: &SkeletonData) {
+    self.bounds = Some(pose_bounds(
+      &data.index().reaches,
+      &self.pose.skeleton_space,
+      &self.previous_space,
+      &self.pose.deforms,
+    ));
+  }
+
   /// The entity's transform its bones' world transforms were last computed
   /// from
   pub(crate) fn root(&self) -> Affine2 {
@@ -1101,6 +1122,7 @@ impl Skeleton {
         }
       }
     }
+    self.find_bounds(data);
   }
 
   /// Writes the game's constraint overrides over the constraints' values
@@ -1149,6 +1171,7 @@ impl Skeleton {
       }
     }
     self.place(data, stand, None);
+    self.find_bounds(data);
   }
 
   /// Applies the bone overrides and computes the bones' transforms, in one
@@ -1450,6 +1473,27 @@ pub(super) fn apply_override(
 pub(super) fn invertible(linear: Mat2) -> bool {
   let determinant = linear.determinant();
   determinant.is_finite() && determinant.abs() > FLAT
+}
+
+#[cfg(test)]
+impl Skeleton {
+  /// One fixed step by hand, standing at `root` and flipped as `flip` says
+  /// (along x, along y): the step the engine runs, for tests outside this
+  /// module
+  pub(crate) fn step_by_hand(
+    &mut self,
+    (data, seen): (&SkeletonData, DataVersion),
+    animation: Option<&mut SkeletonAnimation>,
+    dt: f32,
+    root: Affine2,
+    (x, y): (bool, bool),
+  ) {
+    let stand = Stand {
+      root,
+      flip: Flip { x, y },
+    };
+    self.step(data, seen, animation, dt, stand, &mut Fired::default());
+  }
 }
 
 #[cfg(test)]

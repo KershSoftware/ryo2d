@@ -27,6 +27,13 @@ thread_local! {
   static BONES_DRAWN: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
+/// How many times this thread has asked where a bone draws, for tests that
+/// count a drawer's walks
+#[cfg(test)]
+pub(crate) fn bones_drawn() -> usize {
+  BONES_DRAWN.with(std::cell::Cell::get)
+}
+
 /// Where a skeleton draws this frame
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Drawn {

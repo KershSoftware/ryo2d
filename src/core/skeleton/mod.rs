@@ -24,6 +24,7 @@
 mod animation;
 mod apply;
 mod attachment;
+mod bounds;
 mod builder;
 mod component;
 mod constrain;
@@ -50,6 +51,7 @@ pub use attachment::{
   Attachment, BoundingBoxAttachment, Influence, MeshAttachment, MeshVertices, PointAttachment,
   RegionAttachment, WeightedVertices,
 };
+pub(crate) use bounds::Bounds;
 pub use builder::{BoneSetup, SkeletonDataBuilder, SlotSetup};
 pub use component::{
   BoneOverride, ConstraintOverride, IkOverride, Skeleton, Space, SpringOverride,
@@ -65,7 +67,9 @@ pub use data::{
   BoneData, BoneId, EventAudio, EventData, Inherit, Region, SkeletonData, SlotBlend, SlotData,
   SlotId,
 };
-pub(crate) use draw::{Carrier, MeshPart, Part, Parts, RegionQuad};
+#[cfg(test)]
+pub(crate) use draw::bones_drawn;
+pub(crate) use draw::{Carrier, Drawn, MeshPart, Part, Parts, RegionQuad};
 pub use event::{SkeletonEvent, SkeletonTrackEvent};
 pub use ik::IkValues;
 pub(crate) use scope::{SkeletonStore, hold_scenes, in_scene, release_scene};

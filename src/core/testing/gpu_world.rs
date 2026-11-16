@@ -2105,3 +2105,105 @@ fn a_skeleton_s_regions_are_entity_runs_split_where_the_image_or_blend_changes()
   engine.step_frames(1).unwrap();
   assert_eq!(drawn(&engine), [(entity, None), (entity, None)]);
 }
+
+/// How many bones the drawer placed over `frames` frames: none for a
+/// skeleton it did not walk
+fn bones_walked(engine: &mut HeadlessEngine, frames: u32) -> usize {
+  let before = crate::core::skeleton::bones_drawn();
+  engine.step_frames(frames).unwrap();
+  crate::core::skeleton::bones_drawn() - before
+}
+
+#[test]
+fn an_off_screen_skeleton_is_not_walked() {
+  let scene = Fixture { setup: |_| {} };
+  let Some(mut engine) = engine(EngineBuilder::new().resolution(120, 90).start_scene(scene)) else {
+    return;
+  };
+  let world = engine.world_mut();
+  let data = banded_skeleton(world);
+  let hero = world
+    .spawn((
+      Transform::from_xy(30.0, 30.0),
+      Skeleton::new(data),
+      Renderable::skeleton(),
+    ))
+    .id();
+  engine.step_frames(2).unwrap();
+  assert!(bones_walked(&mut engine, 1) > 0, "in view, it is walked");
+
+  // Out of every camera's view its parts are not walked at all. Its entity
+  // is interpolated: the second frame is the first drawn where it went
+  let world = engine.world_mut();
+  world.get_mut::<Transform>(hero).unwrap().translation = Vec2::new(5000.0, 5000.0);
+  engine.step_frames(2).unwrap();
+  assert_eq!(bones_walked(&mut engine, 3), 0);
+  assert!(engine.engine.draw_list().items().is_empty());
+
+  // Anything it draws in view is reason to walk it: its drop shadow cast
+  // back into view, or its blob shadow
+  let world = engine.world_mut();
+  let mut renderable = world.get_mut::<Renderable>(hero).unwrap();
+  renderable.drop_shadow = Some(DropShadow::new().offset(-4970.0, -4970.0));
+  assert!(bones_walked(&mut engine, 1) > 0, "its shadow shows");
+  assert!(!engine.engine.draw_list().items().is_empty());
+  let world = engine.world_mut();
+  let mut renderable = world.get_mut::<Renderable>(hero).unwrap();
+  renderable.drop_shadow = None;
+  renderable.blob_shadow = Some(BlobShadow {
+    offset_y: -4960.0,
+    ..BlobShadow::circle(5000.0)
+  });
+  assert!(bones_walked(&mut engine, 1) > 0, "its blob shadow shows");
+}
+
+#[test]
+fn a_skeleton_is_walked_for_the_cameras_on_its_layers_texture_cameras_too() {
+  let scene = Fixture { setup: |_| {} };
+  let Some(mut engine) = engine(EngineBuilder::new().resolution(120, 90).start_scene(scene)) else {
+    return;
+  };
+  let world = engine.world_mut();
+  let data = banded_skeleton(world);
+  let target = world.resource_mut::<RenderTargets>().create(32, 32);
+  world.spawn((
+    Transform::from_xy(5000.0, 5000.0),
+    Camera2d {
+      target: CameraTarget::Texture(target),
+      ..Default::default()
+    },
+  ));
+  // Far from the main camera, in the texture camera's view
+  let hero = world
+    .spawn((
+      Transform::from_xy(4990.0, 5000.0),
+      Skeleton::new(data),
+      Renderable::skeleton(),
+    ))
+    .id();
+  engine.step_frames(2).unwrap();
+  assert!(
+    bones_walked(&mut engine, 1) > 0,
+    "the texture camera sees it"
+  );
+
+  // In the main camera's view on a layer no camera has, it is not walked;
+  // with the main camera on that layer too, it is
+  let world = engine.world_mut();
+  world.get_mut::<Transform>(hero).unwrap().translation = Vec2::new(30.0, 30.0);
+  world.entity_mut(hero).insert(RenderLayers::layer(3));
+  engine.step_frames(2).unwrap();
+  assert_eq!(bones_walked(&mut engine, 2), 0);
+  let world = engine.world_mut();
+  let main = world
+    .query_filtered::<Entity, With<MainCamera>>()
+    .single(world)
+    .expect("a main camera");
+  world
+    .entity_mut(main)
+    .insert(RenderLayers::layer(0).with(3));
+  assert!(
+    bones_walked(&mut engine, 1) > 0,
+    "the main camera sees its layer"
+  );
+}

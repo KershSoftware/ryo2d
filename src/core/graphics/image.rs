@@ -41,6 +41,8 @@ impl Asset for Image {}
 /// The checker's two colours (RGBA)
 pub(crate) const CHECKER_MAGENTA: [u8; 4] = [255, 0, 255, 255];
 pub(crate) const CHECKER_BLACK: [u8; 4] = [0, 0, 0, 255];
+/// The checker's side, in texels
+pub(crate) const CHECKER_SIDE: u32 = 16;
 
 /// The world's images: its `Assets<Image>`, or an empty store for a world
 /// without one
@@ -103,7 +105,7 @@ impl Image {
   /// or `UiNode::image` with no size, a prompt's glyph) is zero-sized and
   /// draws nothing, so a UI lays out the same in debug and release builds
   pub(crate) fn checker() -> Self {
-    const SIDE: u32 = 16;
+    const SIDE: u32 = CHECKER_SIDE;
     const SQUARE: u32 = 4;
     let mut data = Vec::with_capacity((SIDE * SIDE * 4) as usize);
     for y in 0..SIDE {

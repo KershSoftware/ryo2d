@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use super::animation::{EMPTY_NAME, Target, Timeline};
 use super::attachment::{Attachment, MeshAttachment, MeshVertices};
+use super::bounds::bone_reaches;
 use super::builder::{PendingConstraint, PendingKind, SkeletonDataBuilder};
 use super::constrain::ConstraintBones;
 use super::constraint::{
@@ -457,6 +458,7 @@ pub(super) fn build(builder: SkeletonDataBuilder) -> Result<SkeletonData, Skelet
     slot_names,
     constraint_names,
     skin_names,
+    reaches: bone_reaches(bones.len(), &slots, &regions, &skins),
     skins,
     slot_bones: slots.iter().map(|slot| slot.bone).collect(),
     constraint_bones: ConstraintBones::of(&bones, &constraints),

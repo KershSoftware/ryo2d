@@ -52,8 +52,9 @@ use crate::core::asset::{AssetId, Assets};
 use crate::core::ecs::interpolate::render_global;
 use crate::core::ecs::kernel::QueryState;
 use crate::core::ecs::{
-  DrawLift, Entity, GlobalTransform, Material, PreviousGlobalTransform, RenderStyle, Renderable,
-  Shader, ShaderParams, SpriteEffect, SpriteShader, Vec2, World, YSort, entity_order, shaders_of,
+  DrawLift, DropShadow, Entity, GlobalTransform, Material, PreviousGlobalTransform, RenderStyle,
+  Renderable, Shader, ShaderParams, SpriteEffect, SpriteShader, Vec2, World, YSort, entity_order,
+  shaders_of,
 };
 use crate::core::graphics::TileDirection;
 use crate::core::graphics::atlas::Showing;
@@ -63,7 +64,8 @@ use crate::core::graphics::{
   SpriteInstance, TextureId, images_of,
 };
 use crate::core::skeleton::{
-  Carrier, MeshPart, Part, Parts, RegionQuad, Skeleton, SkeletonData, SkeletonStore, SlotBlend,
+  Bounds, Carrier, Drawn, MeshPart, Part, Parts, RegionQuad, Skeleton, SkeletonData, SkeletonStore,
+  SlotBlend,
 };
 use crate::core::ui::Color;
 use glam::Affine2;
@@ -461,6 +463,13 @@ impl Placement {
   }
 }
 
+/// The world box a quad `size` across placed `at` stays inside: its
+/// half-diagonal about its centre covers it at any rotation
+fn quad_box(size: Vec2, at: &Placement) -> (Vec2, Vec2) {
+  let reach = Vec2::splat(size.length() / 2.0);
+  (at.center - reach, at.center + reach)
+}
+
 /// `color` with full alpha: shadow opacity travels separately.
 fn opaque(color: Color) -> Color {
   Color::new(color.r, color.g, color.b, 255)
@@ -605,6 +614,35 @@ struct Emitter<'a> {
 }
 
 impl<'a> Emitter<'a> {
+  /// Whether a camera on the entity's layers can see the world box
+  /// `min..max`
+  fn sees(&self, min: Vec2, max: Vec2) -> bool {
+    self
+      .cameras
+      .iter()
+      .any(|camera| camera.layers.intersects(&self.layers) && camera.view.is_visible(min, max))
+  }
+
+  /// Whether a camera on the entity's layers can see anything `skeleton`
+  /// draws where `drawn` puts it, under `renderable` with `effect` on its
+  /// parts ([`skeleton_reach`]); true until it has a box
+  fn sees_skeleton(
+    &self,
+    skeleton: &Skeleton,
+    drawn: &Drawn,
+    renderable: &Renderable,
+    effect: Option<&SpriteEffect>,
+  ) -> bool {
+    let Some(bounds) = skeleton.bounds() else {
+      return true;
+    };
+    let padding = effect.map_or(0.0, |effect| {
+      effect_padding(&SpriteInstance::new().with_effect(effect).effect_params)
+    });
+    let (min, max) = skeleton_reach(&bounds, drawn, renderable, padding);
+    self.sees(min, max)
+  }
+
   /// What drawing image `id` draws from: the image, or the checker in its
   /// place (`None`: nothing, in release builds)
   fn image_source(&self, id: crate::core::asset::AssetId<Image>) -> Option<Source<'a>> {
@@ -664,14 +702,8 @@ impl<'a> Emitter<'a> {
     if !(size.x > 0.0 && size.y > 0.0) || !size.is_finite() || !at.center.is_finite() {
       return;
     }
-    // The quad's half-diagonal covers it at any rotation
-    let reach = Vec2::splat(size.length() / 2.0);
-    let (min, max) = (at.center - reach, at.center + reach);
-    let seen = self
-      .cameras
-      .iter()
-      .any(|camera| camera.layers.intersects(&self.layers) && camera.view.is_visible(min, max));
-    if !seen {
+    let (min, max) = quad_box(size, &at);
+    if !self.sees(min, max) {
       return;
     }
     let (u0, u1) = if at.flip_x { (1.0, 0.0) } else { (0.0, 1.0) };
@@ -836,6 +868,13 @@ impl<'a> Emitter<'a> {
   /// and copied out of it again, which takes a third more of this loop's
   /// time for a skeleton of regions alone (`docs/backlog/skeleton.md`,
   /// Meshes).
+  ///
+  /// Never inlined into [`collect_skeleton`]: there, behind the test that
+  /// returns early for a skeleton no camera sees, the walk measured about
+  /// 30 µs slower for the bench's 200 skeletons on screen (`benches/skeleton.rs`,
+  /// `skeletons_extract`, 200 against 170), and on its own it is as fast as
+  /// it was before that test
+  #[inline(never)]
   fn draw_parts<'p>(
     &mut self,
     z: i32,
@@ -967,11 +1006,7 @@ impl<'a> Emitter<'a> {
       return;
     };
     let (mut instance, min, max) = quad.instance(&shown, emission);
-    let seen = self
-      .cameras
-      .iter()
-      .any(|camera| camera.layers.intersects(&self.layers) && camera.view.is_visible(min, max));
-    if !seen {
+    if !self.sees(min, max) {
       return;
     }
     let Some(texture) = self.gpu.upload_entity_image(self.device, self.queue, shown) else {
@@ -1004,9 +1039,7 @@ impl<'a> Emitter<'a> {
   /// start on, if a camera on the entity's layers can see it
   fn push_run(&mut self, z: i32, run: OpenRun<'_>, shading: SpriteShading) {
     let end = self.list.run_instances().len();
-    let seen = self.cameras.iter().any(|camera| {
-      camera.layers.intersects(&self.layers) && camera.view.is_visible(run.min, run.max)
-    });
+    let seen = self.sees(run.min, run.max);
     let (Ok(first), Ok(last), true) = (u32::try_from(run.start), u32::try_from(end), seen) else {
       self.list.drop_run_instances(run.start);
       return;
@@ -1086,10 +1119,7 @@ impl<'a> Emitter<'a> {
     let Some(mesh) = self.meshes.add(vertices, indices) else {
       return;
     };
-    let seen = self.cameras.iter().any(|camera| {
-      camera.layers.intersects(&self.layers) && camera.view.is_visible(mesh.min, mesh.max)
-    });
-    if !seen {
+    if !self.sees(mesh.min, mesh.max) {
       self.meshes.drop_last(&mesh);
       return;
     }
@@ -1317,45 +1347,131 @@ fn collect_entity<'w>(frame: &EntityFrame, drawable: &Drawable<'w>, out: &mut Em
 /// An entity's blob and contact shadows: ellipses under `position`, where
 /// the entity draws (not its sprite's turned corner).
 fn ground_shadows(renderable: &Renderable, position: Vec2, out: &mut Emitter<'_>) {
-  let (z, alpha) = (renderable.z_order, renderable.alpha);
-  if let Some(blob) = &renderable.blob_shadow {
+  let z = renderable.z_order;
+  for ((width, height), at, shading) in ground_shadow_quads(renderable, position)
+    .into_iter()
+    .flatten()
+  {
+    out.draw(z, &mut Source::ellipse(width, height), at, shading);
+  }
+}
+
+/// One ellipse of a ground shadow: its size in pixels, where it is placed
+/// and how it is shaded
+type GroundShadow = ((u32, u32), Placement, Shading<'static>);
+
+/// What [`ground_shadows`] draws for `renderable` at `position`: each
+/// ellipse's size in pixels, where it is placed and how it is shaded, the
+/// blob's first
+fn ground_shadow_quads(renderable: &Renderable, position: Vec2) -> [Option<GroundShadow>; 2] {
+  let alpha = renderable.alpha;
+  let blob = renderable.blob_shadow.as_ref().and_then(|blob| {
     let (eff_radius_x, eff_radius_y) = blob.effective_radius();
     let blob_alpha = blob.effective_alpha() * alpha;
-    if eff_radius_x >= 1.0 && eff_radius_y >= 1.0 && blob_alpha > 0.01 {
-      // Centred under the sprite's base position, not the rotated corner
-      let blob_w = (eff_radius_x * 2.0) as u32;
-      let blob_h = (eff_radius_y * 2.0) as u32;
-      let corner = position + Vec2::new(-eff_radius_x, blob.offset_y - eff_radius_y);
-      out.draw(
-        z,
-        &mut Source::ellipse(blob_w, blob_h),
-        Placement::from_top_left(corner, Vec2::new(blob_w as f32, blob_h as f32), Vec2::ONE),
-        Shading::tinted(opaque(blob.color), blob_alpha),
-      );
+    if !(eff_radius_x >= 1.0 && eff_radius_y >= 1.0 && blob_alpha > 0.01) {
+      return None;
     }
-  }
-
-  if let Some(contact) = &renderable.contact_shadow {
+    // Centred under the sprite's base position, not the rotated corner
+    let blob_w = (eff_radius_x * 2.0) as u32;
+    let blob_h = (eff_radius_y * 2.0) as u32;
+    let corner = position + Vec2::new(-eff_radius_x, blob.offset_y - eff_radius_y);
+    Some((
+      (blob_w, blob_h),
+      Placement::from_top_left(corner, Vec2::new(blob_w as f32, blob_h as f32), Vec2::ONE),
+      Shading::tinted(opaque(blob.color), blob_alpha),
+    ))
+  });
+  let contact = renderable.contact_shadow.as_ref().and_then(|contact| {
     let contact_alpha = contact.intensity * alpha;
-    if contact.radius >= 1.0 && contact_alpha > 0.01 {
-      // A squashed ellipse at the base of the sprite
-      let contact_radius_x = contact.radius;
-      let contact_radius_y = contact.radius * 0.4;
-      let contact_w = ((contact_radius_x * 2.0) as u32).max(2);
-      let contact_h = ((contact_radius_y * 2.0) as u32).max(2);
-      let corner = position + Vec2::new(-contact_radius_x, contact.offset_y - contact_radius_y);
-      out.draw(
-        z,
-        &mut Source::ellipse(contact_w, contact_h),
-        Placement::from_top_left(
-          corner,
-          Vec2::new(contact_w as f32, contact_h as f32),
-          Vec2::ONE,
-        ),
-        Shading::tinted(opaque(contact.color), contact_alpha),
-      );
+    if !(contact.radius >= 1.0 && contact_alpha > 0.01) {
+      return None;
+    }
+    // A squashed ellipse at the base of the sprite
+    let contact_radius_x = contact.radius;
+    let contact_radius_y = contact.radius * 0.4;
+    let contact_w = ((contact_radius_x * 2.0) as u32).max(2);
+    let contact_h = ((contact_radius_y * 2.0) as u32).max(2);
+    let corner = position + Vec2::new(-contact_radius_x, contact.offset_y - contact_radius_y);
+    Some((
+      (contact_w, contact_h),
+      Placement::from_top_left(
+        corner,
+        Vec2::new(contact_w as f32, contact_h as f32),
+        Vec2::ONE,
+      ),
+      Shading::tinted(opaque(contact.color), contact_alpha),
+    ))
+  });
+  [blob, contact]
+}
+
+/// What a skeleton's drop shadow moves its parts by: scaled by the
+/// shadow's scale in the entity's turned axes about where it draws, then
+/// moved by the shadow's offset
+fn drop_cast(shadow: &DropShadow, drawn: &Drawn) -> Affine2 {
+  if shadow.scale == Vec2::ONE {
+    Affine2::from_translation(shadow.offset)
+  } else {
+    Affine2::from_translation(drawn.position + shadow.offset)
+      * Affine2::from_angle(drawn.rotation)
+      * Affine2::from_scale(shadow.scale)
+      * Affine2::from_angle(-drawn.rotation)
+      * Affine2::from_translation(-drawn.position)
+  }
+}
+
+/// The world box everything a skeleton draws this frame stays inside: its
+/// `bounds` (in its own space) taken to the world as its parts are
+/// (`drawn.root`: its entity between steps, lifted, depth-scaled and
+/// flipped), grown first by `padding` texels of its regions' images (an
+/// effect that grows a quad), and with its parts' drop shadow (the box
+/// cast as the parts are) and its blob and contact shadows (as
+/// [`ground_shadows`] places them). Empty (its least corner past its
+/// greatest) when nothing is drawn
+fn skeleton_reach(
+  bounds: &Bounds,
+  drawn: &Drawn,
+  renderable: &Renderable,
+  padding: f32,
+) -> (Vec2, Vec2) {
+  let (mut min, mut max) = (Vec2::INFINITY, Vec2::NEG_INFINITY);
+  let mut take = |(low, high): (Vec2, Vec2)| {
+    min = min.min(low);
+    max = max.max(high);
+  };
+  // A box under an affine transform: its corners' box holds it
+  let mapped = |to: Affine2, low: Vec2, high: Vec2| {
+    let corners = [
+      low,
+      Vec2::new(high.x, low.y),
+      high,
+      Vec2::new(low.x, high.y),
+    ];
+    corners.iter().fold(
+      (Vec2::INFINITY, Vec2::NEG_INFINITY),
+      |(least, most), &corner| {
+        let at = to.transform_point2(corner);
+        (least.min(at), most.max(at))
+      },
+    )
+  };
+  if !bounds.is_empty() {
+    let grown = Vec2::splat(padding * bounds.texel);
+    take(mapped(drawn.root, bounds.min - grown, bounds.max + grown));
+    // The shadow's parts are drawn plain: no effect grows them
+    if let Some(shadow) = &renderable.drop_shadow {
+      take(mapped(
+        drop_cast(shadow, drawn) * drawn.root,
+        bounds.min,
+        bounds.max,
+      ));
     }
   }
+  let ground = ground_shadow_quads(renderable, drawn.position);
+  for ((width, height), at, _) in ground.into_iter().flatten() {
+    take(quad_box(Vec2::new(width as f32, height as f32), &at));
+  }
+  (min, max)
 }
 
 /// A skeleton entity: its parts' drop shadows, its blob and contact
@@ -1415,6 +1531,19 @@ fn collect_skeleton<'w>(frame: &EntityFrame, drawable: &Drawable<'w>, out: &mut 
     y_sort,
   };
   let drawn = skeleton.drawn(&carrier, frame.alpha, out.skeleton_step);
+  // A Material component wins over the inline shader. Either kind is each
+  // part's own: a built-in effect on every quad of a run and on a mesh, a
+  // game shader on a sprite item a quad and on a mesh
+  let (effect, custom) = match effective_shader(material, renderable.shader.as_ref()) {
+    Some(SpriteShader::BuiltIn(effect)) => (Some(effect), None),
+    Some(SpriteShader::Custom { shader, params }) => (None, Some((shader.id(), params))),
+    None => (None, None),
+  };
+  // Not walked at all where no camera on its layers can see anything it
+  // draws
+  if !out.sees_skeleton(skeleton, &drawn, renderable, effect) {
+    return;
+  }
   let mut parts = std::mem::take(&mut out.parts);
   skeleton.parts(data, (id, version), drawn.root, drawn.between, &mut parts);
 
@@ -1423,15 +1552,7 @@ fn collect_skeleton<'w>(frame: &EntityFrame, drawable: &Drawable<'w>, out: &mut 
     let strength = (color.a as f32 / 255.0) * alpha;
     let [r, g, b] = [color.r, color.g, color.b].map(|c| c as f32 / 255.0);
     // Scaled in the entity's turned axes about where it draws, then moved
-    let cast = if shadow.scale == Vec2::ONE {
-      Affine2::from_translation(shadow.offset)
-    } else {
-      Affine2::from_translation(drawn.position + shadow.offset)
-        * Affine2::from_angle(drawn.rotation)
-        * Affine2::from_scale(shadow.scale)
-        * Affine2::from_angle(-drawn.rotation)
-        * Affine2::from_translation(-drawn.position)
-    };
+    let cast = drop_cast(shadow, &drawn);
     // Shadows blend over what is below whatever their part's blend, and a
     // part faded out by its slot or attachment casts less
     let plain = RunLook {
@@ -1462,14 +1583,6 @@ fn collect_skeleton<'w>(frame: &EntityFrame, drawable: &Drawable<'w>, out: &mut 
 
   ground_shadows(renderable, drawn.position, out);
 
-  // A Material component wins over the inline shader. Either kind is each
-  // part's own: a built-in effect on every quad of a run and on a mesh, a
-  // game shader on a sprite item a quad and on a mesh
-  let (effect, custom) = match effective_shader(material, renderable.shader.as_ref()) {
-    Some(SpriteShader::BuiltIn(effect)) => (Some(effect), None),
-    Some(SpriteShader::Custom { shader, params }) => (None, Some((shader.id(), params))),
-    None => (None, None),
-  };
   let tint = renderable.tint;
   let tint = [tint.r, tint.g, tint.b, tint.a].map(|c| c as f32 / 255.0);
   let tinted = |color: [f32; 4]| {
@@ -1601,6 +1714,8 @@ fn y_sort_key(
   y_sort.calculate_sort_y(y - pivot_y * height, height)
 }
 
+#[cfg(test)]
+mod cull_tests;
 #[cfg(test)]
 mod mesh_probe;
 #[cfg(test)]

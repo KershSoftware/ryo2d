@@ -19,7 +19,8 @@
 //! - `skeletons_extract_shadow`: the same with every skeleton's drop shadow
 //!   (a second quad per region);
 //! - `skeletons_extract_offscreen`: the same, every skeleton wholly outside
-//!   the view;
+//!   the view, which the drawer does not walk: held to a tenth of the
+//!   crowd's extract measured in the same run ([`OFFSCREEN_SHARE`]);
 //! - `skeletons_extract_images`: an image for each of the 25 parts, where
 //!   the others draw from one atlas;
 //! - `skeletons_extract_plain`: the same with `Interpolated` taken off every
@@ -102,6 +103,9 @@ const FIRST_FRAMES: usize = 12;
 const UPDATE_MAX: f64 = 1000.0;
 const EXTRACT_MAX: f64 = 600.0;
 const ONE_MAX: f64 = 5.0;
+/// The most an off-screen crowd's extract may cost, as a share of the
+/// same crowd's on screen
+const OFFSCREEN_SHARE: f64 = 0.1;
 
 /// What a case's scene holds
 #[derive(Clone, Copy)]
@@ -984,6 +988,9 @@ fn main() {
       println!("{name}: {:.1} µs", figures.extract);
       println!("{name}_update: {:.1} µs", figures.update);
       held(name, figures.extract, EXTRACT_MAX);
+      if case.offscreen {
+        held(name, figures.extract, crowd.extract * OFFSCREEN_SHARE);
+      }
     }
   }
   if let Some(figures) = measure(Case {
