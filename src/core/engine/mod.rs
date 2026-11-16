@@ -2464,6 +2464,20 @@ impl EngineBuilder {
   }
 }
 
+impl EngineBuilder {
+  /// The presentation a project with this Ryo.toml resolves to, headless,
+  /// with the builder's calls over it (the contact sheet's test of
+  /// `pixel_art_off`). Text that is not TOML is no project.
+  #[cfg(all(test, not(target_arch = "wasm32")))]
+  pub(crate) fn resolved_presentation(self, ryo_toml: &str) -> Presentation {
+    let workspace = crate::core::config::Workspace::from_toml_str(ryo_toml, "game".into()).ok();
+    self
+      .resolve_in(workspace.as_ref(), true)
+      .config
+      .presentation
+  }
+}
+
 /// The engine's debug switches from the resolved settings, the FPS counter
 /// from the player's settings. A build without the developer tools turns
 /// them off afterwards, in [`apply_launch_overrides`], the last word.

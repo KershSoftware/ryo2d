@@ -54,7 +54,7 @@ It draws a skeleton's animations headlessly as a grid and writes a PNG: one row 
 | `--bones` | Draws the bones overlay over the art, as `debug:skeletons` draws it (bones, joints, outlines, the constraints' marks); it works in a build without the developer tools |
 | `--cell WxH` | Each cell's size in pixels, its label strip included (default: sized to fit the poses of the whole sheet) |
 | `--hz N` | The fixed rate to step at, 1 to 1000 steps a second: give a game's own `EngineBuilder::fixed_hz` so its springs show as in that game (default: 60) |
-| `--out PATH` | Where to write the PNG (default: `NAME.sheet.png` in the current folder, not beside the file, so nothing generated lands in the assets a release ships) |
+| `--out PATH` | Where to write the PNG, its folder made if missing (default: `NAME.sheet.png` in the current folder, not beside the file, so nothing generated lands in the assets a release ships; a path inside the assets folder is written with a warning) |
 
 - **The file must be in a project's assets folder**: its images are asset paths from there. A file outside it is refused with a message, before anything is drawn.
 - It draws with the GPU: a machine with none gets a message, not a crash.

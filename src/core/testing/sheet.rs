@@ -17,6 +17,7 @@ use crate::core::scene::{Scene, SceneAction, SceneContext};
 use crate::core::skeleton::{
   Attachment, Part, Parts, Skeleton, SkeletonAnimation, SkeletonData, SkeletonError, SlotId,
 };
+use crate::core::text::TextStyle;
 use crate::core::time::Time;
 use crate::core::ui::{Color, Rect, UiContext};
 
@@ -44,6 +45,20 @@ const MAX_MOMENTS: u32 = 1000;
 const MAX_HZ: u32 = 1000;
 /// How far past its moment, in steps, a cell is aimed
 const NUDGE: f32 = 0.01;
+/// How far under a whole number of steps a moment's `time / step` may fall
+/// and still count as that number (`steps_to`), so a moment on a step's
+/// edge starts at 0 and not a step in. The quotient's `f32` error is a few
+/// ulps of the step count (about 2.4e-7 times it), under this up to some
+/// 400 steps; past that the passes correct the start (`STEP_PASSES`). It
+/// is far below `NUDGE`, so what it rounds up still lands past the moment
+const ON_EDGE: f32 = 1e-4;
+/// The most passes `steps_to` makes to land within half the nudge. Each
+/// moves the start by what the sum missed, so one or two do, while an ulp
+/// of the time summed is under half the nudge. Past that (from 2^10 s at
+/// 60 steps a second, from 2^6 s at 1000) a move of the start smaller than
+/// an ulp can change nothing and the passes need not settle: the cap ends
+/// them with the start as near as they came
+const STEP_PASSES: u32 = 8;
 /// The most pixels a sheet has (256 Mpx, a gigabyte of RGBA)
 const MAX_PIXELS: u64 = 1 << 28;
 
@@ -54,6 +69,8 @@ const BACKGROUND: Color = Color::rgb(118, 124, 136);
 const GROUND: Color = Color::new(255, 255, 255, 56);
 const LABEL_STRIP: Color = Color::rgb(30, 32, 38);
 const LABEL_TEXT: Color = Color::rgb(236, 238, 244);
+/// The label's room from the cell's left and right edges, in pixels
+const LABEL_INSET: f32 = 6.0;
 const GAP: Rgba<u8> = Rgba([18, 19, 23, 255]);
 
 /// The layer the sheet's camera sees; a cell not being drawn is on none
@@ -211,10 +228,30 @@ impl Scene for SheetScene {
     if let Some(label) = ctx.world.get_resource::<SheetLabel>() {
       let strip = Rect::new(0.0, 0.0, label.width, SHEET_LABEL as f32);
       ui.draw_rect(strip, LABEL_STRIP);
-      ui.draw_text(&label.text, 6.0, 4.0, LABEL_TEXT);
+      let style = TextStyle::default();
+      let room = label.width - 2.0 * LABEL_INSET;
+      let text = fit_label(&label.text, room, |text| ui.measure_text(text, &style).x);
+      ui.draw_text(&text, LABEL_INSET, 4.0, LABEL_TEXT);
     }
     SceneAction::Continue
   }
+}
+
+/// `text` as it fits in `room` UI units, measured by `width`: whole, or
+/// cut at a character where the rest fits with an ellipsis after it, so a
+/// label too long for its cell ends in "…", not in a glyph the cell's edge
+/// cuts
+fn fit_label(text: &str, room: f32, width: impl Fn(&str) -> f32) -> String {
+  if width(text) <= room {
+    return text.to_owned();
+  }
+  let mut ends = text.char_indices().map(|(at, _)| at).rev();
+  ends
+    .find_map(|end| {
+      let cut = format!("{}\u{2026}", text.get(..end)?.trim_end());
+      (width(&cut) <= room).then_some(cut)
+    })
+    .unwrap_or_default()
 }
 
 /// A box grown by the points put in it
@@ -292,13 +329,7 @@ pub fn skeleton_sheet(
     .moments
     .saturating_add(u32::from(!options.once.is_empty()));
   sheet_size(columns, 1, canvas)?;
-  let mut builder = EngineBuilder::new()
-    .resolution(canvas.x, canvas.y)
-    .pixel_art_off()
-    .start_scene(SheetScene);
-  if let Some(hz) = options.fixed_hz {
-    builder = builder.fixed_hz(hz);
-  }
+  let builder = sheet_engine(canvas, options);
   let (builder, build) = match skeleton.source {
     Source::File { assets, path } => (builder.asset_source(DiskSource::new(assets)), Ok(path)),
     Source::Built(build) => (builder.asset_source(MemorySource::new()), Err(build)),
@@ -345,6 +376,19 @@ pub fn skeleton_sheet(
   }
   let layout = layout(union, options.cell);
   draw(&mut engine, &rows, &cells, layout, options)
+}
+
+/// The sheet's engine at the canvas's size: smooth whatever the Ryo.toml
+/// of the project it starts in says, at the fixed rate asked for
+fn sheet_engine(canvas: UVec2, options: &SheetOptions) -> EngineBuilder {
+  let builder = EngineBuilder::new()
+    .resolution(canvas.x, canvas.y)
+    .pixel_art_off()
+    .start_scene(SheetScene);
+  match options.fixed_hz {
+    Some(hz) => builder.fixed_hz(hz),
+    None => builder,
+  }
 }
 
 fn check_options(options: &SheetOptions) -> Result<(), SheetError> {
@@ -502,13 +546,13 @@ fn steps_to(time: f32, step: f32) -> (f32, u32) {
     return (0.0, 0);
   }
   // A moment on a step's edge lands on it, not a step short of it
-  let whole = (time / step + 1e-4).floor();
+  let whole = (time / step + ON_EDGE).floor();
   let mut steps = whole as u32;
   let aim = time + step * NUDGE;
   let mut start = (aim - whole * step).max(0.0);
   // The sum can fall short or run long: each pass moves the start by what
   // it missed by, a step fewer when the start would go below 0
-  for _ in 0..8 {
+  for _ in 0..STEP_PASSES {
     let short = aim - landing(start, steps, step);
     if short.abs() <= step * NUDGE / 2.0 {
       break;
@@ -792,6 +836,8 @@ fn ground(world: &mut World, layout: Layout) {
 mod tests {
   use super::*;
 
+  use crate::core::graphics::Presentation;
+
   #[test]
   fn a_moment_is_reached_in_whole_steps_from_a_start_under_one() {
     let step = 1.0 / 60.0;
@@ -926,6 +972,48 @@ mod tests {
     let top = at(given, union.min).y;
     let bottom = at(given, union.max).y;
     assert!((top - SHEET_LABEL as f32 - (200.0 - bottom)).abs() < 1e-3);
+  }
+
+  #[test]
+  fn the_sheet_draws_smoothly_in_a_pixel_art_project() {
+    // A project whose Ryo.toml asks for pixel art: an engine of its own
+    // presents it so, the sheet's engine smoothly at the canvas's size
+    let ryo_toml =
+      "[project]\nname = \"pixels\"\n\n[system]\nresolution = \"320x180\"\npixel_art = true\n";
+    let game = EngineBuilder::new().start_scene(SheetScene);
+    assert_eq!(
+      game.resolved_presentation(ryo_toml),
+      Presentation::PixelArt {
+        width: 320,
+        height: 180
+      }
+    );
+    let canvas = UVec2::new(264, 286);
+    let sheet = sheet_engine(canvas, &SheetOptions::default());
+    assert!(
+      !matches!(
+        sheet.resolved_presentation(ryo_toml),
+        Presentation::PixelArt { .. }
+      ),
+      "the sheet is drawn as pixel art"
+    );
+  }
+
+  #[test]
+  fn a_label_too_long_for_its_cell_ends_with_an_ellipsis() {
+    // Each character 7 wide
+    let width = |text: &str| 7.0 * text.chars().count() as f32;
+    assert_eq!(fit_label("walk  0.250s", 100.0, width), "walk  0.250s");
+    // 70 wide: nine characters and the ellipsis, the space before it dropped
+    assert_eq!(
+      fit_label("a_very_long_name  0.250s", 70.0, width),
+      "a_very_lo\u{2026}"
+    );
+    assert_eq!(fit_label("ab cd", 28.0, width), "ab\u{2026}");
+    // Cut at characters, never inside one
+    assert_eq!(fit_label("éèêëēė", 35.0, width), "éèêë\u{2026}");
+    // No room even for the ellipsis: nothing
+    assert_eq!(fit_label("walk", 3.0, width), "");
   }
 
   #[test]

@@ -22,6 +22,8 @@ const BONE: [u8; 3] = [0xff, 0xc0, 0x20];
 /// `colors::SKELETON_POINT`)
 const BOUNDING_BOX: [u8; 4] = [0x00, 0xff, 0x00, 0xff];
 const POINT: [u8; 4] = [0xff, 0x00, 0xff, 0xff];
+/// The overlay's constraint colour (`colors::SKELETON_CONSTRAINT`)
+const CONSTRAINT: [u8; 4] = [0xff, 0x50, 0xa0, 0xff];
 
 /// The sheet, or `None` (with a note) on a machine with no GPU
 fn sheet(skeleton: SheetSkeleton, options: &SheetOptions) -> Option<RgbaImage> {
@@ -242,6 +244,40 @@ fn a_sheet_has_a_cell_per_animation_and_moment_each_labelled_and_drawn() {
     assert!((hand.y - want).abs() < 1.0, "lift {k}: {hands:?}");
     assert!((hand.x - hands[0].x).abs() < 1.0);
   }
+}
+
+#[test]
+fn a_label_too_long_for_its_cell_ends_inside_it() {
+  // An animation's name far wider than its cell: the label stops short of
+  // the cell's right edge (it ends in an ellipsis), where a label cut by
+  // the edge would light its last columns
+  let rig = |world: &mut World| {
+    let builder = SkeletonData::builder().bone("body", None, BoneSetup::default());
+    square(builder, world, "body", RED, 12)
+      .animation(SkeletonClip {
+        name: Arc::from("a_name_far_too_long_for_its_cell"),
+        duration: 1.0,
+        timelines: vec![moves(BoneId(0), &[(0.0, Vec2::ZERO)])],
+      })
+      .build()
+  };
+  let cell = UVec2::new(120, 100);
+  let options = SheetOptions {
+    moments: 1,
+    cell: Some(cell),
+    ..SheetOptions::default()
+  };
+  let Some(sheet) = sheet(SheetSkeleton::built(rig), &options) else {
+    return;
+  };
+  let label = (SHEET_GAP, SHEET_GAP, cell.x, SHEET_LABEL);
+  assert!(light_pixels(&sheet, label, 200) > 20, "labelled");
+  let edge = (SHEET_GAP + cell.x - 4, SHEET_GAP, 4, SHEET_LABEL);
+  assert_eq!(
+    light_pixels(&sheet, edge, 160),
+    0,
+    "the label reaches the cell's edge"
+  );
 }
 
 /// A red 6 px body on a root bone, and a tail 30 long hanging from it with
@@ -518,6 +554,62 @@ fn with_bones_the_cell_fits_bounding_boxes_and_points() {
     "the cross whole: {point:?}"
   );
   assert!(point[0] > right, "the point right of the box");
+}
+
+#[test]
+fn with_bones_an_ik_target_at_the_art_s_corner_is_crossed_whole_inside_the_cell() {
+  // An arm 20 long reaching for a target 150 right of and 60 above the
+  // body, the top right corner of all there is: the target's cross, drawn
+  // in pixels about it, is whole inside the cell
+  let rig = |world: &mut World| {
+    let arm = BoneSetup {
+      length: 20.0,
+      ..BoneSetup::default()
+    };
+    let goal = BoneSetup {
+      x: 150.0,
+      y: -60.0,
+      ..BoneSetup::default()
+    };
+    let builder = SkeletonData::builder()
+      .bone("body", None, BoneSetup::default())
+      .bone("arm", Some("body"), arm)
+      .bone("goal", Some("body"), goal);
+    square(builder, world, "body", RED, 12)
+      .ik("reach", &["arm"], "goal", IkSetup::default())
+      .build()
+  };
+  let cell = UVec2::new(200, 100);
+  let options = SheetOptions {
+    moments: 1,
+    bones: true,
+    cell: Some(cell),
+    ..SheetOptions::default()
+  };
+  let Some(sheet) = sheet(SheetSkeleton::built(rig), &options) else {
+    return;
+  };
+  let art = (
+    SHEET_GAP,
+    SHEET_GAP + SHEET_LABEL,
+    cell.x,
+    cell.y - SHEET_LABEL,
+  );
+  // The cross and the line to it from the arm's tip: the right and top of
+  // their pixels are the cross's
+  let [_, top, right, _] = box_of(&sheet, art, CONSTRAINT).expect("the target's cross");
+  assert!(
+    right < (SHEET_GAP + cell.x - 2) as f32,
+    "the cross's right end at {right}"
+  );
+  assert!(
+    top > (SHEET_GAP + SHEET_LABEL + 2) as f32,
+    "the cross's top at {top}"
+  );
+  // The cross is drawn: its arms reach past the target's place, 3.5 px
+  // each way, so the pixels right of the line's end are its
+  let body = centre_of(&sheet, art, RED).expect("the body");
+  assert!(right - body.x > 100.0, "{body} to {right}");
 }
 
 #[test]

@@ -49,6 +49,18 @@ fn run(
   let out = parsed
     .out
     .map_or_else(|| cwd.join(default_out(&file)), |out| cwd.join(out));
+  // The folder is made, or found unusable, before anything is drawn
+  if let Some(folder) = out.parent().filter(|folder| !folder.as_os_str().is_empty()) {
+    std::fs::create_dir_all(folder).map_err(|error| {
+      CliError::Other(format!(
+        "cannot make the folder {} for the sheet: {error}",
+        folder.display()
+      ))
+    })?;
+  }
+  if let Some(warning) = in_assets_warning(&out, &assets) {
+    Output::warning(&warning);
+  }
   Output::status("Drawing", &format!("{path} from {}", assets.display()));
   let sheet = draw(SheetSkeleton::file(&assets, &path), &parsed.options).map_err(|error| {
     CliError::Other(match error {
@@ -86,6 +98,18 @@ fn asset_path(file: &Path) -> CliResult<(PathBuf, String)> {
     .map(|part| part.as_os_str().to_string_lossy().into_owned())
     .collect();
   Ok((assets, path.join("/")))
+}
+
+/// A warning for a sheet written into the assets folder `assets` (canonical),
+/// where a release would ship it; `out`'s folder exists
+fn in_assets_warning(out: &Path, assets: &Path) -> Option<String> {
+  let folder = out.parent()?.canonicalize().ok()?;
+  folder.starts_with(assets).then(|| {
+    format!(
+      "{} is in the project's assets folder, so a release would ship it: write sheets elsewhere",
+      out.display()
+    )
+  })
 }
 
 /// `hero.skeleton.ron` writes `hero.sheet.png`, in the current folder
@@ -181,27 +205,29 @@ OPTIONS:
                        (default: sized to fit the poses)
     --hz N             The fixed rate to step at, as the game's
                        EngineBuilder::fixed_hz (default: 60)
-    --out PATH         Where to write the PNG
+    --out PATH         Where to write the PNG, its folder made if missing
                        (default: NAME.sheet.png in the current folder)
     -h, --help         Show this help message
 
 DESCRIPTION:
     Draws each animation at evenly spaced moments, k x length / N for k
     from 0, each cell labelled with the animation's name and the time. A
-    moment is reached by stepping the animation from its start at the
-    engine's default 60 steps a second unless --hz, after one loop round
-    (none for an animation given to --once, which also gets a cell at its
-    end), so springs and constraints show as in play. Every cell has one
-    scale and the skeleton's origin at one place, on a faint ground line,
-    so root motion reads. A skeleton with no animations shows its setup
-    pose.
+    moment is reached by stepping the animation from its start, at the
+    engine's default 60 steps a second unless --hz says otherwise, after
+    one loop round (none for an animation given to --once, which also gets
+    a cell at its end), so springs and constraints show as in play. Every
+    cell has one scale and the skeleton's origin at one place, on a faint
+    ground line, so root motion reads. A skeleton with no animations shows
+    its setup pose.
 
     The file must be in a project's assets folder: its images are paths
-    from there. The sheet draws with the GPU.
+    from there. A sheet written into the assets folder is written with a
+    warning, since a release would ship it. The sheet draws with the GPU.
 
 EXAMPLE:
     ryo2d sheet assets/hero.skeleton.ron
-    ryo2d sheet assets/hero.skeleton.ron --animations walk,run --moments 6 --bones
+    ryo2d sheet assets/hero.skeleton.ron --animations walk,run \
+        --moments 6 --bones
 "#
   );
 }
@@ -347,5 +373,68 @@ mod tests {
     let out = run(&args(&[file, "--out", "walk.png"]), root.path(), draw).unwrap();
     assert_eq!(out, root.path().join("walk.png"));
     assert!(out.exists());
+  }
+
+  #[test]
+  fn a_missing_out_folder_is_made_before_drawing() {
+    let root = project();
+    let file = "assets/rigs/hero.skeleton.ron";
+    let folder = root.path().join("sheets").join("hero");
+    let mut found = None;
+    let draw = |_: SheetSkeleton, _: &SheetOptions| {
+      found = Some(folder.is_dir());
+      Ok(RgbaImage::new(2, 2))
+    };
+    let out = run(
+      &args(&[file, "--out", "sheets/hero/walk.png"]),
+      root.path(),
+      draw,
+    )
+    .unwrap();
+    assert_eq!(found, Some(true), "the folder is there before drawing");
+    assert!(out.exists());
+    // A folder that cannot be made (a file is in its way) is said before
+    // anything is drawn
+    std::fs::write(root.path().join("blocked"), "").unwrap();
+    let never = |_: SheetSkeleton, _: &SheetOptions| -> Result<RgbaImage, SheetError> {
+      panic!("nothing is drawn when the sheet cannot be written")
+    };
+    let said = message(run(
+      &args(&[file, "--out", "blocked/walk.png"]),
+      root.path(),
+      never,
+    ));
+    assert!(said.contains("cannot make the folder"), "{said}");
+  }
+
+  #[test]
+  fn a_sheet_written_into_the_assets_folder_is_warned_of_and_written() {
+    let root = project();
+    let file = "assets/rigs/hero.skeleton.ron";
+    let assets = root.path().join("assets").canonicalize().unwrap();
+    let draw = |_: SheetSkeleton, _: &SheetOptions| Ok(RgbaImage::new(2, 2));
+    let out = run(
+      &args(&[file, "--out", "assets/rigs/hero.png"]),
+      root.path(),
+      draw,
+    )
+    .unwrap();
+    assert!(out.exists(), "written all the same");
+    let warning = in_assets_warning(&out, &assets).unwrap_or_default();
+    assert!(warning.contains("a release would ship it"), "{warning}");
+    // Through a path that leaves and comes back in
+    std::fs::create_dir_all(root.path().join("sheets")).unwrap();
+    let back = root
+      .path()
+      .join("sheets")
+      .join("..")
+      .join("assets")
+      .join("a.png");
+    assert!(in_assets_warning(&back, &assets).is_some());
+    // Beside the assets folder, or in the current folder, no warning
+    let beside = root.path().join("assets-sheets");
+    std::fs::create_dir_all(&beside).unwrap();
+    assert_eq!(in_assets_warning(&beside.join("a.png"), &assets), None);
+    assert_eq!(in_assets_warning(&root.path().join("a.png"), &assets), None);
   }
 }
