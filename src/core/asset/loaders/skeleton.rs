@@ -61,14 +61,14 @@ use crate::core::ui::Color;
 ///     "default": {
 ///       "torso": {
 ///         "torso": Region(region: "torso",
-///                         x: 0, y: -20, rotation: 0,          // 0, 0, 0
+///                         x: 0, y: 0, rotation: 0,            // 0, 0, 0
 ///                         scale_x: 1, scale_y: 1,             // 1, 1
 ///                         width: 48, height: 80,              // the region's size
 ///                         // The pixel (from the region's top-left, y down) that x, y and
 ///                         // rotation place, and a second pixel: the image is turned so the
 ///                         // line from one to the other lies along the bone's x axis
-///                         pivot: (24, 4),                     // the region's centre
-///                         along: (24, 76),                    // no such turn
+///                         pivot: (24, 4),                     // default: the centre
+///                         along: (24, 76),                    // default: no turn
 ///                         color: "#ffffff"),                  // white
 ///       },
 ///       "gear": {
@@ -133,7 +133,8 @@ use crate::core::ui::Color;
 ///            limit: 5000,                                    // 5000; units a second
 ///            mix: 1),                                        // 1; 0 to 1
 ///   ],
-///   // Events with default values, and a sound the game plays
+///   // Events with default values, and a sound (played by the engine for a skeleton
+///   // with SkeletonSounds, or by the game from its SkeletonEvent)
 ///   events: {
 ///     "step": (int: 1, float: 2.5, string: "left",            // 0, 0, ""
 ///              audio: (path: "audio/step.ogg",                // no audio

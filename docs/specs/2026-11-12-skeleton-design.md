@@ -364,7 +364,7 @@ The rules come from Spine's public user guide and format reference (its pages on
 
 - **Settings:** a name, the bones (first to last), the target, and:
   - `mix`, 0 to 1: 0 leaves the animated pose, 1 is the solved pose, and between them each bone's rotation is blended the short way;
-  - `bend_positive` (two bones): which way the joint bends, judged in the space of the first bone's parent. Positive means the turn from the first part of the limb to the second is in the positive direction there. For a skeleton that is not mirrored that is clockwise on screen; under a mirrored ancestor or a flipped entity the limb is drawn mirrored, so a character turned round keeps its knees. The bones' own scales do not change which side that is;
+  - `bend_positive` (two bones; since replaced by `bend`, which a chain takes too: Authoring, A fixed side for a chain): which way the joint bends, judged in the space of the first bone's parent. Positive means the turn from the first part of the limb to the second is in the positive direction there. For a skeleton that is not mirrored that is clockwise on screen; under a mirrored ancestor or a flipped entity the limb is drawn mirrored, so a character turned round keeps its knees. The bones' own scales do not change which side that is;
   - `softness` (two bones): a distance. When the target is within this distance of the bones' full reach, the tip slows as the bones straighten, and never snaps straight;
   - `stretch` (one or two bones): when the target is beyond reach, the first bone is scaled along its length so the tip reaches it;
   - `compress` (one bone): when the target is nearer than the bone's length, the bone is scaled down so its tip is on it;
@@ -415,7 +415,7 @@ The rules come from Spine's public user guide and format reference (its pages on
 
 ### Keys
 
-- **An IK timeline** keys one constraint's `mix`, `softness`, `bend_positive`, `compress` and `stretch` together. **A transform timeline** keys one constraint's six mixes.
+- **An IK timeline** keys one constraint's `mix`, `softness`, `bend_positive` (now `bend`), `compress` and `stretch` together. **A transform timeline** keys one constraint's six mixes.
 - A value a key leaves out is the constraint's setup value.
 - Numbers blend between keys by the key's curve, and between animations as bone values do (replace toward the key, or add). A crossfade treats a constraint as one property. A mix is clamped to its range after the tracks are applied.
 - The three switches are stepped: they change at their key, and follow the module's rule for attachment keys. In a crossfade the newest animation with any weight decides, and if it has no key for the constraint the setup value stands from the first step of the mix.
@@ -435,7 +435,7 @@ A constraint that cannot work fails to load, naming the constraint and the reaso
 - names are unique among constraints of both kinds; at most 255 constraints;
 - every bone and the target exist; a constraint's bones are distinct; the target is not one of its bones nor a descendant of one;
 - IK: one to sixteen bones, each after the first an immediate child of the one before; every bone inherits normally; `mix` is 0 to 1; `softness` is finite and not negative;
-- IK settings that cannot apply are refused: `bend_positive` set false, or `softness`, on other than two bones; `compress` on other than one; `stretch` or `uniform` on a chain;
+- IK settings that cannot apply are refused: `bend_positive` set false (now a `bend` the bone count cannot have: Authoring), or `softness`, on other than two bones; `compress` on other than one; `stretch` or `uniform` on a chain;
 - IK lengths: the last bone of a two-bone or chain constraint has a length above 0 (its tip is what reaches, and a length left out would make the constraint do nothing in silence); a one-bone constraint with `stretch` or `compress` has a length above 0;
 - transform: at least one bone; mixes and offsets finite;
 - timelines: the constraint exists and is of the timeline's kind; values are finite and in range; a key sets no switch its constraint could not have.

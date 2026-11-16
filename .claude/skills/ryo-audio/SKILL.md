@@ -2,7 +2,7 @@
 name: ryo-audio
 description: "Audio - the workflow from a DAW export through assets/ and a .sound.ron definition to ctx.audio().play, voices and voice limits, the mixer file (buses, effects, sends, snapshots, ducking), the player's volume settings and their curve, 2D spatial sound with listeners and emitters, pause and time scale, music with intros, loops and crossfades, hot reload, the web's first-gesture unlock, latency, and testing with audio_world and the audio log."
 metadata:
-  version: 2.6.0
+  version: 2.7.0
 ---
 
 # Ryo2D Audio
@@ -134,7 +134,14 @@ let over = engine.is_stopped();            // ended, or never started
 - **Fades to and from silence are shaped** (a `fade_in`, a stop, a pause or resume, a music crossfade): a fade-out eases in and a fade-in eases out, each about -3.75 dB halfway, so two sounds crossfading hold their level as an equal-power crossfade does (a fade in a line of dB would dip about 27 dB in its middle). A 10 ms smoothing stays a line, too short to hear its curve, and a change between two levels (`set_volume`, a bus's gain) moves in a line of dB.
 - **When changes apply:** as the scene code that made them ends (a callback, one of its systems, an observer of its UI nodes), and the rest once a frame after the scenes' updates, so `is_playing` reflects them by the next update. A change to a voice a system's `Audio` played, made before that play applies, applies with its start. A plain change made in the frame a voice started, which nothing has heard yet, applies at once, and an `_over` change made then ramps from the level its play started at; still, the level and pitch it starts at belong in its `PlayOptions`, as on a device its first milliseconds may already be playing.
 - **Dropping a `Voice` never stops it**; clones control the same playback, and `Voice::default()` is a voice that never started (for a field). A play refused by its `per_frame`, a limit, a cooldown, a one-shot's sound still loading or distance returns a voice that is already stopped, on which every method does nothing: no error to handle. A loop a limit has no room for, or out of range, is not refused but virtual (section 4): it reports playing, and `voice.is_virtual()` says so.
-- `PlayOptions { position, persist, volume_db, pitch }` changes one play: a place in the world, ownership by the engine, and gain and pitch added to the definition's.
+- `PlayOptions { position, persist, volume_db, pitch, pan }` changes one play: a place in the world, ownership by the engine, gain and pitch added to the definition's, and a balance.
+- **`pan`** is the play's balance, -1 (left) to 1 (right), 0 (the default) in the middle; beyond the range it is taken as the side, and NaN or an infinity as the middle. It pans a play with no `position`, and one at a place whose sound has no `spatial` settings (heard as if at the listener). A play heard from its place by its sound's spatial settings takes its pan from that place, and `pan` is ignored. It is set as the voice starts and kept for its life; an emitter's play and music have none. A skeleton event's `balance` reaches it this way (`ryo-skeleton`, `SkeletonSounds`).
+
+<!-- self: click: Handle<Sound> -->
+```rust
+// A menu click heard from the left
+ctx.audio().play_with(&self.click, PlayOptions { pan: -0.6, ..Default::default() });
+```
 - `voice.pick()` says what a play picked and drew: `VoicePick { clip_index, clip, volume_db, pitch }` (a subtitle for a line picked at random, say). It is `None` until the play starts: for a system's `Audio` play, until its buffer applies (read it in a later system or the next frame), and for a loop waiting for its sound, until it lands. `ctx.audio().seed(n)` makes the picks and draws repeat from the same seed, for replays and captures; headless runs and test worlds (`audio_world`) start seeded.
 - `ctx.audio().voices_on("sfx")` counts the voices playing on a bus and every bus under it, each taking a voice; `virtual_voices_on("sfx")` counts the virtual loops there. Both build a mixer that has landed first, so they take the view mutably (`let mut audio = ctx.audio();` to call them on a binding).
 

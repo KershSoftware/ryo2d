@@ -263,8 +263,8 @@ struct Layout {
 /// Mpx is refused. Every cell has one scale, fitted to the poses of the
 /// whole sheet unless [`SheetOptions::cell`] is given, and the skeleton's
 /// origin at the same place, on a faint ground line, so root motion reads.
-/// Cells are drawn one by one and put together on the CPU, so a sheet has
-/// no size limit.
+/// Cells are drawn one by one and put together on the CPU, so a sheet is
+/// bounded by that budget and memory, not by the GPU's largest texture.
 ///
 /// The bones overlay is the sheet's own drawing: its engine has every
 /// overlay of its own off, so it shows in a build without the developer

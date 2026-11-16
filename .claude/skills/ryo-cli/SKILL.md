@@ -1,8 +1,8 @@
 ---
 name: ryo-cli
-description: Using the ryo2d CLI for building, running and developing games - init, dev (and -p for the profiler), build (a release without developer tools; --dev-tools keeps them), run, export, check-ui, netplay, the release bundle, RYO_LOG, frame capture and scripted headless runs (RYO_CAPTURE_*, RYO_INPUT, RYO_HEADLESS).
+description: Using the ryo2d CLI for building, running and developing games - init, dev (and -p for the profiler), build (a release without developer tools; --dev-tools keeps them), run, export, check-ui, sheet (a skeleton's animations as a contact sheet PNG), netplay, the release bundle, RYO_LOG, frame capture and scripted headless runs (RYO_CAPTURE_*, RYO_INPUT, RYO_HEADLESS).
 metadata:
-  version: 1.5.0
+  version: 1.6.0
 ---
 
 # Ryo2D CLI Specialist
@@ -22,6 +22,7 @@ ryo2d dev              # Development mode (debug build, asset hot reload)
 ryo2d export           # Package release into distributable zip
 ryo2d install-skills   # Add Agent Skills to existing project
 ryo2d check-ui [files] # Check UI files (*.ui.ron) without running the game
+ryo2d sheet <file>     # Draw a skeleton's animations as a contact sheet PNG
 ryo2d netplay          # Tools for testing multiplayer with friends
 ```
 
@@ -33,6 +34,32 @@ ryo2d check-ui assets/ui/menu.ui.ron    # just these files
 ```
 
 It loads each file through the asset registry, as the game does: syntax, node kinds and options, templates, imports and sibling keys, plus whether the images the file names load. Each problem prints as `path:line:column: message` (paths relative to the assets directory, with a suggestion for a misspelt name), a file's images after its other problems, and the command exits non-zero when any file has one. Paths inside UI files are asset paths too: `ui/common.ui.ron` is `assets/ui/common.ui.ron`. The files given must be under the assets directory. Run it before `ryo2d dev` or in CI; see `ryo-ui` section 15, Files.
+
+## Contact sheets of skeletons
+
+```bash
+ryo2d sheet assets/rigs/hero.skeleton.ron                        # every animation, 8 moments each
+ryo2d sheet assets/rigs/hero.skeleton.ron --animations walk,run --moments 6 --bones
+ryo2d sheet assets/rigs/hero.skeleton.ron --animations jump --once jump --skins ranger
+```
+
+It draws a skeleton's animations headlessly as a grid and writes a PNG: one row an animation, one column a moment, each cell labelled with the animation's name and the time. The moments are `k × length / N` for `k` from 0, so a loop does not repeat its first frame. Each moment is reached by stepping the animation from its start at the engine's fixed rate, after one loop round, so springs and constraints show as they would in play. Every cell has one scale and the skeleton's origin at one place, on a faint ground line, so root motion reads. A skeleton with no animations shows its setup pose. Run it after writing or changing an animation, and look at the image (`ryo-skeleton`, Authoring).
+
+| Option | What |
+|--------|------|
+| `--animations a,b` | The animations, a row each, in that order (default: every one, in the file's order) |
+| `--moments N` | The moments of each, a column each (default: 8) |
+| `--skins x,y` | The skins to put on, in order, over the default |
+| `--once a,b` | Animations played once, not looped: no loop round first, and one more cell at their length, so a landing or a recovery shows. Give every one-shot (a jump, an attack) here |
+| `--bones` | Draws the bones overlay over the art, as `debug:skeletons` draws it (bones, joints, outlines, the constraints' marks); it works in a build without the developer tools |
+| `--cell WxH` | Each cell's size in pixels, its label strip included (default: sized to fit the poses of the whole sheet) |
+| `--out PATH` | Where to write the PNG (default: `NAME.sheet.png` in the current folder, not beside the file, so nothing generated lands in the assets a release ships) |
+
+- **The file must be in a project's assets folder**: its images are asset paths from there. A file outside it is refused with a message, before anything is drawn.
+- It draws with the GPU: a machine with none gets a message, not a crash.
+- An unknown animation or skin is an error that lists the ones the skeleton has; an unknown option, a `--moments` that is not a whole number and a `--cell` not written `WxH` are errors naming the trouble. A sheet past 256 megapixels is refused before anything is drawn.
+- An IK target a game moves stays at its setup place: the sheet has no game to move it.
+- The same sheet is a library function for a skeleton built in code, `ryo2d::testing::skeleton_sheet` (`ryo-api`, Testing).
 
 ## Project Structure
 
