@@ -220,6 +220,13 @@ pub(crate) fn one_bone(
 /// any that would be written, is not finite. When `second` sits on
 /// `first`'s origin, `first` is left as it is and `second` points at the
 /// target
+#[cfg_attr(
+  not(test),
+  expect(
+    dead_code,
+    reason = "the stateless solve, kept for callers without a knee to follow; a skeleton solves through `two_bones_following`"
+  )
+)]
 pub(crate) fn two_bones(
   first: &mut BonePose,
   second: &mut BonePose,
@@ -228,8 +235,58 @@ pub(crate) fn two_bones(
   values: IkValues,
   uniform: bool,
 ) {
+  two_bones_following(first, second, length, target, values, uniform, None, 0.0);
+}
+
+/// How fast an uneven limb's knee swings to its new bend where the branch
+/// it followed is lost, in radians of bend a second: a step's bend moves
+/// at most this times the step's length toward it
+pub(crate) const KNEE_SWING: f32 = 6.0;
+
+/// What a two-bone limb under an uneven first bone keeps from one step to
+/// the next: the bend it was solved to, in its first bone's own space
+/// (`Bent`), and, while it swings to a new bend after losing its branch,
+/// the bend the swing set out from
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Knee {
+  pub(crate) bend: f64,
+  pub(crate) swinging_from: Option<f64>,
+}
+
+/// `two_bones`, which under an uneven `first` follows the knee it solved
+/// last (`last`) when given one, rather than choosing afresh, and gives the
+/// knee it solved for the caller to keep. `None` when nothing was solved
+/// that way: under an even `first`, which keeps no knee, and when nothing
+/// is written. `swing` is the most the bend may move toward a new branch in
+/// this solve (`KNEE_SWING` times a step's length; 0 for a pose outside a
+/// step).
+///
+/// Followed, the bend is walked from the last one the way that brings the
+/// tip's distance toward the target's, to the first bend at which it is the
+/// target's (`Bent::follow`). A walk that meets a crest of the distance
+/// below a target the side cannot reach stops there, so beyond the reach
+/// the limb keeps to the crest it was near, pointing at the target. A walk
+/// that meets a crest below a target the side can reach elsewhere, or a
+/// trough above the target, has lost its branch: the bend is then chosen
+/// afresh, as `two_bones` does, and the knee swings there by at most
+/// `swing` a solve, the tip pointing at the target and off it until the
+/// swing arrives. Beyond the reach, too, the bend moves toward the crest
+/// by at most `swing`, so a crest that vanishes under an animated scale
+/// swings the knee to the next. A fresh solve (no `last`) takes its bend
+/// at once
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn two_bones_following(
+  first: &mut BonePose,
+  second: &mut BonePose,
+  length: f32,
+  target: Vec2,
+  values: IkValues,
+  uniform: bool,
+  last: Option<Knee>,
+  swing: f64,
+) -> Option<Knee> {
   if !(finite(first) && finite(second) && given(length, target, values)) || values.mix <= 0.0 {
-    return;
+    return None;
   }
   let mix = values.mix.min(1.0);
   let to_target = target - Vec2::new(first.x, first.y);
@@ -239,14 +296,14 @@ pub(crate) fn two_bones(
   let unturned = first.linear_turned(0.0);
   let determinant = unturned.determinant();
   if distance <= NO_LENGTH || !determinant.is_finite() || determinant.abs() <= FLAT {
-    return;
+    return None;
   }
   let axis = Vec2::from_angle(second.rotation + second.shear_x) * second.scale_x;
   let part_one = unturned * Vec2::new(second.x, second.y);
   let part_two = unturned * (axis * length);
   let (l1, l2) = (part_one.length(), part_two.length());
   if !(l1.is_finite() && l2.is_finite()) || l2 <= NO_LENGTH || length <= 0.0 {
-    return;
+    return None;
   }
   if l1 <= NO_LENGTH {
     // The joint is on the first bone's origin, whatever the first bone
@@ -257,21 +314,21 @@ pub(crate) fn two_bones(
     if rotation.is_finite() {
       second.rotation = rotation;
     }
-    return;
+    return None;
   }
   if !even(first) {
     // Part two's length changes as the second bone turns: the bend is
     // found in the first bone's own space, where both parts are rigid
-    let Some((solved, aim)) = uneven_rotations(first, second, length, to_target, values) else {
-      return;
-    };
+    let (solved, aim, knee) =
+      uneven_rotations(first, second, length, to_target, values, last, swing)?;
     let first_rotation = turned(first.rotation, solved, mix);
     let second_rotation = turned(second.rotation, aim, mix);
-    if first_rotation.is_finite() && second_rotation.is_finite() {
-      first.rotation = first_rotation;
-      second.rotation = second_rotation;
+    if !(first_rotation.is_finite() && second_rotation.is_finite()) {
+      return None;
     }
-    return;
+    first.rotation = first_rotation;
+    second.rotation = second_rotation;
+    return Some(knee);
   }
 
   let reach = l1 + l2;
@@ -335,12 +392,13 @@ pub(crate) fn two_bones(
   let second_rotation = turned(second.rotation, aim, mix);
   let written = [first_rotation, second_rotation, scale_x, scale_y];
   if !written.iter().all(|value| value.is_finite()) {
-    return;
+    return None;
   }
   first.rotation = first_rotation;
   first.scale_x = scale_x;
   first.scale_y = scale_y;
   second.rotation = second_rotation;
+  None
 }
 
 /// The most an uneven limb's bend changes in one step of its walks, in
@@ -377,10 +435,18 @@ fn uneven_rotations(
   length: f32,
   to_target: Vec2,
   values: IkValues,
-) -> Option<(f32, f32)> {
+  last: Option<Knee>,
+  swing: f64,
+) -> Option<(f32, f32, Knee)> {
   let limb = Bent::of(first, second, length, values.bend)?;
   let distance = f64::from(to_target.length());
-  let (far, most, _) = limb.farthest();
+  // The farthest reach is needed only for softness, or to choose afresh
+  let wants_far = values.softness > 0.0 || last.is_none();
+  let (far, most, _) = if wants_far {
+    limb.farthest()
+  } else {
+    (0.0, f64::INFINITY, 0)
+  };
   let reach = most.sqrt();
   let softness = if values.softness > 0.0 {
     f64::from(values.softness).min(reach)
@@ -393,16 +459,50 @@ fn uneven_rotations(
   } else {
     distance
   };
-  let bend = if d >= reach {
-    far
-  } else {
-    limb.fall(far, d * d).0
+  let fresh = || {
+    let (far, most, _) = if wants_far {
+      (far, most, 0)
+    } else {
+      limb.farthest()
+    };
+    if d >= most.sqrt() {
+      far
+    } else {
+      limb.fall(far, d * d).0
+    }
   };
+  let knee = match last {
+    None => Knee {
+      bend: fresh(),
+      swinging_from: None,
+    },
+    Some(last) => {
+      // The bend the rule takes from where the knee was (or from where a
+      // swing set out): followed, or chosen afresh where the branch is lost
+      let from = last.swinging_from.unwrap_or(last.bend);
+      let (goal, met) = limb.follow(from, d * d).unwrap_or_else(|| (fresh(), false));
+      let gap = goal - last.bend;
+      if (met && last.swinging_from.is_none()) || gap.abs() <= swing {
+        // Following its target, or a swing arrived
+        Knee {
+          bend: goal,
+          swinging_from: None,
+        }
+      } else {
+        // A lost branch, or a crest moved away: the knee swings toward it
+        Knee {
+          bend: last.bend + swing.max(0.0).copysign(gap),
+          swinging_from: Some(from),
+        }
+      }
+    }
+  };
+  let bend = knee.bend;
   let tip = limb.tip(bend);
   let solved = to_target.to_angle() - tip.y.atan2(tip.x) as f32;
   let along = limb.heading + limb.side * bend;
   let aim = pointing(second, Vec2::new(along.cos() as f32, along.sin() as f32));
-  Some((solved, aim))
+  Some((solved, aim, knee))
 }
 
 /// A limb of two bones seen in its first bone's own space, where both parts
@@ -557,12 +657,81 @@ impl Bent {
     (least_at, BEND_WALK)
   }
 
-  /// The bend between `held`, where the square of the tip's distance is
-  /// above `squared`, and `crossed`, where it is not
+  /// The bend reached from `from` by walking the way that brings the
+  /// square of the tip's distance toward `squared`: the first at which it
+  /// is `squared`, halved within the step that crosses it. Each step goes
+  /// only as far as the distance is sure to keep going that way, and never
+  /// more than `BEND_STEP`, so no turn is passed unseen. A walk rising
+  /// toward the target that comes to a crest, or to straight or folded,
+  /// stops there when no bend of the side reaches the target (it is beyond
+  /// the side's farthest reach), and has lost its branch when one does. A
+  /// walk falling toward it that comes to a trough, or to either end, has
+  /// lost its branch. `None` for a lost branch, and after `BEND_WALK` steps;
+  /// with the bend, whether the target is met there (or a crest is held)
+  fn follow(&self, from: f64, squared: f64) -> Option<(f64, bool)> {
+    if !(from.is_finite() && squared.is_finite()) {
+      return None;
+    }
+    let from = from.clamp(0.0, PI_WIDE);
+    let here = self.at(from);
+    if here.0 == squared {
+      return Some((from, true));
+    }
+    let rising = here.0 < squared;
+    let slope = here.1;
+    // The way along the bend that takes the distance toward the target's;
+    // at a turn of it, toward folded. Falling from a crest (at it to within
+    // `BEND_SETTLED`, as the farthest walk finds one) is toward folded too,
+    // as a fresh solve walks from the farthest crest
+    let way = if slope != 0.0 {
+      if (slope > 0.0) == rising { 1.0 } else { -1.0 }
+    } else {
+      1.0
+    };
+    let at_crest = here.2 < 0.0 && sure_falling(-slope.abs(), -here.2, self.bound) < BEND_SETTLED;
+    let way = if !rising && at_crest { 1.0 } else { way };
+    // Rising to a crest below a target: it stays there only when the side
+    // reaches no farther
+    let beyond = |bend: f64| (squared > self.farthest().1).then_some((bend, false));
+    let (mut held, mut here) = (from, here);
+    for _ in 0..BEND_WALK {
+      let (_, slope, rate) = here;
+      // The slope and its rate along the walk, taken so that the distance
+      // is to fall
+      let (falling, bending) = if rising {
+        (-way * slope, -rate)
+      } else {
+        (way * slope, rate)
+      };
+      let sure = sure_falling(falling, bending, self.bound);
+      let step = if sure >= BEND_SETTLED {
+        sure.min(BEND_STEP)
+      } else if bending > 0.0 {
+        // A crest below the target, or a trough above it
+        return if rising { beyond(held) } else { None };
+      } else {
+        BEND_SETTLED
+      };
+      let next = (held + way * step).clamp(0.0, PI_WIDE);
+      let there = self.at(next);
+      if (there.0 >= squared) == rising {
+        return Some((self.halved(held, next, squared), true));
+      }
+      if next == held || next == 0.0 || next == PI_WIDE {
+        return if rising { beyond(next) } else { None };
+      }
+      (held, here) = (next, there);
+    }
+    None
+  }
+
+  /// The bend between `held` and `crossed`, on either side of where the
+  /// square of the tip's distance is `squared`
   fn halved(&self, mut held: f64, mut crossed: f64, squared: f64) -> f64 {
+    let above = self.at(held).0 > squared;
     for _ in 0..BEND_HALVINGS {
       let middle = 0.5 * (held + crossed);
-      if self.at(middle).0 > squared {
+      if (self.at(middle).0 > squared) == above {
         held = middle;
       } else {
         crossed = middle;
@@ -2934,11 +3103,17 @@ mod tests {
     }
   }
 
-  /// The level of the first dip in the tip's distance on the way from the
-  /// side's farthest bend to folded, found by sampling as `side_reaches`
-  /// does: the distance where it first stops falling. `None` when it falls
+  /// The levels of the first dip in the tip's distance on the way from the
+  /// side's farthest bend to folded, and of the top of the rise after it,
+  /// found by sampling as `side_reaches` does: the distance where it first
+  /// stops falling, and where it then stops rising. `None` when it falls
   /// all the way, or its least is that first stop
-  fn side_dip(first: &BonePose, second: &BonePose, length: f32, positive: bool) -> Option<f32> {
+  fn side_dip(
+    first: &BonePose,
+    second: &BonePose,
+    length: f32,
+    positive: bool,
+  ) -> Option<(f32, f32)> {
     let wanted = if positive { 1.0 } else { -1.0 };
     let way = if bend(first, &bent_by(second, FRAC_PI_2), length) * wanted > 0.0 {
       1.0
@@ -2958,7 +3133,11 @@ mod tests {
       step += 1;
     }
     let least = (step..=SAMPLED).map(at).fold(f64::MAX, f64::min);
-    (least < at(step) - 1e-6).then_some(at(step) as f32)
+    let dip = step;
+    while step < SAMPLED && at(step + 1) > at(step) {
+      step += 1;
+    }
+    (least < at(dip) - 1e-6).then_some((at(dip) as f32, at(step) as f32))
   }
 
   #[test]
@@ -2986,7 +3165,7 @@ mod tests {
     let second = bone(40.0, -4.417_513, 0.0);
     let length = 50.851_017;
     let (farthest, nearest) = side_reaches(&first, &second, length, true);
-    let Some(dip) = side_dip(&first, &second, length, true) else {
+    let Some((dip, _)) = side_dip(&first, &second, length, true) else {
       panic!("the rig has no dip");
     };
     let values = IkValues {
@@ -3046,6 +3225,396 @@ mod tests {
       (at - dip).abs() < 0.002 * farthest,
       "it jumps {at} away, the dip is {dip}"
     );
+  }
+
+  /// The most a knee swings in one step at 60 steps a second
+  const SWING: f64 = KNEE_SWING as f64 / 60.0;
+
+  /// `first` and `second` solved toward `target` as a skeleton's steps
+  /// solve them at 60 a second, following the knee kept in `last`, which is
+  /// written back
+  fn followed(
+    (mut first, mut second): (BonePose, BonePose),
+    length: f32,
+    target: Vec2,
+    values: IkValues,
+    last: &mut Option<Knee>,
+  ) -> (BonePose, BonePose) {
+    *last = two_bones_following(
+      &mut first,
+      &mut second,
+      length,
+      target,
+      values,
+      false,
+      *last,
+      SWING,
+    );
+    (first, second)
+  }
+
+  /// The farthest reach on a side, as the solve finds it
+  fn solve_reach(first: &BonePose, second: &BonePose, length: f32, positive: bool) -> f32 {
+    Bent::of(first, second, length, bent(positive))
+      .map_or(0.0, |limb| limb.farthest().1.sqrt() as f32)
+  }
+
+  /// The rig whose reach dips and rises most of 3,000 random limbs: a first
+  /// bone scaled (0.7104, 1.4077), sheared -0.2831, the second bone at
+  /// (40, -4.4175), length 50.851, bent the positive way
+  fn dipping() -> (BonePose, BonePose, f32) {
+    let first = BonePose {
+      scale_x: 0.710_378_3,
+      scale_y: 1.407_700_7,
+      shear_x: -0.283_114_4,
+      ..bone(ORIGIN.x, ORIGIN.y, 0.3)
+    };
+    (first, bone(40.0, -4.417_513, 0.0), 50.851_017)
+  }
+
+  /// What a run of followed steps showed: the steps in which the knee
+  /// swung, the swings (runs of such steps) and the longest of them
+  #[derive(Default, Debug)]
+  struct Swings {
+    steps: usize,
+    swings: usize,
+    longest: usize,
+    running: usize,
+  }
+
+  impl Swings {
+    /// One step, from the knee `before` to `now`
+    fn step(&mut self, before: Option<Knee>, now: Option<Knee>) {
+      let swinging = now.is_some_and(|knee| knee.swinging_from.is_some())
+        || before.zip(now).is_some_and(|(before, now)| {
+          before.swinging_from.is_some() && now.swinging_from.is_none()
+        });
+      if swinging {
+        if self.running == 0 {
+          self.swings += 1;
+        }
+        self.running += 1;
+        self.steps += 1;
+        self.longest = self.longest.max(self.running);
+      } else {
+        self.running = 0;
+      }
+    }
+  }
+
+  /// Checks one followed step of a run, from `before` (the knee, and the
+  /// limb's joint, as the step before left them) to `now`: either the bend
+  /// moved by at most a swing, or the knee followed its target without a
+  /// jump: `at(fraction)` gives the joint a step from `before` puts there
+  /// part way through the step, and the chain tests' halving rule leaves
+  /// less than 1% of the farthest reach across the last 1/1024 of it
+  #[track_caller]
+  fn assert_swung_or_followed(
+    before: (Option<Knee>, Vec2),
+    now: (Option<Knee>, Vec2),
+    farthest: f32,
+    at: impl Fn(f32) -> Vec2,
+    what: &str,
+  ) {
+    let ((knee_before, joint_before), (knee, joint)) = (before, now);
+    if joint.distance(joint_before) <= 0.01 * farthest {
+      return;
+    }
+    let bent_by = knee_before
+      .zip(knee)
+      .map_or(f64::MAX, |(before, now)| (now.bend - before.bend).abs());
+    if bent_by <= SWING + 1e-9 {
+      return;
+    }
+    let (mut start, mut end) = (0.0, 1.0);
+    let (mut from, mut to) = (joint_before, joint);
+    for _ in 0..10 {
+      let half = 0.5 * (start + end);
+      let middle = at(half);
+      if from.distance(middle) >= middle.distance(to) {
+        (end, to) = (half, middle);
+      } else {
+        (start, from) = (half, middle);
+      }
+    }
+    let jump = from.distance(to);
+    assert!(
+      jump <= 0.01 * farthest,
+      "{what}: the knee jumps {jump} (the bend {bent_by}, above a swing of {SWING})"
+    );
+  }
+
+  #[test]
+  fn an_animated_squash_beyond_reach_does_not_pop() {
+    // An uneven first bone animated, its target held still: squashed along
+    // its length from a scale of 1 to 0.5, or stretched across from 1 to
+    // 1.8, over 2,000 steps at 60 a second, sheared by 0.3 either way, the
+    // second bone on the first's axis and off it, parts two 30 and 40 long,
+    // targets held from 10 to 110 away, inside the reach and beyond it,
+    // both sides: 192 runs. The farthest bend can pass from one crest of
+    // the tip's distance to another as the scale changes, and straight can
+    // stop being a crest; chosen afresh each step, the knee popped there.
+    // Following its last bend, it keeps to its crest beyond the reach and
+    // to its branch inside it, and where it loses one it swings to the new
+    // bend at `KNEE_SWING`: in no step does the bend move more than a
+    // swing unless the knee is following its target without a jump. The
+    // swings are counted: 14 in all, none longer than 11 steps
+    let mut swings = Swings::default();
+    let mut runs = 0;
+    for shear in [0.3_f32, -0.3] {
+      for place in PLACES {
+        for length in [30.0_f32, 40.0] {
+          for squash in [true, false] {
+            for distance in (0..6).map(|step| 10.0 + 20.0 * step as f32) {
+              for positive in [true, false] {
+                runs += 1;
+                let second = bone(place.x, place.y, 0.9);
+                let target = ORIGIN + Vec2::from_angle(0.4) * distance;
+                let values = IkValues {
+                  bend: bent(positive),
+                  ..values()
+                };
+                let first_at = |along: f32| {
+                  if squash {
+                    uneven(1.0 - 0.5 * along, 1.0, shear)
+                  } else {
+                    uneven(1.0, 1.0 + 0.8 * along, shear)
+                  }
+                };
+                let mut last = None;
+                let mut joint_before = None::<Vec2>;
+                for step in 0..=2_000 {
+                  let along = step as f32 / 2_000.0;
+                  let first = first_at(along);
+                  let before = last;
+                  let (a, b) = followed((first, second), length, target, values, &mut last);
+                  let knee = joint(&a, &b);
+                  if let Some(joint_before) = joint_before {
+                    let what = format!(
+                      "shear {shear}, second bone at {place}, length {length}, squash: {squash}, {distance} away, bend positive: {positive}, step {step}"
+                    );
+                    let farthest = solve_reach(&first, &second, length, positive);
+                    let at = |fraction: f32| {
+                      let mut kept = before;
+                      let along = (step as f32 - 1.0 + fraction) / 2_000.0;
+                      let (a, b) =
+                        followed((first_at(along), second), length, target, values, &mut kept);
+                      joint(&a, &b)
+                    };
+                    assert_swung_or_followed(
+                      (before, joint_before),
+                      (last, knee),
+                      farthest,
+                      at,
+                      &what,
+                    );
+                    swings.step(before, last);
+                  }
+                  joint_before = Some(knee);
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    assert_eq!(runs, 192);
+    assert!(swings.swings <= 14 && swings.longest <= 11, "{swings:?}");
+  }
+
+  #[test]
+  fn a_walking_target_crosses_a_dip_with_one_swing_each_way() {
+    // The rig whose reach dips and rises, its target walked in from beyond
+    // the farthest reach to inside the nearest and out again, each step
+    // following the knee the step before solved. Coming in, the branch the
+    // knee follows ends at the dip's level; going out, the branch past the
+    // dip ends at the level of the top of the rise. At each the knee swings
+    // to its new bend, never more than a swing a step, and the tip is on
+    // every target the side reaches but in the steps of those two swings
+    let (first, second, length) = dipping();
+    let (farthest, nearest) = side_reaches(&first, &second, length, true);
+    let Some((dip, top)) = side_dip(&first, &second, length, true) else {
+      panic!("the rig has no dip");
+    };
+    let values = values();
+    let toward = Vec2::new(0.6, 0.8);
+    let (outer, inner) = (1.05 * farthest, 0.9 * nearest);
+    let steps = 20_000;
+    let place = |index: usize| {
+      let along = if index <= steps {
+        index as f32 / steps as f32
+      } else {
+        (2 * steps - index) as f32 / steps as f32
+      };
+      outer + (inner - outer) * along
+    };
+    let mut last = None;
+    let mut joint_before = None::<Vec2>;
+    let (mut coming, mut going) = (Swings::default(), Swings::default());
+    let mut starts = Vec::new();
+    for index in 0..=2 * steps {
+      let distance = place(index);
+      let target = ORIGIN + toward * distance;
+      let before = last;
+      let (a, b) = followed((first, second), length, target, values, &mut last);
+      let swinging = last.is_some_and(|knee| knee.swinging_from.is_some());
+      if !swinging && (nearest..=farthest).contains(&distance) {
+        assert_near(
+          tip(&a, &b, length),
+          target,
+          &format!("step {index}, {distance} away"),
+        );
+      }
+      let knee = joint(&a, &b);
+      if let Some(joint_before) = joint_before {
+        let at = |fraction: f32| {
+          let mut kept = before;
+          let distance = place(index - 1) + (distance - place(index - 1)) * fraction;
+          let (a, b) = followed(
+            (first, second),
+            length,
+            ORIGIN + toward * distance,
+            values,
+            &mut kept,
+          );
+          joint(&a, &b)
+        };
+        let what = format!("step {index}, {distance} away");
+        assert_swung_or_followed((before, joint_before), (last, knee), farthest, at, &what);
+        if swinging && before.is_none_or(|knee| knee.swinging_from.is_none()) {
+          starts.push(distance);
+        }
+        if index <= steps {
+          coming.step(before, last);
+        } else {
+          going.step(before, last);
+        }
+      }
+      joint_before = Some(knee);
+    }
+    assert_eq!(
+      (coming.swings, going.swings),
+      (1, 1),
+      "{coming:?} {going:?} {starts:?}"
+    );
+    let step = (outer - inner) / steps as f32;
+    assert!(
+      (starts[0] - dip).abs() < 2.0 * step,
+      "in at {}, the dip is {dip}",
+      starts[0]
+    );
+    assert!(
+      (starts[1] - top).abs() < 2.0 * step,
+      "out at {}, the rise's top is {top}",
+      starts[1]
+    );
+  }
+
+  #[test]
+  fn a_knee_swing_arrives_and_the_tip_returns_to_its_target() {
+    // The rig whose reach dips and rises, its knee followed onto the branch
+    // before the dip with its target a little above the dip's level, and
+    // the target then moved a little below it and held. The branch is
+    // lost: the knee swings toward the bend the rule takes, a swing a step,
+    // pointing at the target and off it, and arrives in the number of
+    // steps its bend's distance needs at that rate (rounded up); from
+    // there the tip is on the target and the knee still
+    let (first, second, length) = dipping();
+    let Some((dip, _)) = side_dip(&first, &second, length, true) else {
+      panic!("the rig has no dip");
+    };
+    let values = values();
+    let toward = Vec2::new(0.6, 0.8);
+    let mut last = None;
+    // Brought in from beyond the reach onto the branch before the dip
+    for distance in [80.0, 70.0, 65.0, dip + 0.5] {
+      followed(
+        (first, second),
+        length,
+        ORIGIN + toward * distance,
+        values,
+        &mut last,
+      );
+    }
+    let Some(before) = last else {
+      panic!("no knee");
+    };
+    assert_eq!(before.swinging_from, None);
+    let target = ORIGIN + toward * (dip - 0.5);
+    let fresh = solved((first, second), length, target, values, false);
+    let Some(limb) = Bent::of(&first, &second, length, IkBend::Positive) else {
+      panic!("no limb");
+    };
+    let goal = limb.fall(limb.farthest().0, f64::from(dip - 0.5).powi(2)).0;
+    let needed = ((goal - before.bend).abs() / SWING).ceil() as usize;
+    let mut arrived = None;
+    for step in 1..=needed + 5 {
+      let (a, b) = followed((first, second), length, target, values, &mut last);
+      let Some(knee) = last else {
+        panic!("no knee");
+      };
+      if knee.swinging_from.is_none() {
+        arrived.get_or_insert(step);
+        assert_near(tip(&a, &b, length), target, &format!("step {step}"));
+        assert_near(
+          joint(&a, &b),
+          joint(&fresh.0, &fresh.1),
+          &format!("step {step}"),
+        );
+      } else {
+        assert!(
+          tip(&a, &b, length).distance(target) > 0.01,
+          "step {step}: on target mid-swing"
+        );
+      }
+    }
+    assert!(needed > 3, "a swing of {needed} steps");
+    assert_eq!(arrived, Some(needed), "the bend {} to {goal}", before.bend);
+  }
+
+  #[test]
+  fn an_animated_squash_swings_once_where_its_dip_passes_the_target() {
+    // A first bone 40 along whose second bone sits at (40, -2.62) with a
+    // length of 37.87, sheared -0.147, the positive side, its target held
+    // 40.66 away, squashed along its length through about 0.546 and back:
+    // there the dip on the way from the farthest bend to folded passes the
+    // target's distance and the branch the knee follows ends. Chosen afresh
+    // the knee jumped 0.21 of the farthest reach in one step; following,
+    // it swings to its new bend once each way, never more than a swing a
+    // step, and is on the target in every other step
+    let second = bone(40.0, -2.62, 0.0);
+    let (length, distance) = (37.87, 40.66);
+    let target = ORIGIN + Vec2::from_angle(0.4) * distance;
+    let values = values();
+    for (from, to) in [(0.56_f32, 0.535_f32), (0.535, 0.56)] {
+      let mut last = None;
+      let mut joint_before = None::<Vec2>;
+      let mut swings = Swings::default();
+      let scale_at = |step: f32| from + (to - from) * step / 2_000.0;
+      for step in 0..=2_000 {
+        let first = uneven(scale_at(step as f32), 1.0, -0.147);
+        let before = last;
+        let (a, b) = followed((first, second), length, target, values, &mut last);
+        if last.is_some_and(|knee| knee.swinging_from.is_none()) {
+          assert_near(tip(&a, &b, length), target, &format!("step {step}"));
+        }
+        let knee = joint(&a, &b);
+        if let Some(joint_before) = joint_before {
+          let farthest = solve_reach(&first, &second, length, true);
+          let at = |fraction: f32| {
+            let mut kept = before;
+            let first = uneven(scale_at(step as f32 - 1.0 + fraction), 1.0, -0.147);
+            let (a, b) = followed((first, second), length, target, values, &mut kept);
+            joint(&a, &b)
+          };
+          let what = format!("{from} to {to}, step {step}");
+          assert_swung_or_followed((before, joint_before), (last, knee), farthest, at, &what);
+          swings.step(before, last);
+        }
+        joint_before = Some(knee);
+      }
+      assert_eq!(swings.swings, 1, "{from} to {to}: {swings:?}");
+    }
   }
 
   #[test]
@@ -3339,7 +3908,9 @@ mod tests {
     values: IkValues,
   ) -> (BonePose, BonePose) {
     let to_target = target - Vec2::new(first.x, first.y);
-    if let Some((solved, aim)) = uneven_rotations(&first, &second, length, to_target, values) {
+    if let Some((solved, aim, _)) =
+      uneven_rotations(&first, &second, length, to_target, values, None, 0.0)
+    {
       first.rotation = solved;
       second.rotation = aim;
     }
@@ -3362,8 +3933,9 @@ mod tests {
     // over random exactly even limbs, with targets from a tenth of the
     // limb's reach to 99.5% of it and from 100.5% to 140%, on both sides,
     // the walk puts the joint and the tip within a ten-thousandth of the
-    // limb's reach of where the closed form does. (Within a rounding of the reach, where softness takes a
-    // distance far beyond it, the two reaches' roundings differ, and near
+    // limb's reach of where the closed form does. (Within a rounding of
+    // the reach, where softness takes a distance far beyond it, the two
+    // reaches' roundings differ, and near
     // straight the joint moves as the square root of the distance: there
     // the joints can stand a few hundredths apart, both tips on the line.)
     let mut seed = 0x5EED_0004;

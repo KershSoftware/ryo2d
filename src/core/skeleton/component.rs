@@ -524,9 +524,13 @@ impl Skeleton {
   /// take up the motion from there. The engine does this itself when the
   /// data is taken up (added, or reloaded), when the skeleton appears, when
   /// its entity teleports (`skip_interpolation`, or a pool's acquire) and
-  /// after a step its entity spent disabled; a scene's hold keeps them
+  /// after a step its entity spent disabled; a scene's hold keeps them.
+  /// Each two-bone IK limb under an unevenly scaled or sheared first bone,
+  /// whose knee follows the bend it was last solved to, chooses its bend
+  /// afresh at the next solve too
   pub fn reset_springs(&mut self) {
     self.constrained.forget_springs();
+    self.constrained.forget_knees();
   }
 
   /// The world transform of the bone called `name`, as the skeleton's last

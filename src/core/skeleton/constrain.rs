@@ -11,7 +11,7 @@ use super::constraint::{
   Constraint, IkConstraint, SpringConstraint, SpringValues, TransformConstraint, TransformMix,
 };
 use super::data::{BoneData, BoneId, BoneSet, SkeletonData};
-use super::ik::{IkValues, chain, one_bone, two_bones};
+use super::ik::{IkValues, KNEE_SWING, Knee, chain, one_bone, two_bones_following};
 use super::pose::{BonePose, ConstraintValues, Pose};
 use super::spring::{SpringPoint, advance, onto_bone, sprung};
 use super::transform_constraint::{in_its_own_values, in_the_world};
@@ -146,6 +146,10 @@ pub(crate) struct Constrained {
   joints: Vec<Vec2>,
   /// Each spring's motion, in the data's order of springs
   springs: Vec<SpringState>,
+  /// Each constraint's knee as last solved, for two bones under an uneven
+  /// first bone (`ik::two_bones_following`), in the data's order of
+  /// constraints: `None` for any other, and until a step has solved one
+  knees: Vec<Option<Knee>>,
 }
 
 /// What a spring keeps from step to step: its bone's origin and tip, each
@@ -199,7 +203,14 @@ impl Constrained {
       chain,
       joints,
       springs: vec![SpringState::default(); springs],
+      knees: vec![None; data.constraints().len()],
     }
+  }
+
+  /// Every two-bone constraint's knee takes its bend afresh at the next
+  /// solve, as on the first
+  pub(super) fn forget_knees(&mut self) {
+    self.knees.fill(None);
   }
 
   /// Every spring at rest: offsets and speeds 0, taking up the next points
@@ -320,7 +331,7 @@ pub(crate) fn constrain(
         // under a flat parent: nothing changed, marked or placed again, so
         // its bones are left to the game's overrides
         let applies = values.mix > 0.0;
-        if !applies || !solve(pose, data, ik, values, state) {
+        if !applies || !solve(pose, data, ik, values, state, (at, dt)) {
           continue;
         }
         for bone in &ik.bones {
@@ -497,6 +508,7 @@ fn solve(
   ik: &IkConstraint,
   values: IkValues,
   state: &mut Constrained,
+  (at, dt): (usize, Option<f32>),
 ) -> bool {
   let (Some(first), Some(last)) = (ik.bones.first(), ik.bones.last()) else {
     return false;
@@ -527,7 +539,19 @@ fn solve(
       let (Some(mut upper), Some(mut lower)) = (own(first), own(second)) else {
         return false;
       };
-      two_bones(&mut upper, &mut lower, length, target, values, uniform);
+      // An uneven first bone's knee follows the bend it was last solved
+      // to, and swings where it loses it; a step keeps the knee solved, a
+      // pose outside one only uses it, and swings nowhere
+      let followed = state.knees.get(at).copied().flatten();
+      let swing = dt.map_or(0.0, |h| f64::from(KNEE_SWING) * f64::from(h.max(0.0)));
+      let knee = two_bones_following(
+        &mut upper, &mut lower, length, target, values, uniform, followed, swing,
+      );
+      if dt.is_some()
+        && let Some(kept) = state.knees.get_mut(at)
+      {
+        *kept = knee;
+      }
       for (bone, solved) in [(first, upper), (second, lower)] {
         if let Some(own) = pose.bones.get_mut(bone.index()) {
           *own = solved;

@@ -1810,6 +1810,148 @@ mod tests {
     assert!(at_rest(&world, body), "reset by the game");
   }
 
+  /// A leg whose thigh is squashed and sheared, so that its reach dips and
+  /// rises on the way from its farthest bend to folded: the thigh scaled
+  /// (0.7104, 1.4077), sheared -0.2831, length 40; the shin at
+  /// (40, -4.4175) in it, length 50.851; reaching for `aim`. Its dip is
+  /// 58.70 from the hip and the top of the rise after it 63.97
+  fn dipping_leg_data() -> SkeletonData {
+    use crate::core::skeleton::IkSetup;
+    let thigh = BoneSetup {
+      length: 40.0,
+      scale_x: 0.710_378_3,
+      scale_y: 1.407_700_7,
+      shear_x: -0.283_114_4,
+      ..BoneSetup::default()
+    };
+    let shin = BoneSetup {
+      x: 40.0,
+      y: -4.417_513,
+      length: 50.851_017,
+      ..BoneSetup::default()
+    };
+    SkeletonData::builder()
+      .bone("thigh", None, thigh)
+      .bone("shin", Some("thigh"), shin)
+      .bone("aim", None, BoneSetup::default())
+      .ik("leg", &["thigh", "shin"], "aim", IkSetup::default())
+      .build()
+      .expect("a valid skeleton")
+  }
+
+  #[test]
+  fn the_knee_follows_until_the_skeleton_resets() {
+    use crate::core::skeleton::{BoneOverride, Space};
+    let (mut world, mut step, _) = world();
+    let mut frame = appearing();
+    let data = world
+      .resource_mut::<Assets<SkeletonData>>()
+      .add(dipping_leg_data());
+    let body = world
+      .spawn((Transform::IDENTITY, Skeleton::new(data.clone())))
+      .id();
+    let aim_at = |world: &mut World, distance: f32| {
+      let aim = BoneOverride {
+        translation: Some(Vec2::new(0.6, 0.8) * distance),
+        space: Space::World,
+        ..BoneOverride::default()
+      };
+      world
+        .get_mut::<Skeleton>(body)
+        .expect("a skeleton")
+        .override_bone("aim", aim);
+    };
+    let knee = |world: &World| bone(world, body, "shin").translation;
+    // Between the dip and the top of the rise two bends meet the target:
+    // one before the dip, which a fresh solve takes, and one past it
+    let between = 61.3;
+    // Brought in to 30, past the dip, and out to between: the knee follows
+    // the branch past the dip there. Thirty steps at 30 let any swing
+    // arrive
+    let onto_the_far_branch = |world: &mut World, step: &mut Schedule| {
+      aim_at(world, 30.0);
+      for _ in 0..30 {
+        carried(world, step, body, 0.0);
+      }
+      aim_at(world, between);
+      carried(world, step, body, 0.0);
+      knee(world)
+    };
+    let followed = onto_the_far_branch(&mut world, &mut step);
+    // A fresh solve there takes the bend before the dip, at once
+    world
+      .get_mut::<Skeleton>(body)
+      .expect("a skeleton")
+      .reset_springs();
+    carried(&mut world, &mut step, body, 0.0);
+    let fresh = knee(&world);
+    assert!(
+      followed.distance(fresh) > 5.0,
+      "followed {followed}, fresh {fresh}"
+    );
+    let near = |at: Vec2, expected: Vec2, what: &str| {
+      assert!(
+        at.distance(expected) < 0.01,
+        "{what}: the knee at {at}, not {expected}"
+      );
+    };
+    // Followed, it stays on its branch step after step
+    near(
+      onto_the_far_branch(&mut world, &mut step),
+      followed,
+      "followed",
+    );
+    carried(&mut world, &mut step, body, 0.0);
+    near(knee(&world), followed, "followed a step on");
+
+    // A teleport made between steps
+    world.skip_interpolation(body);
+    carried(&mut world, &mut step, body, 0.0);
+    near(knee(&world), fresh, "teleported");
+
+    // A reload that a step takes up
+    near(
+      onto_the_far_branch(&mut world, &mut step),
+      followed,
+      "before a reload",
+    );
+    *world
+      .resource_mut::<Assets<SkeletonData>>()
+      .get_mut(&data)
+      .expect("the data") = dipping_leg_data();
+    carried(&mut world, &mut step, body, 0.0);
+    near(knee(&world), fresh, "reloaded");
+
+    // A reload the frame takes up, as the skeleton appears for it
+    near(
+      onto_the_far_branch(&mut world, &mut step),
+      followed,
+      "before appearing",
+    );
+    *world
+      .resource_mut::<Assets<SkeletonData>>()
+      .get_mut(&data)
+      .expect("the data") = dipping_leg_data();
+    frame.run(&mut world);
+    near(knee(&world), fresh, "appeared");
+    carried(&mut world, &mut step, body, 0.0);
+    near(knee(&world), fresh, "and stepped after");
+
+    // A step spent disabled
+    near(
+      onto_the_far_branch(&mut world, &mut step),
+      followed,
+      "before a disabled step",
+    );
+    world.entity_mut(body).insert(crate::core::ecs::Disabled);
+    carried(&mut world, &mut step, body, 0.0);
+    world
+      .entity_mut(body)
+      .remove::<crate::core::ecs::Disabled>();
+    carried(&mut world, &mut step, body, 0.0);
+    near(knee(&world), fresh, "after a disabled step");
+  }
+
   #[test]
   fn a_held_skeleton_s_springs_go_on_where_they_were() {
     let (mut world, mut step, _) = world();
