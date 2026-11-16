@@ -305,10 +305,15 @@ pub(super) fn build(builder: SkeletonDataBuilder) -> Result<SkeletonData, Skelet
             })
           });
           if along == pivot {
+            let centre = if region.pivot.is_none() {
+              " (its region's centre, as it has no pivot)"
+            } else {
+              ""
+            };
             return Err(error(
               item(),
               format!(
-                "its along ({}, {}) is its pivot, so no line runs from one to the other to lie along its bone",
+                "its along ({}, {}) is its pivot{centre}, so no line runs from one to the other to lie along its bone",
                 along.x, along.y
               ),
             ));
@@ -1726,13 +1731,14 @@ mod tests {
     fails(
       pivoted(Some(at), Some(at)),
       LEG_ITEM,
-      "its along (4, 1) is its pivot",
+      "its along (4, 1) is its pivot, so no line",
     );
-    // Left out, the pivot is the centre, which along cannot be either
+    // Left out, the pivot is the centre, which along cannot be either, and
+    // the message says which pixel that is
     fails(
       pivoted(None, Some(Vec2::new(4.0, 8.0))),
       LEG_ITEM,
-      "its along (4, 8) is its pivot",
+      "its along (4, 8) is its pivot (its region's centre, as it has no pivot), so no line",
     );
     // Any other pixel builds, with the pivot or without
     assert!(

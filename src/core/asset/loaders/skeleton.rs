@@ -3498,9 +3498,12 @@ mod tests {
     for (bad, reason) in [
       (
         r#"pivot: (2, 3), along: (2, 3)"#,
-        "its along (2, 3) is its pivot",
+        "its along (2, 3) is its pivot, so",
       ),
-      (r#"along: (4, 8)"#, "its along (4, 8) is its pivot"),
+      (
+        r#"along: (4, 8)"#,
+        "its along (4, 8) is its pivot (its region's centre, as it has no pivot)",
+      ),
       (r#"pivot: (inf, 3)"#, "pivot is inf"),
       (r#"along: (1, NaN)"#, "along is NaN"),
     ] {
