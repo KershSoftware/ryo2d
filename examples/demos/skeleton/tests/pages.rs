@@ -389,9 +389,10 @@ fn footsteps(engine: &mut HeadlessEngine, after: &mut u32) -> usize {
 
 #[test]
 fn every_hero_s_footsteps_play_through_skeleton_sounds() {
-  // Every hero on every page has the engine play its events' sounds
+  // Every hero on every page has the engine play its events' sounds, but
+  // the Crowd page's, which its Footsteps row chooses
   for page in 0..PAGES {
-    if page == CONSTRAINTS {
+    if page == CONSTRAINTS || page == CROWD {
       continue;
     }
     let Some(mut engine) = engine_on(page) else {
@@ -573,13 +574,87 @@ fn the_crowd_page_animates_two_hundred_heroes() {
   assert!(animations.len() >= 3, "varied animations: {animations:?}");
 }
 
+/// How many of the page's heroes have their `SkeletonSounds`
+fn sounding(engine: &mut HeadlessEngine) -> usize {
+  let heroes = heroes(engine);
+  heroes
+    .into_iter()
+    .filter(|&hero| engine.world().get::<SkeletonSounds>(hero).is_some())
+    .count()
+}
+
+/// Moves the Crowd page's Footsteps row (the second, after Heroes) by
+/// `steps` to the right, or to the left when negative
+fn footsteps_row(engine: &mut HeadlessEngine, steps: i32) {
+  engine.tap_key(KeyCode::ArrowDown);
+  engine.step_frames(2).unwrap();
+  let key = if steps < 0 {
+    KeyCode::ArrowLeft
+  } else {
+    KeyCode::ArrowRight
+  };
+  for _ in 0..steps.abs() {
+    engine.tap_key(key);
+    engine.step_frames(2).unwrap();
+  }
+  engine.tap_key(KeyCode::ArrowUp);
+  engine.step_frames(2).unwrap();
+}
+
 #[test]
-fn the_crowd_s_footsteps_are_a_patter() {
-  // Two hundred heroes walk and run, and their footsteps are heard, but
-  // the footstep's voice limit keeps at most four playing at once
+fn the_crowd_s_footsteps_row_chooses_who_is_heard() {
+  // The heroes heard with A few, the row's default
+  const FEW: usize = 4;
   let Some(mut engine) = engine_on(CROWD) else {
     return;
   };
+  engine.step_frames(10).unwrap();
+  assert_eq!(heroes(&mut engine).len(), 200);
+  assert_eq!(sounding(&mut engine), FEW, "A few, by default");
+
+  // Off: none
+  footsteps_row(&mut engine, -1);
+  assert_eq!(sounding(&mut engine), 0, "Off");
+  let mut heard = 0;
+  footsteps(&mut engine, &mut heard);
+  engine.step_frames(FRAMES).unwrap();
+  assert_eq!(footsteps(&mut engine, &mut heard), 0, "Off is silent");
+
+  // All: every hero, and so with another count of heroes
+  footsteps_row(&mut engine, 2);
+  assert_eq!(sounding(&mut engine), 200, "All");
+  engine.tap_key(KeyCode::ArrowRight);
+  engine.step_frames(5).unwrap();
+  assert_eq!(heroes(&mut engine).len(), 400);
+  assert_eq!(sounding(&mut engine), 400, "All of four hundred");
+
+  // A few again, of the four hundred
+  footsteps_row(&mut engine, -1);
+  assert_eq!(sounding(&mut engine), FEW, "A few of four hundred");
+}
+
+#[test]
+fn the_crowd_s_footsteps_are_a_patter() {
+  // By default a few heroes are heard: a gentle patter of at most about
+  // twelve steps a second
+  const SECONDS: u32 = 4;
+  let Some(mut engine) = engine_on(CROWD) else {
+    return;
+  };
+  engine.step_frames(SECONDS * 60).unwrap();
+  let heard = footsteps(&mut engine, &mut 0);
+  assert!(heard > 0, "the crowd is heard");
+  assert!(
+    heard as f32 / SECONDS as f32 <= 12.0,
+    "{heard} footsteps in {SECONDS} seconds"
+  );
+
+  // With every hero heard, the footstep's voice limit keeps at most four
+  // playing at once
+  let Some(mut engine) = engine_on(CROWD) else {
+    return;
+  };
+  footsteps_row(&mut engine, 1);
   let mut most = 0;
   for _ in 0..FRAMES {
     engine.step().unwrap();

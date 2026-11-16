@@ -1,6 +1,7 @@
 //! Crowd: two hundred heroes at once (or fifty to four hundred), each its
 //! own skeleton with its own skins, animation and pace, started somewhere
-//! of its own in its animation, and sorted by their feet
+//! of its own in its animation, and sorted by their feet. A few walkers are
+//! heard, or none, or every hero
 
 use demo_kit::prelude::*;
 
@@ -8,6 +9,13 @@ use crate::hero::{self, CANVAS, RUN_SPEED, WALK_SPEED};
 
 /// How many heroes the setting offers, with each as the panel shows it
 const COUNTS: [(usize, &str); 4] = [(50, "50"), (100, "100"), (200, "200"), (400, "400")];
+/// Who is heard: none, a few walkers, or every hero
+const FOOTSTEPS: [&str; 3] = ["Off", "A few", "All"];
+/// `FOOTSTEPS`' A few: how many walkers are heard. A walk is two steps in
+/// 0.8 s at a pace of 0.8 to 1.2, so 2 to 3 steps a second each: four give
+/// 8 to 12 a second, a gentle patter. A runner steps faster and an idler
+/// not at all, so only walkers are chosen
+const FEW: usize = 4;
 /// A hero's size in the crowd
 const SIZE: f32 = 0.2;
 /// The field the crowd stands on: from this height down
@@ -44,9 +52,15 @@ pub struct CrowdPage {
   /// second (negative to the left). Kept here, so a step walks this list
   /// and builds nothing
   crossing: Vec<(Entity, f32)>,
-  /// Setting: which of `COUNTS`
+  /// The heroes that walk, in the order they were spawned: A few are
+  /// chosen from these
+  walkers: Vec<Entity>,
+  /// Settings: which of `COUNTS`, and which of `FOOTSTEPS`
   count: usize,
+  footsteps: usize,
   spawned: Option<usize>,
+  /// Which of `FOOTSTEPS` the crowd's `SkeletonSounds` were last set for
+  heard: Option<usize>,
 }
 
 impl Default for CrowdPage {
@@ -55,8 +69,11 @@ impl Default for CrowdPage {
       data: None,
       heroes: Vec::new(),
       crossing: Vec::new(),
+      walkers: Vec::new(),
       count: 2,
+      footsteps: 1,
       spawned: None,
+      heard: None,
     }
   }
 }
@@ -71,6 +88,8 @@ impl CrowdPage {
       ctx.world.despawn(hero);
     }
     self.crossing.clear();
+    self.walkers.clear();
+    self.heard = None;
     let mut dice = Dice(7);
     // The starts come from a generator of their own, so the crowd's places
     // and looks are the same whatever the starts
@@ -127,6 +146,9 @@ impl CrowdPage {
       if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(hero) {
         renderable.flip_x = left;
       }
+      if animation == "walk" {
+        self.walkers.push(hero);
+      }
       if speed > 0.0 {
         let heading = if left { -1.0 } else { 1.0 };
         self.crossing.push((hero, heading * speed * pace * SIZE));
@@ -134,6 +156,33 @@ impl CrowdPage {
       self.heroes.push(hero);
     }
     self.spawned = Some(self.count);
+  }
+
+  /// Gives `SkeletonSounds` to the heroes the Footsteps setting hears and
+  /// takes it from the rest: every hero is spawned with one. Only when the
+  /// setting or the crowd has changed
+  fn hear(&mut self, ctx: &mut SceneContext) {
+    if self.heard == Some(self.footsteps) {
+      return;
+    }
+    // A few: walkers spread evenly through the crowd
+    let few: Vec<Entity> = (0..FEW.min(self.walkers.len()))
+      .map(|i| self.walkers[i * self.walkers.len() / FEW.min(self.walkers.len())])
+      .collect();
+    for &hero in &self.heroes {
+      let wanted = match self.footsteps {
+        0 => false,
+        1 => few.contains(&hero),
+        _ => true,
+      };
+      let has = ctx.world.get::<SkeletonSounds>(hero).is_some();
+      if wanted && !has {
+        ctx.world.entity_mut(hero).insert(SkeletonSounds::new());
+      } else if !wanted && has {
+        ctx.world.entity_mut(hero).remove::<SkeletonSounds>();
+      }
+    }
+    self.heard = Some(self.footsteps);
   }
 }
 
@@ -144,23 +193,26 @@ impl DemoPage for CrowdPage {
 
   fn description(&self) -> &str {
     "A crowd of skeletons, 17 bones and 24 parts each, every one with its own skins and animation; some wave on a second track.\n\
-     Each is drawn as one run of quads from the atlas, y-sorted by its feet. The frame cost is the CPU's, in this build."
+     Each is drawn as one run of quads from the atlas, y-sorted by its feet. Footsteps: Off, A few (four walkers) or All. The frame cost is the CPU's, in this build."
   }
 
   fn settings(&mut self, s: &mut Settings) {
     s.choice("Heroes", &mut self.count, &COUNTS.map(|(_, name)| name));
+    s.choice("Footsteps", &mut self.footsteps, &FOOTSTEPS);
   }
 
   fn enter(&mut self, ctx: &mut SceneContext) {
     hero::field(ctx, FIELD);
     self.data = hero::load(ctx);
     self.fill(ctx);
+    self.hear(ctx);
   }
 
   fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
     if self.spawned != Some(self.count) {
       self.fill(ctx);
     }
+    self.hear(ctx);
     // Those crossing the field walk on, and come in again at the far side
     for &(hero, speed) in &self.crossing {
       let Some(mut transform) = ctx.world.get_mut::<Transform>(hero) else {
@@ -201,6 +253,11 @@ impl DemoPage for CrowdPage {
       ui,
       &[
         format!("{} skeletons", self.heroes.len()),
+        match self.footsteps {
+          0 => "Footsteps: off".to_string(),
+          1 => format!("Footsteps: {FEW} walkers heard"),
+          _ => "Footsteps: every hero heard (at most 4 at once)".to_string(),
+        },
         frame,
         if cfg!(debug_assertions) {
           "Measured in a development build".to_string()
