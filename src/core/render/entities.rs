@@ -470,6 +470,27 @@ fn quad_box(size: Vec2, at: &Placement) -> (Vec2, Vec2) {
   (at.center - reach, at.center + reach)
 }
 
+/// The texels `effect` grows each side of its sprite's quad by (an
+/// outline's thickness, a glow's radius; `effect_padding`), which a box
+/// culling the quad takes in too: 0 without an effect, or for one that
+/// grows nothing
+fn effect_reach(effect: Option<&SpriteEffect>) -> f32 {
+  effect.map_or(0.0, |effect| {
+    effect_padding(&SpriteInstance::new().with_effect(effect).effect_params)
+  })
+}
+
+/// How much `padding` texels on each side grow a quad `texels` across, on
+/// each axis, as the GPU grows it (`place_in_slot`): 1 for no padding or
+/// an empty side
+fn padded(texels: Vec2, padding: f32) -> Vec2 {
+  if padding > 0.0 && texels.x > 0.0 && texels.y > 0.0 {
+    (texels + 2.0 * padding) / texels
+  } else {
+    Vec2::ONE
+  }
+}
+
 /// `color` with full alpha: shadow opacity travels separately.
 fn opaque(color: Color) -> Color {
   Color::new(color.r, color.g, color.b, 255)
@@ -636,10 +657,7 @@ impl<'a> Emitter<'a> {
     let Some(bounds) = skeleton.bounds() else {
       return true;
     };
-    let padding = effect.map_or(0.0, |effect| {
-      effect_padding(&SpriteInstance::new().with_effect(effect).effect_params)
-    });
-    let (min, max) = skeleton_reach(&bounds, drawn, renderable, padding);
+    let (min, max) = skeleton_reach(&bounds, drawn, renderable, effect_reach(effect));
     self.sees(min, max)
   }
 
@@ -698,11 +716,13 @@ impl<'a> Emitter<'a> {
     if shading.alpha <= 0.0 {
       return;
     }
-    let size = Vec2::new(source.width as f32, source.height as f32) * at.scale;
+    let texels = Vec2::new(source.width as f32, source.height as f32);
+    let size = texels * at.scale;
     if !(size.x > 0.0 && size.y > 0.0) || !size.is_finite() || !at.center.is_finite() {
       return;
     }
-    let (min, max) = quad_box(size, &at);
+    // An outline or a glow draws past the quad, and is seen there
+    let (min, max) = quad_box(size * padded(texels, effect_reach(shading.effect)), &at);
     if !self.sees(min, max) {
       return;
     }
@@ -744,13 +764,14 @@ impl<'a> Emitter<'a> {
       filter: self.filter,
       lit: self.lit,
     };
-    self.list.push_sprite_in(
+    self.list.push_sprite_reaching(
       DrawKind::Entity,
       z,
       texture,
       look,
       instance,
       (self.layers, self.shows, None),
+      (min, max),
     );
   }
 }
@@ -807,8 +828,14 @@ fn rect_uv(shown: &ShownImage<'_>, image: AssetId<Image>, rect: [u32; 4]) -> [f3
 
 impl RunQuad {
   /// The quad as an instance drawing its rectangle of `shown`, the image
-  /// or what stands in for it, with the box it stays inside
-  fn instance(&self, shown: &ShownImage<'_>, emission: f32) -> (SpriteInstance, Vec2, Vec2) {
+  /// or what stands in for it, with the box it stays inside, grown by
+  /// `padding` texels each side for an effect that draws past it
+  fn instance(
+    &self,
+    shown: &ShownImage<'_>,
+    emission: f32,
+    padding: f32,
+  ) -> (SpriteInstance, Vec2, Vec2) {
     let uv = rect_uv(shown, self.image, self.rect);
     let (x, y, at) = (
       self.quad.matrix2.x_axis,
@@ -821,7 +848,9 @@ impl RunQuad {
     instance.transform[2][..2].copy_from_slice(&[at.x, at.y]);
     instance.uv_rect = uv;
     instance.tint = self.tint;
-    let half = (x.abs() + y.abs()) / 2.0;
+    let [_, _, width, height] = self.rect;
+    let grow = padded(Vec2::new(width as f32, height as f32), padding);
+    let half = (x.abs() * grow.x + y.abs() * grow.y) / 2.0;
     (instance, at - half, at + half)
   }
 
@@ -899,6 +928,9 @@ impl<'a> Emitter<'a> {
       Some(_) => SpriteShading::Effect,
       None => SpriteShading::Plain,
     };
+    let padding = effect
+      .as_ref()
+      .map_or(0.0, |effect| effect_padding(&effect.effect_params));
     let mut open: Option<OpenRun<'a>> = None;
     for part in parts {
       let quad = match part {
@@ -938,7 +970,7 @@ impl<'a> Emitter<'a> {
           })
         }
       };
-      let (mut instance, min, max) = quad.instance(&run.shown, look.emission);
+      let (mut instance, min, max) = quad.instance(&run.shown, look.emission, padding);
       if let Some(effect) = &effect {
         instance.effect_params = effect.effect_params;
         instance.effect_extra = effect.effect_extra;
@@ -1005,7 +1037,8 @@ impl<'a> Emitter<'a> {
     let Some(shown) = self.gpu.shown_image(quad.image, self.images) else {
       return;
     };
-    let (mut instance, min, max) = quad.instance(&shown, emission);
+    // A game shader grows no quad
+    let (mut instance, min, max) = quad.instance(&shown, emission, 0.0);
     if !self.sees(min, max) {
       return;
     }

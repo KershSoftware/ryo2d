@@ -302,10 +302,27 @@ impl DrawList {
     texture: TextureId,
     look: SpriteLook,
     instance: SpriteInstance,
+    seen: (RenderLayers, Option<RenderTarget>, Option<Entity>),
+  ) {
+    let reach = reach(&instance);
+    self.push_sprite_reaching(kind, z, texture, look, instance, seen, reach);
+  }
+
+  /// [`push_sprite_in`](Self::push_sprite_in) with the world box the
+  /// cameras cull it by given, for a sprite that draws past its quad (an
+  /// outline or a glow, which the GPU grows the quad for)
+  #[allow(clippy::too_many_arguments)]
+  pub(crate) fn push_sprite_reaching(
+    &mut self,
+    kind: DrawKind,
+    z: i32,
+    texture: TextureId,
+    look: SpriteLook,
+    instance: SpriteInstance,
     (layers, shows, only_camera): (RenderLayers, Option<RenderTarget>, Option<Entity>),
+    (min, max): (Vec2, Vec2),
   ) {
     let payload = DrawPayload::Sprite(self.sprites.len());
-    let (min, max) = reach(&instance);
     self.sprites.push(DrawSprite {
       texture,
       shading: look.shading,
