@@ -13,7 +13,7 @@ use crate::core::ecs::kernel::EcsSystemState;
 use crate::core::ecs::{
   Component, Entity, GlobalTransform, Local, MessageReader, Mut, Query, Res, World,
 };
-use crate::core::hash::FastMap;
+use crate::core::hash::{FastMap, FastSet};
 
 /// Where a skeleton's event sounds play
 #[derive(Debug, Clone, PartialEq)]
@@ -45,8 +45,11 @@ enum SoundPlace {
 ///
 /// Balance pans a flat play, and a play at a place whose sound has no
 /// spatial settings (heard as if at the listener); a sound heard from its
-/// place takes its pan from there. [`SkeletonEvent`] messages are still
-/// sent.
+/// place takes its pan from there. A sound played at a place stays where
+/// it started; it does not follow the skeleton. A looping sound is played
+/// as its definition says, so each firing starts another loop that only
+/// the scene's exit stops (warned about once). [`SkeletonEvent`] messages
+/// are still sent.
 ///
 /// ```
 /// use ryo2d::prelude::*;
@@ -87,7 +90,8 @@ impl SkeletonSounds {
   }
 
   /// Its sounds play at the bone `name`'s place in the world, heard from
-  /// there. A name the skeleton lacks plays them at the skeleton's place
+  /// there. A name the skeleton lacks plays them at the skeleton's place,
+  /// warned about once for that name
   pub fn at_bone(name: impl Into<Arc<str>>) -> Self {
     Self {
       place: SoundPlace::Bone(name.into()),
@@ -139,6 +143,9 @@ impl Loaded {
 struct DataSounds {
   version: u64,
   sounds: FastMap<Arc<str>, Loaded>,
+  /// The `at_bone` names its skeletons asked for that it lacks, each
+  /// warned about once
+  told: Vec<Arc<str>>,
 }
 
 /// One play the step found, made once the world is free
@@ -176,6 +183,8 @@ pub(crate) struct SoundsState {
   params: Option<EcsSystemState<Params>>,
   store: FastMap<AssetId<SkeletonData>, DataSounds>,
   plays: Vec<Play>,
+  /// The looping sounds an event played, each warned about once
+  loops: FastSet<AssetId<Sound>>,
 }
 
 /// After the skeletons' step (`FixedSet::Skeletons`): the sounds of every
@@ -188,6 +197,7 @@ pub(crate) fn play_skeleton_sounds(world: &mut World, mut state: Local<SoundsSta
     params,
     store,
     plays,
+    loops,
   } = &mut *state;
   let params = params.get_or_insert_with(|| EcsSystemState::new(world));
   {
@@ -236,6 +246,7 @@ pub(crate) fn play_skeleton_sounds(world: &mut World, mut state: Local<SoundsSta
         DataSounds {
           version,
           sounds: loaded,
+          told: Vec::new(),
         },
       );
     }
@@ -246,10 +257,13 @@ pub(crate) fn play_skeleton_sounds(world: &mut World, mut state: Local<SoundsSta
       let Ok((_, skeleton, place, global)) = skeletons.get(event.entity) else {
         continue;
       };
-      let Some(sound) = store
-        .get(&skeleton.data().id())
-        .and_then(|held| held.sounds.get(&*audio.path))
+      let Some(DataSounds {
+        sounds: held, told, ..
+      }) = store.get_mut(&skeleton.data().id())
       else {
+        continue;
+      };
+      let Some(sound) = held.get(&*audio.path) else {
         continue;
       };
       if !sound.is_ready(sounds.as_deref(), clips.as_deref()) {
@@ -259,14 +273,35 @@ pub(crate) fn play_skeleton_sounds(world: &mut World, mut state: Local<SoundsSta
         );
         continue;
       }
+      // A loop each event starts again, and only its scene's exit stops
+      if let Loaded::Sound(handle) = sound
+        && sounds
+          .as_deref()
+          .and_then(|sounds| sounds.get(handle))
+          .is_some_and(|definition| definition.looping)
+        && loops.insert(handle.id())
+      {
+        log::warn!(
+          "{}: a skeleton event plays this looping sound, so each firing starts another loop that only its scene's exit stops (warned once)",
+          audio.path
+        );
+      }
       let position = match &place.place {
         SoundPlace::Flat => None,
         SoundPlace::Skeleton => Some(global.translation()),
-        SoundPlace::Bone(bone) => Some(
-          skeleton
-            .bone_world(bone)
-            .map_or(global.translation(), |world| world.translation),
-        ),
+        SoundPlace::Bone(bone) => match skeleton.bone_world(bone) {
+          Some(world) => Some(world.translation),
+          None => {
+            if !told.contains(bone) {
+              log::warn!(
+                "skeleton sounds of {} name the bone {bone:?}, which its skeleton lacks; they play at the skeleton's place",
+                event.entity
+              );
+              told.push(bone.clone());
+            }
+            Some(global.translation())
+          }
+        },
       };
       plays.push(Play {
         sound: sound.clone(),

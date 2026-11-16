@@ -3650,3 +3650,218 @@ fn the_sounds_are_loaded_once() {
     engine.world().resource::<Assets<Sound>>().len() == sounds_before
   });
 }
+
+/// The warnings `log` holds that contain `text`
+fn warnings_of(log: &ryo2d::testing::LogCapture, text: &str) -> usize {
+  log
+    .warnings()
+    .iter()
+    .filter(|warning| warning.contains(text))
+    .count()
+}
+
+#[test]
+fn a_sound_still_loading_is_skipped_without_a_warning() {
+  let log = capture_log();
+  let gate = Gated {
+    files: sound_files(),
+    open: Arc::default(),
+  };
+  let Some(mut engine) = sounding(builder(), gate.clone()) else {
+    return;
+  };
+  let data = engine.assets().add(stepper("audio/step.wav"));
+  let body = spawn_sounding(&mut engine, &data, Vec2::ZERO, SkeletonSounds::flat());
+  let mut events = Inbox::<SkeletonEvent>::new(&engine);
+  play(&mut engine, body, 0, "walk", true);
+  // Three footsteps while the tone's read is held: none plays, and none
+  // is warned about (a sound loading is no mistake of the game's)
+  let sent = events.steps(&mut engine, 70);
+  assert!(sent.len() >= 3, "{sent:?}");
+  assert!(starts(&engine, "audio/step.wav").is_empty());
+  assert_eq!(
+    warnings_of(&log, "audio/step.wav"),
+    0,
+    "{:#?}",
+    log.warnings()
+  );
+  let refused = engine
+    .audio_log()
+    .iter()
+    .filter(|entry| entry.kind == AudioLogKind::Refused)
+    .count();
+  assert_eq!(refused, 0, "{:#?}", engine.audio_log());
+  // Loaded, the next footstep plays once: the skipped ones are not made up
+  gate.open();
+  frames_until(&mut engine, |engine| {
+    !starts(engine, "audio/step.wav").is_empty()
+  });
+  assert_eq!(starts(&engine, "audio/step.wav").len(), 1);
+}
+
+/// An event `body`'s own step did not send, naming the stepper's sound
+/// with `balance`
+fn written_step(engine: &mut HeadlessEngine, body: Entity, path: &str, balance: f32) {
+  let event = SkeletonEvent {
+    entity: body,
+    track: 0,
+    animation: Arc::from("stride"),
+    name: Arc::from("step"),
+    int: 0,
+    float: 0.0,
+    string: Arc::from(""),
+    audio: Some(SkeletonEventAudio {
+      path: Arc::from(path),
+      volume: 0.5,
+      balance,
+    }),
+    time: 0.1,
+  };
+  engine
+    .world_mut()
+    .resource_mut::<Messages<SkeletonEvent>>()
+    .write(event);
+}
+
+#[test]
+fn a_place_or_balance_that_is_not_finite_plays_flat_and_centred() {
+  let Some(mut engine) = sounding(builder(), sound_files()) else {
+    return;
+  };
+  let _tone = preload(&mut engine, "audio/step.wav");
+  let near = "audio/near.sound.ron";
+  let _near = match engine.assets().load_now::<Sound>(near) {
+    Ok(sound) => sound,
+    Err(error) => panic!("{}", error.report()),
+  };
+  let data = engine.assets().add(stepper(near));
+  // A skeleton at no finite place: its sound plays flat, at full volume
+  // and its balance, not culled as beyond the listener's hearing
+  let lost = spawn_sounding(
+    &mut engine,
+    &data,
+    Vec2::new(f32::INFINITY, 0.0),
+    SkeletonSounds::new(),
+  );
+  engine.step_frames(2).expect("frames");
+  written_step(&mut engine, lost, near, BALANCE);
+  engine.step_frames(2).expect("frames");
+  let started = starts(&engine, near);
+  assert_eq!(started.len(), 1, "{:#?}", engine.audio_log());
+  close_pair((started[0].gain_db, started[0].pan), (HALF_DB, BALANCE));
+  engine.world_mut().despawn(lost);
+  // A balance that is not finite plays in the middle
+  let flat = spawn_sounding(&mut engine, &data, Vec2::ZERO, SkeletonSounds::flat());
+  engine.step_frames(2).expect("frames");
+  for balance in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+    written_step(&mut engine, flat, near, balance);
+    engine.step_frames(2).expect("frames");
+  }
+  let started = starts(&engine, near);
+  assert_eq!(started.len(), 4, "{:#?}", engine.audio_log());
+  for start in &started[1..] {
+    close_pair((start.gain_db, start.pan), (HALF_DB, 0.0));
+  }
+}
+
+#[test]
+fn a_skeleton_of_no_scene_plays_the_engine_s_voices() {
+  let cues = Arc::new(Mutex::new(Cues::default()));
+  let level = WalkingLevel { cues: cues.clone() };
+  let files = sound_files();
+  files.insert("audio/drone.ogg", LONG_TONE);
+  let Some(mut engine) = sounding(builder_in(level), files) else {
+    return;
+  };
+  let _long = preload(&mut engine, "audio/long.ogg");
+  let _drone = preload(&mut engine, "audio/drone.ogg");
+  // Added outside every scene, it plays its 3 s drone at once
+  let data = engine.assets().add(stepper("audio/drone.ogg"));
+  let loose = spawn_sounding(&mut engine, &data, Vec2::ZERO, SkeletonSounds::flat());
+  play(&mut engine, loose, 0, "stride", false);
+  engine.step_frames(10).expect("frames");
+  let drone = starts(&engine, "audio/drone.ogg");
+  assert_eq!(drone.len(), 1, "{:#?}", engine.audio_log());
+  let voice = drone[0].voice;
+  // A menu comes and goes: its exit stops its own long tone, not the
+  // drone, which is the engine's
+  cues.lock().expect("the cues").push = true;
+  engine.step_frames(10).expect("frames");
+  let long = starts(&engine, "audio/long.ogg");
+  assert_eq!(long.len(), 1, "{long:#?}");
+  cues.lock().expect("the cues").pop = true;
+  engine.step_frames(10).expect("frames");
+  let stopped = |voice: u32| {
+    engine
+      .audio_log()
+      .iter()
+      .any(|entry| entry.kind == AudioLogKind::Stop && entry.voice == voice)
+  };
+  assert!(stopped(long[0].voice), "{:#?}", engine.audio_log());
+  assert!(!stopped(voice), "{:#?}", engine.audio_log());
+}
+
+#[test]
+fn a_missing_bone_is_warned_once_a_name_and_its_sounds_play_at_the_skeleton() {
+  let log = capture_log();
+  let Some(mut engine) = sounding(builder(), sound_files()) else {
+    return;
+  };
+  let _tone = preload(&mut engine, "audio/step.wav");
+  let near = "audio/near.sound.ron";
+  let _near = match engine.assets().load_now::<Sound>(near) {
+    Ok(sound) => sound,
+    Err(error) => panic!("{}", error.report()),
+  };
+  let data = engine.assets().add(stepper(near));
+  let at = Vec2::new(20.0, 0.0);
+  let missing = spawn_sounding(&mut engine, &data, at, SkeletonSounds::at_bone("soel"));
+  play(&mut engine, missing, 0, "walk", true);
+  engine.step_frames(70).expect("frames");
+  let started = starts(&engine, near);
+  assert!(started.len() >= 3, "{started:#?}");
+  for start in &started {
+    close_pair((start.gain_db, start.pan), (HALF_DB, 0.1));
+  }
+  assert_eq!(warnings_of(&log, "\"soel\""), 1, "{:#?}", log.warnings());
+  // Another name it lacks is another mistake, told once too
+  let other = spawn_sounding(&mut engine, &data, at, SkeletonSounds::at_bone("heel"));
+  play(&mut engine, other, 0, "walk", true);
+  engine.step_frames(70).expect("frames");
+  assert_eq!(warnings_of(&log, "\"heel\""), 1, "{:#?}", log.warnings());
+  assert_eq!(warnings_of(&log, "\"soel\""), 1);
+}
+
+#[test]
+fn a_looping_sound_named_by_an_event_is_warned_once_and_stacks() {
+  let log = capture_log();
+  let files = sound_files();
+  let hum = "audio/hum.sound.ron";
+  files.insert(hum, r#"(clips: [(path: "audio/step.wav")], looping: true)"#);
+  let Some(mut engine) = sounding(builder(), files) else {
+    return;
+  };
+  let _hum = match engine.assets().load_now::<Sound>(hum) {
+    Ok(sound) => sound,
+    Err(error) => panic!("{}", error.report()),
+  };
+  let data = engine.assets().add(stepper(hum));
+  let body = spawn_sounding(&mut engine, &data, Vec2::ZERO, SkeletonSounds::flat());
+  play(&mut engine, body, 0, "walk", true);
+  engine.step_frames(70).expect("frames");
+  // Played as the definition says: each footstep starts another loop
+  let started = starts(&engine, hum);
+  assert!(started.len() >= 3, "{started:#?}");
+  let voices: Vec<u32> = started.iter().map(|start| start.voice).collect();
+  let playing = voices
+    .iter()
+    .filter(|voice| {
+      !engine
+        .audio_log()
+        .iter()
+        .any(|entry| entry.kind == AudioLogKind::Stop && entry.voice == **voice)
+    })
+    .count();
+  assert_eq!(playing, voices.len());
+  assert_eq!(warnings_of(&log, hum), 1, "{:#?}", log.warnings());
+}
