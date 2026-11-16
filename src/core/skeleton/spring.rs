@@ -451,15 +451,16 @@ mod tests {
 
   #[test]
   fn a_stiff_spring_is_stable_at_any_fixed_rate() {
-    // Strength 10^6 at 60 and 240 Hz: a kick of 10 leaves 5 behind, swings
-    // out hardly past it (the sub-steps' own rounding, a few hundredths at
-    // most), and is gone within 4 seconds
+    // Strength 10^6 at 10, 20, 60 and 240 Hz: a kick of 10 leaves 5
+    // behind, swings out hardly past it (the sub-steps' own rounding, a few
+    // hundredths at most), and is gone within 4 seconds. At 10 and 20 Hz
+    // the sub-steps saturate, and it is still stable
     let stiff = SpringSetup {
       rotate: 1.0,
       strength: 1e6,
       ..SpringSetup::default()
     };
-    for hz in [60.0, 240.0] {
+    for hz in [10.0, 20.0, 60.0, 240.0] {
       let (most, end) = kicked(&stiff, hz, 4.0, Vec2::new(10.0, 0.0));
       assert!(most < 5.5, "{hz} Hz: swung out to {most}");
       assert!(end.offset.length() < 1e-3, "{hz} Hz: {end:?}");
@@ -473,7 +474,7 @@ mod tests {
     assert_eq!(sub_steps(1.0 / 60.0, 1e30).0, MOST_SUB_STEPS);
     assert_eq!(sub_steps(1.0 / 60.0, f32::MAX).0, MOST_SUB_STEPS);
     let started = Instant::now();
-    for hz in [60.0, 240.0] {
+    for hz in [10.0, 20.0, 60.0, 240.0] {
       let (most, end) = kicked(&absurd, hz, 4.0, Vec2::new(10.0, 0.0));
       assert!(most < 5.5, "{hz} Hz: swung out to {most}");
       assert!(end.offset.length() < 1e-3, "{hz} Hz: {end:?}");
@@ -481,8 +482,10 @@ mod tests {
     assert!(started.elapsed() < Duration::from_secs(1));
     // Saturated, it acts as the strongest pull the cap keeps stable: a
     // step's sub-steps each stay below 0.5 of a reach
-    let (count, strength) = sub_steps(1.0 / 60.0, 1e30);
-    assert!(1.0 / 60.0 / count as f32 * strength.sqrt() < 0.5);
+    for step in [1.0 / 10.0, 1.0 / 60.0] {
+      let (count, strength) = sub_steps(step, 1e30);
+      assert!(step / count as f32 * strength.sqrt() < 0.5, "{step}");
+    }
   }
 
   #[test]
