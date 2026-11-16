@@ -175,6 +175,10 @@ name = "skeleton"
 harness = false
 
 [[bench]]
+name = "lines"
+harness = false
+
+[[bench]]
 name = "dev_tools"
 harness = false
 
