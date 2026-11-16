@@ -107,7 +107,7 @@
   // at the setup pose, and the pelvis turns 0.6 of each degree the torso
   // turns from it.
   //
-  // The cape swings by springs, not keys: each cape bone's tip lags
+  // The cape's springs add to its keyed flap: each cape bone's tip lags
   // behind as the hero moves and turns, and is pulled back to where the
   // pose holds it, so the cloth trails a walk, streams out behind a run,
   // swings through a jump's landing and swings on round a turn. Only the
@@ -346,8 +346,15 @@
   //   Bezier(0.33, 0.67, 0.67, 1)    fast then slowing, as a body rising
   //   Bezier(0.33, 0, 0.67, 0.33)    slow then fast, as a body falling
   //
-  // No animation keys the cape's two bones: their springs (above) swing
-  // them as the hero moves
+  // Idle, walk and run key the cape's two bones with a flap about where
+  // they hang: each swings back and forth, the lower 0.1 s after the
+  // upper, so a ripple runs down the cloth. The springs (above) add the
+  // trail behind a moving hero and the follow-through, so the keys hold no
+  // steady angle of their own. Where a loop begins half way through a
+  // swing, the swing's two halves are Bezier(0.3, 0.5, 0.6, 1) and
+  // Bezier(0.4, 0, 0.7, 0.5): the ease in and out, cut in two. The jump
+  // and the slash move the body enough for the springs to swing the cape
+  // alone; the wave and the aim are for a second track, over these
   animations: {
     // Breathing: the hips sink a little and the legs slide up into them, so
     // the feet stay where they are. The eyes blink and glance ahead
@@ -367,6 +374,9 @@
         "arm_far": (rotate: [(0.0, 0, Bezier(0.4, 0, 0.6, 1)), (1.0, -4, Bezier(0.4, 0, 0.6, 1)), (2.0, 0)]),
         "hand_near": (rotate: [(0.0, 0, Bezier(0.4, 0, 0.6, 1)), (1.1, 6, Bezier(0.4, 0, 0.6, 1)), (2.0, 0)]),
         "hand_far": (rotate: [(0.0, 0, Bezier(0.4, 0, 0.6, 1)), (1.1, -6, Bezier(0.4, 0, 0.6, 1)), (2.0, 0)]),
+        // The cape stirs as the hero breathes
+        "cape_upper": (rotate: [(0.0, -1, Bezier(0.4, 0, 0.6, 1)), (1.0, 1, Bezier(0.4, 0, 0.6, 1)), (2.0, -1)]),
+        "cape_lower": (rotate: [(0.0, 0, Bezier(0.4, 0, 0.6, 1)), (0.5, 2.5, Bezier(0.4, 0, 0.6, 1)), (1.5, -1.5, Bezier(0.4, 0, 0.6, 1)), (2.0, 0)]),
       },
       slots: {
         "eye_near": (attachment: [(0.0, "eye"), (1.7, "shut"), (1.8, "eye")]),
@@ -411,6 +421,16 @@
         "arm_far": (rotate: [(0.0, -30, Bezier(0.4, 0, 0.6, 1)), (0.4, 28, Bezier(0.4, 0, 0.6, 1)), (0.8, -30)]),
         "hand_near": (rotate: [(0.0, 10, Bezier(0.4, 0, 0.6, 1)), (0.4, -12, Bezier(0.4, 0, 0.6, 1)), (0.8, 10)]),
         "hand_far": (rotate: [(0.0, -12, Bezier(0.4, 0, 0.6, 1)), (0.4, 10, Bezier(0.4, 0, 0.6, 1)), (0.8, -12)]),
+        // The cape lifts with each step: the upper bone 0.1 s after the
+        // foot lands, the lower 0.1 s after that
+        "cape_upper": (rotate: [
+          (0.0, 0, Bezier(0.3, 0.5, 0.6, 1)), (0.1, 3, Bezier(0.4, 0, 0.6, 1)), (0.3, -3, Bezier(0.4, 0, 0.6, 1)),
+          (0.5, 3, Bezier(0.4, 0, 0.6, 1)), (0.7, -3, Bezier(0.4, 0, 0.7, 0.5)), (0.8, 0),
+        ]),
+        "cape_lower": (rotate: [
+          (0.0, -5, Bezier(0.4, 0, 0.6, 1)), (0.2, 5, Bezier(0.4, 0, 0.6, 1)), (0.4, -5, Bezier(0.4, 0, 0.6, 1)),
+          (0.6, 5, Bezier(0.4, 0, 0.6, 1)), (0.8, -5),
+        ]),
       },
       events: [(0.0, "footstep", (string: "near")), (0.4, "footstep", (string: "far"))],
     ),
@@ -442,6 +462,15 @@
         "arm_far": (rotate: [(0.0, -64, Bezier(0.4, 0, 0.6, 1)), (0.25, 52, Bezier(0.4, 0, 0.6, 1)), (0.5, -64)]),
         "hand_near": (rotate: [(0.0, 14, Bezier(0.4, 0, 0.6, 1)), (0.25, -20, Bezier(0.4, 0, 0.6, 1)), (0.5, 14)]),
         "hand_far": (rotate: [(0.0, -20, Bezier(0.4, 0, 0.6, 1)), (0.25, 14, Bezier(0.4, 0, 0.6, 1)), (0.5, -20)]),
+        // The cape flaps with each stride, harder than at a walk
+        "cape_upper": (rotate: [
+          (0.0, 0, Bezier(0.3, 0.5, 0.6, 1)), (0.0625, 4, Bezier(0.4, 0, 0.6, 1)), (0.1875, -4, Bezier(0.4, 0, 0.6, 1)),
+          (0.3125, 4, Bezier(0.4, 0, 0.6, 1)), (0.4375, -4, Bezier(0.4, 0, 0.7, 0.5)), (0.5, 0),
+        ]),
+        "cape_lower": (rotate: [
+          (0.0, -8, Bezier(0.4, 0, 0.6, 1)), (0.125, 8, Bezier(0.4, 0, 0.6, 1)), (0.25, -8, Bezier(0.4, 0, 0.6, 1)),
+          (0.375, 8, Bezier(0.4, 0, 0.6, 1)), (0.5, -8),
+        ]),
       },
       events: [(0.0, "footstep", (string: "near", float: 1.4)), (0.25, "footstep", (string: "far", float: 1.4))],
     ),

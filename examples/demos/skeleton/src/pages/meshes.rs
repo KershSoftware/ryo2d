@@ -1,8 +1,9 @@
 //! Meshes: an attachment drawn as triangles, where a region is one
 //! rectangle on one bone. The hero's cape is a mesh whose vertices are
-//! weighted over three bones, so the cloth bends as the bones swing, and
-//! springs swing those bones as the hero moves (a gust of wind is a spring
-//! override); the banner's flag is a mesh on one bone that stands still,
+//! weighted over three bones, so the cloth bends as the bones swing: the
+//! gaits' keys flap those bones and springs add the trail and the
+//! follow-through as the hero moves (a gusting wind is a spring override);
+//! the banner's flag is a mesh on one bone that stands still,
 //! rippled by the deform keys of an animation
 
 use demo_kit::prelude::*;
@@ -24,10 +25,15 @@ const FLASH: f32 = 0.3;
 /// The springs that swing the cape's two bones, as the hero's file names
 /// them
 const SPRINGS: [&str; 2] = ["cape_upper", "cape_lower"];
-/// A gust: how long it blows, and its strongest wind, an acceleration
-/// along the world's x in pixels a second squared (to the right)
-const GUST: f32 = 2.0;
+/// A gust: how long it blows, and its mean wind at its height, an
+/// acceleration along the world's x in pixels a second squared (to the
+/// right)
+const GUST: f32 = 3.0;
 const GUST_WIND: f32 = 1800.0;
+/// The gust's gusts: each a sine's share of the wind, its frequency in
+/// hertz and its phase. Summed with the mean they never take the wind
+/// below a fifth of it, so it blows one way, harder and softer
+const GUSTS: [(f32, f32, f32); 3] = [(0.45, 0.9, 0.0), (0.25, 1.7, 1.3), (0.1, 3.1, 2.1)];
 
 pub struct MeshesPage {
   hero: Option<Entity>,
@@ -147,10 +153,17 @@ impl MeshesPage {
     }
   }
 
-  /// The wind the gust blows now: it rises and falls away over its time
+  /// The wind the gust blows now: it rises and falls away over its time,
+  /// gusting harder and softer as it blows, so the cape flutters
   fn wind(&self) -> f32 {
+    use std::f32::consts::{PI, TAU};
     self.gust.map_or(0.0, |blown| {
-      GUST_WIND * (std::f32::consts::PI * blown / GUST).sin().max(0.0)
+      let swell = (PI * blown / GUST).sin().max(0.0);
+      let gusts: f32 = GUSTS
+        .iter()
+        .map(|&(share, hertz, phase)| share * (TAU * hertz * blown + phase).sin())
+        .sum();
+      GUST_WIND * swell * (1.0 + gusts)
     })
   }
 
@@ -195,8 +208,8 @@ impl DemoPage for MeshesPage {
   }
 
   fn description(&self) -> &str {
-    "A mesh attachment is drawn as triangles. The cape's vertices are weighted over three bones, which springs swing; deform keys ripple the banner's.\n\
-     The cape is a skin, worn on this page alone. A gust is a wind override on the springs. In a development build's console, debug:skeletons draws each mesh's hull and its triangles."
+    "A mesh attachment is drawn as triangles. The cape's vertices are weighted over three bones, which keys flap and springs trail; deform keys ripple the banner's.\n\
+     The cape is a skin, worn on this page alone. A gust is a wind override on the springs, changed each step. In a development build's console, debug:skeletons draws each mesh's hull and its triangles."
   }
 
   fn settings(&mut self, s: &mut Settings) {
@@ -275,8 +288,8 @@ impl DemoPage for MeshesPage {
     if self.gait != self.playing_gait
       && let Some(mut state) = ctx.world.get_mut::<SkeletonAnimation>(hero)
     {
-      // No gait keys the cape's bones: the springs carry its swing from
-      // one to the next
+      // The gaits' crossfade carries the cape's keyed flap from one to the
+      // next, and the springs its trail
       state.set_animation(0, GAITS[self.gait].0, true);
       self.playing_gait = self.gait;
     }
@@ -318,10 +331,10 @@ impl DemoPage for MeshesPage {
     };
     let swung = match (self.springs, self.gust.is_some()) {
       (false, _) => {
-        "Springs off (an override's mix of 0): the cape hangs as the animation holds it".to_string()
+        "Springs off (an override's mix of 0): the cape flaps as the gait's keys alone swing it".to_string()
       }
       (true, false) => {
-        "Springs swing the cape's two bones; no animation keys them (G: a gust)".to_string()
+        "The gait's keys flap the cape's two bones; springs add the trail and follow-through (G: a gust)".to_string()
       }
       (true, true) => format!("A gust: the springs' wind overridden to {:.0}", self.wind()),
     };

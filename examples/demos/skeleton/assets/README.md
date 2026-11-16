@@ -2,7 +2,7 @@
 
 | File | What |
 |---|---|
-| `hero.skeleton.ron` | The hero: 17 bones, 28 slots, seven skins, seven animations, a footstep event, a transform constraint that turns its pelvis with its trunk and two springs that swing its cape. Written by hand; its comments say how it is put together |
+| `hero.skeleton.ron` | The hero: 17 bones, 28 slots, seven skins, seven animations, a footstep event, a transform constraint that turns its pelvis with its trunk and keys and two springs that swing its cape. Written by hand; its comments say how it is put together |
 | `hero.png` | The hero's parts in one 1024 x 744 atlas: three bodies, three outfits, the faces' parts and a cap. The skeleton file names each part's rectangle |
 | `cape.png` | The cape the Meshes page puts on the hero, 280 x 292: the image of the mesh in the hero's `cape` skin |
 | `banner.skeleton.ron` | The Meshes page's banner: three bones, a pole and a flag. The flag is a mesh of 27 vertices, and the `ripple` animation's deform keys move them. Written by hand, but for the ripple's keys (below) |
@@ -391,7 +391,7 @@ A deform's keys must hold an x and a y for each of the mesh's vertices: change t
 
 ## The cape's springs
 
-No animation keys the cape's two bones: a spring on each (in `hero.skeleton.ron`'s `constraints`) swings it as the hero moves, so the cloth trails a walk, streams out behind a run, lifts and swings through a jump's landing and swings on round a turn. The numbers were found by trying them in the contact sheet and on the Meshes page, as the hero's file explains. To see a change, draw the sheet (the cape is a skin, so name it):
+Idle, walk and run key the cape's two bones with a flap about where they hang, the lower bone a tenth of a second after the upper, so a ripple runs down the cloth with each step (and a stir as the hero breathes). A spring on each bone (in `hero.skeleton.ron`'s `constraints`) adds the rest as the hero moves: the cloth trails a walk, streams out behind a run, lifts and swings through a jump's landing and swings on round a turn. With the Meshes page's Springs off, the keyed flap shows alone. The numbers were found by trying them in the contact sheet and on the Meshes page, as the hero's file explains. To see a change, draw the sheet (the cape is a skin, so name it):
 
 ```sh
 cargo run -p ryo2d --bin ryo2d -- sheet examples/demos/skeleton/assets/hero.skeleton.ron \
@@ -402,7 +402,7 @@ The sheet's hero stands where it is, so it shows what the body's own motion does
 
 ## The sounds
 
-Every hero carries `SkeletonSounds`, so the engine plays the sound each footstep event names as it fires, where the hero stands; the pages play no sound themselves.
+Every hero carries `SkeletonSounds`, so the engine plays the sound each footstep event names as it fires, where the hero stands; the pages play no sound themselves. The Crowd page is the exception: its Footsteps row hears none of its heroes, four of its walkers (the default) or every one.
 
 `step-1.wav` to `step-4.wav` are the footsteps of the audio demo, copied from `examples/demos/audio/assets/sounds/`. That demo's `src/bin/make-sounds.rs` writes them from code (a thump falling in pitch and a burst of seeded, filtered noise; mono, 16-bit, 44.1 kHz), so none carries a licence restriction. To change one, edit that program, run it, and copy the file again:
 

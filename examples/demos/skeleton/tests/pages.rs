@@ -1048,6 +1048,49 @@ fn most_swing(engine: &mut HeadlessEngine, hero: Entity, frames: u32) -> f32 {
   most
 }
 
+/// How many times `values` turns back, counting only a turn that goes
+/// back by more than `by`: 0 for a value that only rises or only falls
+fn turns(values: &[f32], by: f32) -> usize {
+  let mut turns = 0;
+  // The direction it last went by more than `by`, and the furthest it got
+  let mut rising: Option<bool> = None;
+  let Some(&first) = values.first() else {
+    return 0;
+  };
+  let mut extreme = first;
+  for &value in values {
+    match rising {
+      None if (value - extreme).abs() > by => {
+        rising = Some(value > extreme);
+        extreme = value;
+      }
+      None => {}
+      Some(up) => {
+        if (up && value > extreme) || (!up && value < extreme) {
+          extreme = value;
+        } else if (value - extreme).abs() > by {
+          turns += 1;
+          rising = Some(!up);
+          extreme = value;
+        }
+      }
+    }
+  }
+  turns
+}
+
+/// Each cape bone's swing over `frames` steps
+fn swings(engine: &mut HeadlessEngine, hero: Entity, frames: u32) -> [Vec<f32>; 2] {
+  let mut swings = [Vec::new(), Vec::new()];
+  for _ in 0..frames {
+    engine.step().unwrap();
+    for (all, swing) in swings.iter_mut().zip(cape_swing(engine, hero)) {
+      all.push(swing);
+    }
+  }
+  swings
+}
+
 /// Moves the Meshes page's panel down `rows` rows and taps `key` once
 fn meshes_row(engine: &mut HeadlessEngine, rows: usize, key: KeyCode) {
   for _ in 0..rows {
@@ -1066,7 +1109,8 @@ fn the_cape_swings_by_springs_lagging_the_hero_as_it_turns_and_settling() {
   engine.step_frames(10).unwrap();
   let hero = one(&mut engine, HERO);
   {
-    // A spring on each cape bone, and no animation keys either
+    // A spring on each cape bone, and idle, walk and run key both: the
+    // keys ripple the cape, the springs trail it
     let data = engine.world().get::<Skeleton>(hero).unwrap().data().clone();
     let assets = engine.assets();
     let data = assets.get(&data).unwrap();
@@ -1076,14 +1120,13 @@ fn the_cape_swings_by_springs_lagging_the_hero_as_it_turns_and_settling() {
         |constraint| matches!(constraint, SkeletonConstraint::Spring(spring) if spring.bone == id),
       );
       assert!(sprung, "a spring swings {name}");
-      for animation in data.animations() {
-        let keyed = animation.timelines.iter().any(|timeline| {
-          matches!(timeline,
-            SkeletonTimeline::Rotate { bone, .. }
-            | SkeletonTimeline::Translate { bone, .. }
-            | SkeletonTimeline::Scale { bone, .. } if *bone == id)
-        });
-        assert!(!keyed, "{} keys {name}", animation.name);
+      for animation in ["idle", "walk", "run"] {
+        let animation = data.animation(animation).unwrap();
+        let keyed = animation
+          .timelines
+          .iter()
+          .any(|timeline| matches!(timeline, SkeletonTimeline::Rotate { bone, .. } if *bone == id));
+        assert!(keyed, "{} keys {name}", animation.name);
       }
     }
   }
@@ -1104,14 +1147,15 @@ fn the_cape_swings_by_springs_lagging_the_hero_as_it_turns_and_settling() {
     "running, the cape swings {running}; walking {walking}"
   );
 
-  // Standing, it settles to hang as the setup pose holds it
+  // Standing, it settles to hang as the setup pose holds it, but for the
+  // idle's stir of a degree or two
   engine.tap_key(KeyCode::ArrowRight);
   engine.step_frames(5).unwrap();
   assert_eq!(playing(&engine, hero, 0).as_deref(), Some("idle"));
   engine.step_frames(240).unwrap();
   let settled = cape_swing(&engine, hero);
   assert!(
-    settled.iter().all(|swing| swing.abs() < 0.03),
+    settled.iter().all(|swing| swing.abs() < 0.08),
     "standing, the cape swings {settled:?}"
   );
   let hangs = bone(&engine, hero, "cape_lower").matrix2.x_axis.normalize();
@@ -1140,8 +1184,73 @@ fn the_cape_swings_by_springs_lagging_the_hero_as_it_turns_and_settling() {
   engine.step_frames(240).unwrap();
   let settled = cape_swing(&engine, hero);
   assert!(
-    settled.iter().all(|swing| swing.abs() < 0.03),
+    settled.iter().all(|swing| swing.abs() < 0.08),
     "turned, the cape settles: {settled:?}"
+  );
+}
+
+#[test]
+fn the_cape_ripples_over_a_walk_cycle_with_springs_off_and_on() {
+  // The walk's keys flap each cape bone with each step, the lower after
+  // the upper: over one cycle (0.8 s, 48 steps) each turns back and forth,
+  // twice each way, with the springs off and on
+  let Some(mut engine) = engine_on(MESHES) else {
+    return;
+  };
+  engine.step_frames(60).unwrap();
+  let hero = one(&mut engine, HERO);
+  for springs in ["on", "off"] {
+    if springs == "off" {
+      meshes_row(&mut engine, 3, KeyCode::ArrowRight);
+      engine.step_frames(30).unwrap();
+    }
+    let swings = swings(&mut engine, hero, 48);
+    for (swing, name) in swings.iter().zip(["upper", "lower"]) {
+      let turned = turns(swing, 0.01);
+      assert!(
+        turned >= 3,
+        "springs {springs}: the {name} cape bone turns back {turned} times in a walk's cycle: {swing:?}"
+      );
+    }
+  }
+}
+
+#[test]
+fn the_springs_trail_the_keyed_cape() {
+  // Two heroes walk in step: one with springs, one without, whose cape
+  // swings as the keys alone hold it. Moving, the sprung cape is turned
+  // from the keyed one by its trail and follow-through
+  let (Some(mut sprung), Some(mut keyed)) = (engine_on(MESHES), engine_on(MESHES)) else {
+    return;
+  };
+  // The same steps in each: down to the springs row, then the keyed hero's
+  // springs off, the sprung hero's row left as it is (Up only moves)
+  sprung.step_frames(10).unwrap();
+  keyed.step_frames(10).unwrap();
+  meshes_row(&mut sprung, 3, KeyCode::ArrowUp);
+  meshes_row(&mut keyed, 3, KeyCode::ArrowRight);
+  sprung.step_frames(60).unwrap();
+  keyed.step_frames(60).unwrap();
+  let hero = one(&mut sprung, HERO);
+  let keyed_hero = one(&mut keyed, HERO);
+  let mut most = 0.0f32;
+  let mut keyed_range = (f32::MAX, f32::MIN);
+  for _ in 0..60 {
+    sprung.step().unwrap();
+    keyed.step().unwrap();
+    let (a, b) = (cape_swing(&sprung, hero), cape_swing(&keyed, keyed_hero));
+    for index in 0..2 {
+      most = most.max((a[index] - b[index]).abs());
+    }
+    keyed_range = (keyed_range.0.min(b[0]), keyed_range.1.max(b[0]));
+  }
+  assert!(
+    keyed_range.1 - keyed_range.0 > 0.04,
+    "the keys alone swing the upper cape bone over {keyed_range:?}"
+  );
+  assert!(
+    most > 0.1,
+    "the springs turn the cape at most {most} from the keyed turn"
   );
 }
 
@@ -1156,10 +1265,14 @@ fn the_spring_setting_and_a_gust_change_the_cape_s_swing() {
   assert!(on > 0.1, "with springs the cape swings {on}");
 
   // Rows: the gait, the cape, the ripple's speed, the springs. Off, the
-  // cape hangs as the walk holds it, which keys it nowhere
+  // cape ripples as the walk's keys swing it, without the springs' trail
   meshes_row(&mut engine, 3, KeyCode::ArrowRight);
+  engine.step_frames(30).unwrap();
   let off = most_swing(&mut engine, hero, 60);
-  assert!(off < 0.01, "without springs the cape swings {off}");
+  assert!(
+    off > 0.03 && off < on,
+    "without springs the cape swings {off}, with them {on}"
+  );
 
   // On again, standing still, the cape settles; a gust (G) blows it out
   // along the wind, to the right, and it falls back once the gust is over
@@ -1178,18 +1291,26 @@ fn the_spring_setting_and_a_gust_change_the_cape_s_swing() {
     tip(engine, hero, "cape_lower").x - collar.x
   };
   let still = blown(&mut engine);
-  assert!(still.abs() < 5.0, "standing, the hem is {still} across");
+  assert!(still.abs() < 10.0, "standing, the hem is {still} across");
   engine.tap_key(KeyCode::KeyG);
-  let mut most = 0.0f32;
-  for _ in 0..90 {
+  let mut hem = Vec::new();
+  for _ in 0..180 {
     engine.step().unwrap();
-    most = most.max(blown(&mut engine));
+    hem.push(blown(&mut engine));
   }
+  let most = hem.iter().copied().fold(f32::MIN, f32::max);
   assert!(most > 30.0, "the gust blew the hem {most} across");
+  // The wind comes in gusts, not one steady push: the hem flutters,
+  // blown out and falling back again and again before the gust is over
+  let fluttered = turns(&hem, 4.0);
+  assert!(
+    fluttered >= 4,
+    "the hem turned back {fluttered} times in the gust: {hem:?}"
+  );
   engine.step_frames(300).unwrap();
   let after = blown(&mut engine);
   assert!(
-    after.abs() < 5.0,
+    after.abs() < 10.0,
     "after the gust the hem is {after} across"
   );
 }
