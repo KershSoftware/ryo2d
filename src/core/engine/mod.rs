@@ -1382,8 +1382,9 @@ impl Engine {
     self.pending_toggle_borderless
   }
 
-  /// The debug switches, for a test to turn an overlay on
-  #[cfg(all(test, not(target_arch = "wasm32")))]
+  /// The debug switches: for a test to turn an overlay on, and for the
+  /// contact sheet to keep them off
+  #[cfg(not(target_arch = "wasm32"))]
   pub(crate) fn debug_config_mut(&mut self) -> &mut DebugConfig {
     &mut self.config.debug
   }

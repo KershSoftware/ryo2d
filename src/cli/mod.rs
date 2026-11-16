@@ -13,6 +13,7 @@
 //! - `ryo2d install-skills` - Install Agent Skills for AI assistants
 //! - `ryo2d netplay` - Start a signaling server for netplay testing
 //! - `ryo2d check-ui` - Check UI files without running the game
+//! - `ryo2d sheet` - Draw a skeleton's animations as a contact sheet
 //!
 //! # Example
 //!

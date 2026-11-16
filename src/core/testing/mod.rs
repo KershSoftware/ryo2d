@@ -41,6 +41,10 @@
 //! [`UiHarness`] runs UI frames with no window or GPU at all: a UI function
 //! of `&mut UiContext` over scripted pointer, wheel and `ui.*` action input,
 //! for unit-testing game UI.
+//!
+//! [`skeleton_sheet`] draws a skeleton's animations as a contact sheet, a
+//! labelled grid of moments, to look at an animation without running a
+//! game (`ryo2d sheet` on the command line).
 
 #[cfg(test)]
 mod atlas_bleeding;
@@ -61,6 +65,7 @@ mod mesh_gpu;
 mod retain;
 #[cfg(test)]
 mod shader_gpu;
+mod sheet;
 #[cfg(test)]
 mod tile_bleeding;
 pub(crate) mod ui;
@@ -70,6 +75,9 @@ pub(crate) mod ui;
 pub use headless::HeadlessLogFeed;
 pub use headless::{HeadlessEngine, OffscreenOptions, StepOutcome, offscreen_with_format};
 pub use retain::PixelPair;
+pub use sheet::{
+  DEFAULT_MOMENTS, SHEET_GAP, SHEET_LABEL, SheetError, SheetOptions, SheetSkeleton, skeleton_sheet,
+};
 #[cfg(test)]
 pub(crate) use ui::reload_and_wait;
 pub use ui::{UiCacheStats, UiHarness};

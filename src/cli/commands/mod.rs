@@ -11,6 +11,7 @@ pub mod install_skills;
 mod licenses;
 mod netplay;
 mod run;
+mod sheet;
 
 use std::env;
 use std::fmt;
@@ -126,6 +127,7 @@ fn run_with(args: &[String]) -> CliResult<()> {
     "install-skills" => install_skills::execute(&args[2..]),
     "netplay" => netplay::execute(&args[2..]),
     "check-ui" => check_ui::execute(&args[2..]),
+    "sheet" => sheet::execute(&args[2..]),
     "help" | "--help" | "-h" => {
       print_help();
       Ok(())
@@ -159,6 +161,7 @@ COMMANDS
     install-skills  Install Agent Skills for AI assistants
     netplay         Start a signaling server for netplay testing
     check-ui        Check UI files (*.ui.ron) without running the game
+    sheet           Draw a skeleton's animations as a contact sheet (PNG)
     help            Show this help message
     version         Show version information
 

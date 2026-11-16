@@ -96,5 +96,8 @@ mod skeleton_mesh;
 #[path = "e2e/skeleton_constraints.rs"]
 mod skeleton_constraints;
 
+#[path = "e2e/skeleton_sheet.rs"]
+mod skeleton_sheet;
+
 #[path = "e2e/dev_tools.rs"]
 mod dev_tools;
