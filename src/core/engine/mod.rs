@@ -1849,6 +1849,14 @@ impl EngineBuilder {
     self
   }
 
+  /// Draw smoothly, not as pixel art, whatever Ryo.toml says (the contact
+  /// sheet, whose engine starts in whatever project the command runs in)
+  #[cfg(not(target_arch = "wasm32"))]
+  pub(crate) fn pixel_art_off(mut self) -> Self {
+    self.overrides.pixel_art = Some(false);
+    self
+  }
+
   /// The window's initial logical size (by default the resolution, shrunk to
   /// fit 1280x720 when larger, or for pixel art the largest whole multiple
   /// that fits 1280x720). A saved

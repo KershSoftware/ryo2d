@@ -10,7 +10,7 @@ use crate::core::config::Workspace;
 use crate::testing::{SheetError, SheetOptions, SheetSkeleton, skeleton_sheet};
 
 /// The flags the command takes, for the message about one it does not
-const FLAGS: &str = "--animations, --moments, --skins, --bones, --cell, --out";
+const FLAGS: &str = "--animations, --moments, --skins, --once, --bones, --cell, --out";
 
 /// What the command was asked for
 #[derive(Debug, Clone, PartialEq)]
@@ -116,6 +116,7 @@ fn parse(args: &[String]) -> Result<SheetArgs, String> {
     match word.as_str() {
       "--animations" => options.animations = Some(list(&value(word)?)),
       "--skins" => options.skins = list(&value(word)?),
+      "--once" => options.once = list(&value(word)?),
       "--moments" => {
         let given = value(word)?;
         options.moments = given
@@ -166,6 +167,8 @@ OPTIONS:
     --animations a,b   The animations, a row each (default: every one)
     --moments N        The moments of each, a column each (default: 8)
     --skins x,y        The skins to put on, in order
+    --once a,b         Animations played once, not looped: no loop round
+                       first, and a last cell at their length
     --bones            Draw the bones overlay over the art
     --cell WxH         Each cell's size in pixels, label included
                        (default: sized to fit the poses)
@@ -177,8 +180,9 @@ DESCRIPTION:
     Draws each animation at evenly spaced moments, k x length / N for k
     from 0, each cell labelled with the animation's name and the time. A
     moment is reached by stepping the animation from its start at the
-    engine's fixed rate, after one loop round, so springs and constraints
-    show as in play. Every cell has one scale and the skeleton's origin at
+    engine's fixed rate, after one loop round (none for an animation given
+    to --once, which also gets a cell at its end), so springs and
+    constraints show as in play. Every cell has one scale and the skeleton's origin at
     one place, on a faint ground line, so root motion reads. A skeleton
     with no animations shows its setup pose.
 
@@ -238,6 +242,8 @@ mod tests {
       "--skins",
       "dark,cape",
       "--bones",
+      "--once",
+      "jump",
       "--cell",
       "200x240",
       "--out",
@@ -252,6 +258,7 @@ mod tests {
           animations: Some(vec!["walk".to_owned(), "run".to_owned()]),
           moments: 6,
           skins: vec!["dark".to_owned(), "cape".to_owned()],
+          once: vec!["jump".to_owned()],
           bones: true,
           cell: Some(UVec2::new(200, 240)),
         },

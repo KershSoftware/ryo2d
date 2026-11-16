@@ -175,3 +175,67 @@ fn a_scripted_run_shows_its_log() {
     "a run with RYO_CAPTURE_FRAMES says what it captured"
   );
 }
+
+#[test]
+fn the_bones_overlay_draws_without_developer_tools() {
+  use ryo2d::testing::{SheetError, SheetOptions, SheetSkeleton, skeleton_sheet};
+  use std::sync::Arc;
+
+  // A red square on a bone 20 long: the sheet draws the bone over it, in
+  // the overlay's amber, in a build that has no `debug:skeletons`
+  let rig = |world: &mut World| {
+    let image = world
+      .resource_mut::<Assets<Image>>()
+      .add(Image::solid_rect(12, 12, 220, 30, 40, 255));
+    let shown = SlotSetup {
+      attachment: Some(Arc::from("body")),
+      ..SlotSetup::default()
+    };
+    let bone = BoneSetup {
+      length: 20.0,
+      ..BoneSetup::default()
+    };
+    SkeletonData::builder()
+      .bone("body", None, bone)
+      .slot("body", "body", shown)
+      .region(SkeletonRegion {
+        name: Arc::from("body"),
+        image,
+        x: 0,
+        y: 0,
+        width: 12,
+        height: 12,
+      })
+      .attachment(
+        SkeletonData::DEFAULT_SKIN,
+        "body",
+        "body",
+        SkeletonAttachment::Region(RegionAttachment::new(0, 12.0, 12.0)),
+      )
+      .build()
+  };
+  let bone_pixels = |bones: bool| {
+    let options = SheetOptions {
+      moments: 1,
+      bones,
+      cell: Some(UVec2::new(120, 100)),
+      ..SheetOptions::default()
+    };
+    match skeleton_sheet(SheetSkeleton::built(rig), &options) {
+      Ok(sheet) => Some(
+        sheet
+          .pixels()
+          .filter(|pixel| (0..3).all(|c| pixel.0[c].abs_diff([0xff, 0xc0, 0x20][c]) < 12))
+          .count(),
+      ),
+      Err(SheetError::NoGpu) => None,
+      Err(error) => panic!("the sheet failed: {error}"),
+    }
+  };
+  let (Some(off), Some(on)) = (bone_pixels(false), bone_pixels(true)) else {
+    eprintln!("skipping: no GPU available for the sheet");
+    return;
+  };
+  assert_eq!(off, 0, "no bones unless asked for");
+  assert!(on > 8, "{on} bone pixels");
+}

@@ -15,7 +15,7 @@ use crate::core::graphics::{Camera2d, CameraClear, CameraMut, Image, RenderLayer
 use crate::core::render::{DebugDraw, Tonemap};
 use crate::core::scene::{Scene, SceneAction, SceneContext};
 use crate::core::skeleton::{
-  Part, Parts, Skeleton, SkeletonAnimation, SkeletonData, SkeletonError,
+  Attachment, Part, Parts, Skeleton, SkeletonAnimation, SkeletonData, SkeletonError, SlotId,
 };
 use crate::core::time::Time;
 use crate::core::ui::{Color, Rect, UiContext};
@@ -42,6 +42,8 @@ const MAX_CELL: u32 = 8192;
 const MAX_MOMENTS: u32 = 1000;
 /// How far past its moment, in steps, a cell is aimed
 const NUDGE: f32 = 0.01;
+/// The most pixels a sheet has (256 Mpx, a gigabyte of RGBA)
+const MAX_PIXELS: u64 = 1 << 28;
 
 /// Behind the art: a mid grey, against which dark outlines and light
 /// highlights both show
@@ -66,6 +68,10 @@ pub struct SheetOptions {
   pub moments: u32,
   /// The skins put on, in order, over the default skin
   pub skins: Vec<String>,
+  /// The animations played once, not looped: no loop round before their
+  /// moments, and a last cell at their length, so a landing or a recovery
+  /// shows
+  pub once: Vec<String>,
   /// Draws the bones overlay over the art: bones, joints, outlines and the
   /// constraints' marks, as `debug:skeletons` draws them
   pub bones: bool,
@@ -80,6 +86,7 @@ impl Default for SheetOptions {
       animations: None,
       moments: DEFAULT_MOMENTS,
       skins: Vec::new(),
+      once: Vec::new(),
       bones: false,
       cell: None,
     }
@@ -162,14 +169,16 @@ struct Row {
   animation: Option<String>,
   duration: f32,
   label: String,
+  /// Played once: from its start, with a last cell at its end
+  once: bool,
 }
 
 /// One cell: a skeleton of its own, stepped to its moment
 struct Cell {
   row: usize,
   time: f32,
-  /// Where its animation's entry starts, under one step, so its whole
-  /// steps land on its moment
+  /// Where its animation's entry starts, about a step at most, so its
+  /// whole steps land on its moment
   start: f32,
   /// The steps it takes after it appears at `start`
   steps: u32,
@@ -247,9 +256,11 @@ struct Layout {
 /// Each cell is a skeleton of its own on a headless engine, drawn as the
 /// game draws it, its constraints applied. Its moment, `k × length /
 /// moments`, is reached by stepping its animation from its start at the
-/// engine's fixed rate, so springs show as they would in play; every
-/// animation is played looping and is first run once round, so its springs
-/// are warmed up. Every cell has one scale, fitted to the poses of the
+/// engine's fixed rate, so springs show as they would in play. An
+/// animation is played looping and first run once round, so its springs
+/// are warmed up, unless [`SheetOptions::once`] names it: then it plays
+/// once from its start, with a last cell at its length. A sheet past 256
+/// Mpx is refused. Every cell has one scale, fitted to the poses of the
 /// whole sheet unless [`SheetOptions::cell`] is given, and the skeleton's
 /// origin at the same place, on a faint ground line, so root motion reads.
 /// Cells are drawn one by one and put together on the CPU, so a sheet has
@@ -263,12 +274,19 @@ pub fn skeleton_sheet(
   options: &SheetOptions,
 ) -> Result<RgbaImage, SheetError> {
   check_options(options)?;
+  // No fitted cell is larger than the canvas, so a sheet within the budget
+  // at the canvas's size is within it as drawn
   let canvas = options.cell.unwrap_or(UVec2::new(
     (ART + 2 * MARGIN).max(MIN_WIDTH),
     ART + 2 * MARGIN + SHEET_LABEL,
   ));
+  let columns = options
+    .moments
+    .saturating_add(u32::from(!options.once.is_empty()));
+  sheet_size(columns, 1, canvas)?;
   let builder = EngineBuilder::new()
     .resolution(canvas.x, canvas.y)
+    .pixel_art_off()
     .start_scene(SheetScene);
   let (builder, build) = match skeleton.source {
     Source::File { assets, path } => (builder.asset_source(DiskSource::new(assets)), Ok(path)),
@@ -295,6 +313,8 @@ pub fn skeleton_sheet(
     .ok_or_else(|| SheetError::Load("the skeleton's data is not in its store".to_owned()))?;
   let rows = rows(data, options)?;
   check_skins(data, &options.skins)?;
+  let tall = u32::try_from(rows.len()).unwrap_or(u32::MAX);
+  sheet_size(columns, tall, canvas)?;
 
   let step = engine.world().resource::<Time>().fixed.timestep();
   let mut cells = cells(&rows, options.moments, step);
@@ -362,6 +382,14 @@ fn rows(data: &SkeletonData, options: &SheetOptions) -> Result<Vec<Row>, SheetEr
       names.join(", ")
     }
   };
+  for name in &options.once {
+    if data.animation(name).is_none() {
+      return Err(SheetError::UnknownAnimation {
+        name: name.clone(),
+        known: known(),
+      });
+    }
+  }
   let row = |name: &str, duration: f32| Row {
     animation: Some(name.to_owned()),
     duration: if duration.is_finite() {
@@ -370,6 +398,7 @@ fn rows(data: &SkeletonData, options: &SheetOptions) -> Result<Vec<Row>, SheetEr
       0.0
     },
     label: name.to_owned(),
+    once: options.once.iter().any(|once| once == name),
   };
   match &options.animations {
     Some(names) => names
@@ -388,6 +417,7 @@ fn rows(data: &SkeletonData, options: &SheetOptions) -> Result<Vec<Row>, SheetEr
       animation: None,
       duration: 0.0,
       label: "setup pose".to_owned(),
+      once: false,
     }]),
     None => Ok(
       data
@@ -413,23 +443,20 @@ fn check_skins(data: &SkeletonData, skins: &[String]) -> Result<(), SheetError> 
 }
 
 /// Each row's moments, `k × duration / moments` (one, the setup pose, for
-/// a row without an animation), and the steps that reach each: a loop
-/// round first, then the moment, `step` seconds a step, the entry starting
-/// part of a step in so that its whole steps land on the moment.
-///
-/// Each is aimed a hundredth of a step past its moment: the steps' sum
-/// falls a little short in `f32`, and a loop's first moment a hair short
-/// of a whole loop would show the loop's last pose, not its first
+/// a row without an animation), and the steps that reach each, `step`
+/// seconds a step (`steps_to`): a loop round first, then the moment; a
+/// one-shot from its start, with a moment more at its end
 fn cells(rows: &[Row], moments: u32, step: f32) -> Vec<Cell> {
   let mut cells = Vec::new();
   for (index, row) in rows.iter().enumerate() {
-    let (count, nudge) = match row.animation {
-      Some(_) => (moments, step * NUDGE),
-      None => (1, 0.0),
+    let (count, last, warm) = match row.animation {
+      Some(_) if row.once => (moments, moments, 0.0),
+      Some(_) => (moments, moments - 1, row.duration),
+      None => (1, 0, 0.0),
     };
-    for k in 0..count {
+    for k in 0..=last {
       let time = row.duration * k as f32 / count as f32;
-      let (start, steps) = steps_to(row.duration + time + nudge, step);
+      let (start, steps) = steps_to(warm + time, step);
       cells.push(Cell {
         row: index,
         time,
@@ -442,17 +469,62 @@ fn cells(rows: &[Row], moments: u32, step: f32) -> Vec<Cell> {
   cells
 }
 
-/// The start under one step and the steps that put an animation `time`
-/// seconds in, `step` seconds a step: a skeleton appears at its entry's
-/// start, and each step moves it on a step
+/// The start and the steps that put an animation a hundredth of a step
+/// past `time` seconds in, `step` seconds a step: a skeleton appears at
+/// its entry's start, and each step adds a step to its time.
+///
+/// The engine sums the steps in `f32`, which falls short of the product by
+/// more as the steps grow (a quarter of a millisecond by 12 s at 60 Hz, and
+/// it can run long too), and a moment landed a hair short shows the pose
+/// before it (a loop's first moment, its last pose). So the start is found
+/// by summing as the engine does, and moved by what the sum misses the aim
+/// by
 fn steps_to(time: f32, step: f32) -> (f32, u32) {
   if !(step > 0.0 && time.is_finite() && time > 0.0) {
     return (0.0, 0);
   }
   // A moment on a step's edge lands on it, not a step short of it
   let whole = (time / step + 1e-4).floor();
-  let start = (time - whole * step).max(0.0);
-  (start, whole as u32)
+  let mut steps = whole as u32;
+  let aim = time + step * NUDGE;
+  let mut start = (aim - whole * step).max(0.0);
+  // The sum can fall short or run long: each pass moves the start by what
+  // it missed by, a step fewer when the start would go below 0
+  for _ in 0..8 {
+    let short = aim - landing(start, steps, step);
+    if short.abs() <= step * NUDGE / 2.0 {
+      break;
+    }
+    start += short;
+    if start < 0.0 && steps > 0 {
+      start += step;
+      steps -= 1;
+    }
+    start = start.max(0.0);
+  }
+  (start, steps)
+}
+
+/// Where an entry starting at `start` is after `steps` steps of `step`,
+/// summed as the engine sums them
+fn landing(start: f32, steps: u32, step: f32) -> f32 {
+  (0..steps).fold(start, |time, _| time + step)
+}
+
+/// The sheet's size for `rows` rows of `columns` cells of `cell`, with the
+/// gaps; an error past `MAX_PIXELS`
+fn sheet_size(columns: u32, rows: u32, cell: UVec2) -> Result<UVec2, SheetError> {
+  let side =
+    |count: u32, side: u32| u64::from(count) * u64::from(side + SHEET_GAP) + u64::from(SHEET_GAP);
+  let (width, height) = (side(columns, cell.x), side(rows, cell.y));
+  let pixels = width.saturating_mul(height);
+  match (u32::try_from(width), u32::try_from(height)) {
+    (Ok(width), Ok(height)) if pixels <= MAX_PIXELS => Ok(UVec2::new(width, height)),
+    _ => Err(SheetError::Options(format!(
+      "the sheet is too large: {width}x{height} pixels, past the {} Mpx it may have (fewer moments, animations or a smaller cell)",
+      MAX_PIXELS >> 20
+    ))),
+  }
 }
 
 /// Steps every cell's skeleton to its moment. Each is spawned so that the
@@ -482,9 +554,10 @@ fn run(
         Renderable::skeleton(),
         RenderLayers::none(),
       ));
-      if let Some(name) = rows.get(cell.row).and_then(|row| row.animation.as_deref()) {
+      let row = rows.get(cell.row);
+      if let Some((name, once)) = row.and_then(|row| Some((row.animation.as_deref()?, row.once))) {
         let mut animation = SkeletonAnimation::new();
-        if let Some(id) = animation.set_animation(0, name, true)
+        if let Some(id) = animation.set_animation(0, name, !once)
           && let Some(entry) = animation.entry_mut(id)
         {
           entry.start = cell.start;
@@ -505,8 +578,11 @@ fn run(
 }
 
 /// The box of what `entity`'s skeleton draws, in its own space: its
-/// regions' corners and its meshes' vertices, and its bones from origin to
-/// tip when the overlay is drawn
+/// regions' corners and its meshes' vertices; and when the overlay is
+/// drawn, its bones from origin to tip (an IK target is a bone, so its
+/// cross is centred in the box), its bounding boxes' corners and its
+/// points. What the overlay sizes in pixels (a joint's ring, a cross, a
+/// point's facing line) reaches past these by less than the margin
 fn pose_bounds(world: &World, entity: Entity, bones: bool) -> Option<Bounds> {
   let skeleton = world.get::<Skeleton>(entity)?;
   let assets = world.get_resource::<Assets<SkeletonData>>()?;
@@ -527,6 +603,26 @@ fn pose_bounds(world: &World, entity: Entity, bones: bool) -> Option<Bounds> {
     for (bone, space) in placed {
       bounds.add(space.translation);
       bounds.add(space.transform_point2(Vec2::new(bone.length, 0.0)));
+    }
+    let slots = skeleton.pose.slot_attachments.iter().zip(data.slots());
+    for (slot, (shown, slot_data)) in slots.enumerate() {
+      let (Some(name), Ok(slot)) = (shown.as_deref(), u8::try_from(slot)) else {
+        continue;
+      };
+      let Some(space) = skeleton.pose.skeleton_space.get(slot_data.bone.index()) else {
+        continue;
+      };
+      match skeleton.skin_attachment(SlotId(slot), name) {
+        Some(Attachment::BoundingBox(shape)) => {
+          for &corner in &shape.vertices {
+            bounds.add(space.transform_point2(corner));
+          }
+        }
+        Some(Attachment::Point(point)) => {
+          bounds.add(space.transform_point2(Vec2::new(point.x, point.y)));
+        }
+        _ => {}
+      }
     }
   }
   (!bounds.is_empty()).then_some(bounds)
@@ -590,14 +686,9 @@ fn draw(
     counts
   });
   let wide = columns.iter().copied().max().unwrap_or(1);
-  let size = |count: u32, side: u32| -> Result<u32, SheetError> {
-    count
-      .checked_mul(side + SHEET_GAP)
-      .and_then(|size| size.checked_add(SHEET_GAP))
-      .ok_or_else(|| SheetError::Options("the sheet is too large".to_owned()))
-  };
-  let rows_count = u32::try_from(rows.len()).unwrap_or(u32::MAX);
-  let mut sheet = RgbaImage::from_pixel(size(wide, cell.x)?, size(rows_count, cell.y)?, GAP);
+  let tall = u32::try_from(rows.len()).unwrap_or(u32::MAX);
+  let size = sheet_size(wide, tall, cell)?;
+  let mut sheet = RgbaImage::from_pixel(size.x, size.y, GAP);
 
   place_camera(engine.world_mut(), layout);
   ground(engine.world_mut(), layout);
@@ -686,37 +777,61 @@ mod tests {
   #[test]
   fn a_moment_is_reached_in_whole_steps_from_a_start_under_one() {
     let step = 1.0 / 60.0;
+    let nudge = step * NUDGE;
     // At 0, no step: the skeleton appears at its entry's start
     assert_eq!(steps_to(0.0, step), (0.0, 0));
     // 0.125 s is seven and a half steps: half a step in, then seven
     let (start, steps) = steps_to(0.125, step);
     assert_eq!(steps, 7);
-    assert!((start - step / 2.0).abs() < 1e-5, "{start}");
+    assert!((start - step / 2.0 - nudge).abs() < 1e-5, "{start}");
     // On a step's edge: no start, and the steps land on it
     let (start, steps) = steps_to(0.5, step);
     assert_eq!(steps, 30);
-    assert!(start.abs() < 1e-5, "{start}");
+    assert!((start - nudge).abs() < 1e-5, "{start}");
     // What cannot be stepped is the start alone
     assert_eq!(steps_to(f32::NAN, step), (0.0, 0));
     assert_eq!(steps_to(1.0, 0.0), (0.0, 0));
   }
 
   #[test]
+  fn a_long_animation_s_steps_land_past_each_moment() {
+    // Summed in `f32` as the engine sums them, every moment of a 20 s loop
+    // (after its warm-up round), and of longer ones, lands past its time
+    // and within a twentieth of a step of it
+    let step = 1.0 / 60.0;
+    for duration in [1.0, 20.0, 60.0, 300.0] {
+      for k in 0..8 {
+        let time = duration + duration * k as f32 / 8.0;
+        let (start, steps) = steps_to(time, step);
+        let landed = landing(start, steps, step);
+        assert!(landed > time, "{time}: landed at {landed}");
+        assert!(landed - time < step / 20.0, "{time}: landed at {landed}");
+      }
+    }
+  }
+
+  #[test]
   fn each_animation_is_run_once_round_before_its_moments() {
+    let row = |name: &str, duration: f32, once: bool| Row {
+      animation: Some(name.to_owned()),
+      duration,
+      label: name.to_owned(),
+      once,
+    };
     let rows = [
-      Row {
-        animation: Some("walk".to_owned()),
-        duration: 1.0,
-        label: "walk".to_owned(),
-      },
+      row("walk", 1.0, false),
       Row {
         animation: None,
         duration: 0.0,
         label: "setup pose".to_owned(),
+        once: false,
       },
+      row("jump", 1.0, true),
     ];
     let cells = cells(&rows, 4, 0.25);
-    // Four moments of the walk, a second round first; the setup pose once
+    // Four moments of the walk, a second round first; the setup pose once;
+    // a one-shot from its start, with no round first, and a fifth moment
+    // at its end
     let times: Vec<(usize, f32, u32)> = cells.iter().map(|c| (c.row, c.time, c.steps)).collect();
     assert_eq!(
       times,
@@ -725,12 +840,18 @@ mod tests {
         (0, 0.25, 5),
         (0, 0.5, 6),
         (0, 0.75, 7),
-        (1, 0.0, 0)
+        (1, 0.0, 0),
+        (2, 0.0, 0),
+        (2, 0.25, 1),
+        (2, 0.5, 2),
+        (2, 0.75, 3),
+        (2, 1.0, 4),
       ]
     );
-    // Each a hundredth of a step past its moment, the setup pose at its own
+    // Each a hundredth of a step past its moment, but a start at 0
     let starts: Vec<f32> = cells.iter().map(|c| c.start).collect();
-    let want = [0.0025, 0.0025, 0.0025, 0.0025, 0.0];
+    let near = 0.0025;
+    let want = [near, near, near, near, 0.0, 0.0, near, near, near, near];
     assert!(
       starts
         .iter()
@@ -738,6 +859,28 @@ mod tests {
         .all(|(start, want)| (start - want).abs() < 1e-6),
       "{starts:?}"
     );
+  }
+
+  #[test]
+  fn a_sheet_too_large_is_refused_before_anything_is_drawn() {
+    // 1000 moments of cells 8192 wide is 8 million pixels across
+    let options = SheetOptions {
+      moments: 1000,
+      cell: Some(UVec2::new(8192, 64)),
+      ..SheetOptions::default()
+    };
+    let never = SheetSkeleton::built(|_| panic!("nothing is loaded for a sheet too large"));
+    match skeleton_sheet(never, &options) {
+      Err(SheetError::Options(message)) => assert!(message.contains("too large"), "{message}"),
+      Err(other) => panic!("{other}"),
+      Ok(_) => panic!("a sheet over the budget"),
+    }
+    // The budget counts the gaps; under it, the size
+    assert_eq!(
+      sheet_size(4, 2, UVec2::new(100, 50)).ok(),
+      Some(UVec2::new(4 * 102 + 2, 2 * 52 + 2))
+    );
+    assert!(sheet_size(400, 400, UVec2::new(200, 200)).is_err());
   }
 
   #[test]

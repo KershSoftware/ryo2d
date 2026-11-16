@@ -18,6 +18,10 @@ const GREEN: [u8; 4] = [40, 200, 60, 255];
 /// The bones overlay's colour for a bone (`colors::BONE`, which the crate
 /// does not export)
 const BONE: [u8; 3] = [0xff, 0xc0, 0x20];
+/// The overlay's bounding box and point colours (`colors::BOUNDING_BOX`,
+/// `colors::SKELETON_POINT`)
+const BOUNDING_BOX: [u8; 4] = [0x00, 0xff, 0x00, 0xff];
+const POINT: [u8; 4] = [0xff, 0x00, 0xff, 0xff];
 
 /// The sheet, or `None` (with a note) on a machine with no GPU
 fn sheet(skeleton: SheetSkeleton, options: &SheetOptions) -> Option<RgbaImage> {
@@ -312,9 +316,181 @@ fn a_sheet_shows_springs() {
 }
 
 #[test]
-fn the_bones_overlay_draws_without_developer_tools() {
+fn a_one_shot_is_not_warmed_and_ends_with_its_last_pose() {
+  let cell = UVec2::new(160, 120);
+  let options = |once: bool| SheetOptions {
+    moments: 4,
+    cell: Some(cell),
+    once: if once {
+      vec!["carry".to_owned()]
+    } else {
+      Vec::new()
+    },
+    ..SheetOptions::default()
+  };
+  let rig = || SheetSkeleton::built(|world: &mut World| tail_rig(world, true));
+  let (Some(looped), Some(once)) = (sheet(rig(), &options(false)), sheet(rig(), &options(true)))
+  else {
+    return;
+  };
+  // A loop: four cells. A one-shot: a fifth, at its length
+  assert_eq!(looped.width(), 4 * cell.x + 5 * SHEET_GAP);
+  assert_eq!(once.width(), 5 * cell.x + 6 * SHEET_GAP);
+  let art = |column: u32| {
+    let (x, y) = cell_at(0, column, cell);
+    (x, y + SHEET_LABEL, cell.x, cell.y - SHEET_LABEL)
+  };
+  // Each from its cell's corner
+  let parts = |sheet: &RgbaImage, column: u32| {
+    let area = art(column);
+    let corner = Vec2::new(area.0 as f32, area.1 as f32);
+    let body = centre_of(sheet, area, RED).expect("the body");
+    let tip = centre_of(sheet, area, GREEN).expect("the tip");
+    (body - corner, tip - corner)
+  };
+  // At 0 s the loop has just jumped back from its end, and its spring
+  // swings from that; the one-shot starts at rest, the tip straight below
+  let (body, tip) = parts(&looped, 0);
+  assert!((tip.x - body.x).abs() > 2.0, "warmed: {body} {tip}");
+  let (start, tip) = parts(&once, 0);
+  assert!((tip.x - start.x).abs() < 1.0, "at rest: {start} {tip}");
+  // Its end cell shows its last pose: the body carried 60 to the right
+  let (half, _) = parts(&once, 2);
+  let (end, _) = parts(&once, 4);
+  let scale = (half.x - start.x) / 60.0;
+  assert!(scale > 0.5, "{start} {half}");
+  assert!(
+    (end.x - start.x - 60.0 * scale).abs() < 1.0,
+    "{start} {end}"
+  );
+}
+
+/// A body and hand as `hand_rig`'s, whose "long" animation of 20 s holds
+/// the hand still and moves it 40 to the right on a stepped key at 12.5 s
+fn long_rig(world: &mut World) -> Result<SkeletonData, SkeletonError> {
+  let builder = SkeletonData::builder()
+    .bone("body", None, BoneSetup::default())
+    .bone("hand", Some("body"), BoneSetup::default());
+  let builder = square(builder, world, "body", RED, 12);
+  let builder = square(builder, world, "hand", GREEN, 6);
+  let frames = vec![
+    (0.0, Vec2::ZERO, SkeletonCurve::Stepped),
+    (12.5, Vec2::new(40.0, 0.0), SkeletonCurve::Stepped),
+  ];
+  builder
+    .animation(SkeletonClip {
+      name: Arc::from("long"),
+      duration: 20.0,
+      timelines: vec![SkeletonTimeline::Translate {
+        bone: BoneId(1),
+        frames,
+      }],
+    })
+    .build()
+}
+
+#[test]
+fn a_long_animation_lands_on_its_moments() {
+  // Eight moments of 20 s, after a loop round: the sixth is 32.5 s of
+  // steps in, on the key that moves the hand, and shows it moved
+  let cell = UVec2::new(120, 100);
+  let options = SheetOptions {
+    moments: 8,
+    cell: Some(cell),
+    ..SheetOptions::default()
+  };
+  let Some(sheet) = sheet(SheetSkeleton::built(long_rig), &options) else {
+    return;
+  };
+  let hand = |column: u32| {
+    let (x, y) = cell_at(0, column, cell);
+    let art = (x, y + SHEET_LABEL, cell.x, cell.y - SHEET_LABEL);
+    centre_of(&sheet, art, GREEN).expect("the hand").x - x as f32
+  };
+  let body = {
+    let (x, y) = cell_at(0, 0, cell);
+    let art = (x, y + SHEET_LABEL, cell.x, cell.y - SHEET_LABEL);
+    box_of(&sheet, art, RED).expect("the body")
+  };
+  let centre = (body[0] + body[2]) / 2.0 - SHEET_GAP as f32;
+  assert!((hand(4) - centre).abs() < 1.0, "10 s: still {}", hand(4));
+  assert!(hand(5) - centre > 10.0, "12.5 s: moved {}", hand(5));
+}
+
+#[test]
+fn with_bones_the_cell_fits_bounding_boxes_and_points() {
+  // A bounding box reaching 150 to the left and a point 150 to the right,
+  // far past the art and the bones: the overlay's box and cross are drawn
+  // whole inside the cell
+  let rig = |world: &mut World| {
+    let builder = SkeletonData::builder().bone("body", None, BoneSetup::default());
+    let builder = square(builder, world, "body", RED, 12);
+    let shown = |name: &str| SlotSetup {
+      attachment: Some(Arc::from(name)),
+      ..SlotSetup::default()
+    };
+    let corners = vec![
+      Vec2::new(-150.0, -10.0),
+      Vec2::new(10.0, -10.0),
+      Vec2::new(10.0, 10.0),
+      Vec2::new(-150.0, 10.0),
+    ];
+    builder
+      .slot("hit", "body", shown("hit"))
+      .slot("muzzle", "body", shown("muzzle"))
+      .attachment(
+        SkeletonData::DEFAULT_SKIN,
+        "hit",
+        "hit",
+        SkeletonAttachment::BoundingBox(BoundingBoxAttachment { vertices: corners }),
+      )
+      .attachment(
+        SkeletonData::DEFAULT_SKIN,
+        "muzzle",
+        "muzzle",
+        SkeletonAttachment::Point(PointAttachment {
+          x: 150.0,
+          y: 0.0,
+          rotation: 0.0,
+        }),
+      )
+      .build()
+  };
+  let cell = UVec2::new(200, 100);
+  let options = SheetOptions {
+    moments: 1,
+    bones: true,
+    cell: Some(cell),
+    ..SheetOptions::default()
+  };
+  let Some(sheet) = sheet(SheetSkeleton::built(rig), &options) else {
+    return;
+  };
+  let art = (
+    SHEET_GAP,
+    SHEET_GAP + SHEET_LABEL,
+    cell.x,
+    cell.y - SHEET_LABEL,
+  );
+  let [left, _, right, _] = box_of(&sheet, art, BOUNDING_BOX).expect("the bounding box");
+  let point = box_of(&sheet, art, POINT).expect("the point's cross");
+  let inside = |x: f32| x > (SHEET_GAP + 2) as f32 && x < (SHEET_GAP + cell.x - 2) as f32;
+  assert!(
+    inside(left) && inside(right),
+    "the box whole: {left} to {right}"
+  );
+  assert!(
+    inside(point[0]) && inside(point[2]),
+    "the cross whole: {point:?}"
+  );
+  assert!(point[0] > right, "the point right of the box");
+}
+
+#[test]
+fn the_bones_overlay_draws_only_when_asked() {
   // The sheet's engine has every overlay of its own off: the bones are the
-  // sheet's drawing, so they show in a build without the tools as in this one
+  // sheet's drawing (`tests/no_tools.rs` draws them in a build without the
+  // tools)
   let bones = |bones: bool| {
     let options = SheetOptions {
       moments: 2,
