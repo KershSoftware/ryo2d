@@ -450,17 +450,21 @@ impl ConstraintsPage {
     place("foot_far", self.gait.feet[1].at());
   }
 
-  /// What the tail's chain does, for the readout
-  fn tail_line(&self) -> String {
+  /// What the tail's chain does, for the readout: a line, and for a side
+  /// kept, two more on what the other settings do
+  fn tail_lines(&self) -> Vec<String> {
     match SIDES[self.side].0 {
       IkBend::Pose => {
-        "IK \"tail\": a chain closing as its sway bends it, so it turns over as the sway does"
-          .to_string()
+        vec!["IK \"tail\": Tail side Pose lets the sway bend it and turn it over".to_string()]
       }
-      _ => format!(
-        "IK \"tail\": a chain kept to the {} side; its sway shows only by Tail mix",
-        SIDES[self.side].1.to_lowercase()
-      ),
+      _ => vec![
+        format!(
+          "IK \"tail\": kept to the {} side, it ignores its sway",
+          SIDES[self.side].1.to_lowercase()
+        ),
+        "Tail side Pose lets the sway bend it and turn it over".to_string(),
+        "A Tail mix below 1 blends the sway in, and the tail can then cross straight".to_string(),
+      ],
     }
   }
 
@@ -580,20 +584,18 @@ impl DemoPage for ConstraintsPage {
     } else {
       "a circling target (move the pointer to aim)"
     };
-    hero::readout(
-      ui,
-      &[
-        format!("The arm reaches for {aim}"),
-        "IK \"arm\": turns the upper arm and forearm so the wrist reaches its target".to_string(),
-        format!(
-          "Transform \"level\": turns the hand to the horizon bone's rotation, mix {:.1}",
-          self.level
-        ),
-        "IK \"leg_near\" and \"leg_far\": put each foot on a target the page plants".to_string(),
-        self.tail_line(),
-        self.reaching(),
-        "In a development build's console, debug:skeletons marks each target".to_string(),
-      ],
-    );
+    let mut lines = vec![
+      format!("The arm reaches for {aim}"),
+      "IK \"arm\": turns the upper arm and forearm so the wrist reaches its target".to_string(),
+      format!(
+        "Transform \"level\": turns the hand to the horizon bone's rotation, mix {:.1}",
+        self.level
+      ),
+      "IK \"leg_near\" and \"leg_far\": put each foot on a target the page plants".to_string(),
+    ];
+    lines.extend(self.tail_lines());
+    lines.push(self.reaching());
+    lines.push("In a development build's console, debug:skeletons marks each target".to_string());
+    hero::readout(ui, &lines);
   }
 }

@@ -210,8 +210,8 @@ magick -size 214x102 xc:none \
   PNG32:walker.png
 
 # segment.png: a segment of the tail, red with a yellow band and a bolt
-# at its root joint (20, 20); its other joint, the middle of its far end,
-# is at (70, 20), 50 along
+# at its root joint (20, 20); its other joint, 14 in from its far end, is
+# at (70, 20), 50 along
 magick -size 168x80 xc:none \
   -fill '#e05848' -draw 'roundrectangle 0,0 167,79 40,40' \
   \( -size 168x80 xc:none -fill '#bf493b' -draw 'rectangle 0,54 168,80' \
@@ -329,7 +329,7 @@ The leg's hip is at (31, 18) in its image and its ankle at (64, 158), so it is `
 
 Measure the two pixels in the image at the size the atlas holds it, as the commands above write them. The reacher, the walker and the tail are placed this way.
 
-The hero's file is older than pivots: its limbs carry the same placing worked out by hand, the image's centre from the joint (`x`, `y`) and the turn that lays the joints along the bone (`rotation`). The leg's line from hip to ankle is 76.7 degrees round from the image's x axis, so its `rotation` is -76.7, and its centre (46.5, 82) less its hip, (15.5, 64), turned by that, is its `x: 65.8, y: -0.4`. An arm is also flipped across its bone (`scale_y: -1`), which turns its `rotation` and its `y` the other way, so that the arm's curve bends its elbow back. A sleeve or a trouser leg is placed by the same joint as the arm or leg under it.
+The hero's file is older than pivots: its limbs carry the same placing worked out by hand, the image's centre from the joint (`x`, `y`) and the turn that lays the joints along the bone (`rotation`). The leg's line from hip to ankle is 76.7 degrees round from the image's x axis, so its `rotation` is -76.7, and its centre (46.5, 82) less its hip, (15.5, 64), turned by that, is its `x: 65.8, y: -0.4`. An arm is also flipped across its bone (`scale_y: -1`), which turns its `rotation` and its `y` the other way, so that the arm's curve bends its elbow back. A sleeve or a trouser leg is placed by the same joint as the arm or leg under it. The limbs keep these worked values, not converted to pivots, because converting them would move every hero page's pixels slightly.
 
 ## The meshes
 

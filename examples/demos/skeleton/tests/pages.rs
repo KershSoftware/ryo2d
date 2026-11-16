@@ -574,6 +574,22 @@ fn the_crowd_page_animates_two_hundred_heroes() {
 }
 
 #[test]
+fn the_crowd_s_footsteps_are_a_patter() {
+  // Two hundred heroes walk and run, and their footsteps are heard, but
+  // the footstep's voice limit keeps at most four playing at once
+  let Some(mut engine) = engine_on(CROWD) else {
+    return;
+  };
+  let mut most = 0;
+  for _ in 0..FRAMES {
+    engine.step().unwrap();
+    most = most.max(AudioView::new(engine.world_mut()).voices_on("sfx"));
+  }
+  assert!(footsteps(&mut engine, &mut 0) > 4, "the crowd is heard");
+  assert!(most <= 4, "{most} footsteps at once");
+}
+
+#[test]
 fn the_crowd_starts_out_of_step() {
   let Some(mut engine) = engine_on(CROWD) else {
     return;
