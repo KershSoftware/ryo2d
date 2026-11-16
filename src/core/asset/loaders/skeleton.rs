@@ -16,7 +16,8 @@ use crate::core::skeleton::{
   Animation, Attachment, BoneSetup, BoundingBoxAttachment, ConstraintId, Curve, EventAudio,
   EventData, EventValues, Frame, IkBend, IkSetup, IkValues, Influence, Inherit, MeshAttachment,
   MeshVertices, PointAttachment, Region, RegionAttachment, SkeletonData, SkeletonError, SlotBlend,
-  SlotId, SlotSetup, Timeline, TransformMix, TransformOffset, TransformSetup, WeightedVertices,
+  SlotId, SlotSetup, SpringSetup, SpringValues, Timeline, TransformMix, TransformOffset,
+  TransformSetup, WeightedVertices,
 };
 use crate::core::ui::Color;
 
@@ -114,6 +115,18 @@ use crate::core::ui::Color;
 ///               mix: (rotate: 1, x: 0, y: 0, scale_x: 0, scale_y: 0, shear_y: 0),   // all 0
 ///               offset: (rotation: 0, x: 0, y: 0, scale_x: 0, scale_y: 0, shear_y: 0), // all 0
 ///               local: false, relative: false),              // false, false
+///     // A spring gives one bone secondary motion: it lags behind where animation puts the
+///     // bone and swings back. It names a bone, no target; a strand lists parent before child
+///     Spring(name: "sway", bone: "arm",
+///            x: 0, y: 0, rotate: 1, scale_x: 0,              // what it moves, 0 to 1 each
+///                                                            // (all 0; at least one above
+///                                                            // 0; rotate and scale_x need
+///                                                            // a length)
+///            inertia: 0.5,                                   // 0.5; 0 to 1
+///            strength: 100, damping: 5,                      // 100 (above 0), 5
+///            wind: 0, gravity: 0,                            // 0, 0; units a second squared
+///            limit: 5000,                                    // 5000; units a second
+///            mix: 1),                                        // 1; 0 to 1
 ///   ],
 ///   // Events with default values, and a sound the game plays
 ///   events: {
@@ -158,12 +171,14 @@ use crate::core::ui::Color;
 ///         deform: { "flag": [(0.0, []), (0.5, [0, -6, 0, -6, 0, 6], Bezier(0.25, 0, 0.75, 1)), (1.0, [])] },
 ///       ) },
 ///       // Constraints by name: an IK constraint's `ik` keys (mix, softness, bend,
-///       // compress, stretch) or a transform constraint's `transform` keys (its six mixes).
-///       // A value a key leaves out is the constraint's setup value. The numbers ease to
-///       // the next key by its curve; the switches change at their key
+///       // compress, stretch), a transform constraint's `transform` keys (its six mixes)
+///       // or a spring's `spring` keys (mix, wind, gravity). A value a key leaves out is
+///       // the constraint's setup value. The numbers ease to the next key by its curve;
+///       // the switches change at their key
 ///       constraints: {
 ///         "reach": (ik: [(0.0, (mix: 1)), (0.5, (mix: 0.5, softness: 4, bend: Negative), Stepped)]),
 ///         "level": (transform: [(0.0, (rotate: 1)), (1.0, (rotate: 0.5, x: 0.25))]),
+///         "sway": (spring: [(0.0, (wind: 0)), (0.5, (mix: 0.5, wind: 40, gravity: 10))]),
 ///       },
 ///       // Every slot, back to front, or None for the setup order
 ///       draw_order: [(0.25, ["gear", "torso"]), (0.75, None)],
@@ -192,7 +207,8 @@ use crate::core::ui::Color;
 /// or slot of an animation, a region's image, an attachment's region, a
 /// mesh influence's bone, a deform's attachment (in its slot, in some
 /// skin), an animation's constraint and an event key's event are names the
-/// file declares, and so are a constraint's bones and target. Unknown
+/// file declares, and so are a constraint's bones and target and a spring's
+/// bone. Unknown
 /// fields are refused, so a misspelt one fails rather than doing nothing,
 /// and so is a name written twice in one map.
 ///
@@ -468,7 +484,7 @@ impl IkBendFile {
   }
 }
 
-/// A constraint, as written: `Ik(..)` or `Transform(..)`
+/// A constraint, as written: `Ik(..)`, `Transform(..)` or `Spring(..)`
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 enum ConstraintFile {
@@ -504,6 +520,33 @@ enum ConstraintFile {
     #[serde(default)]
     relative: bool,
   },
+  /// Each setting left out is `SpringSetup::default()`'s
+  Spring {
+    name: String,
+    bone: String,
+    #[serde(default)]
+    x: Option<f32>,
+    #[serde(default)]
+    y: Option<f32>,
+    #[serde(default)]
+    rotate: Option<f32>,
+    #[serde(default)]
+    scale_x: Option<f32>,
+    #[serde(default)]
+    inertia: Option<f32>,
+    #[serde(default)]
+    strength: Option<f32>,
+    #[serde(default)]
+    damping: Option<f32>,
+    #[serde(default)]
+    wind: Option<f32>,
+    #[serde(default)]
+    gravity: Option<f32>,
+    #[serde(default)]
+    limit: Option<f32>,
+    #[serde(default)]
+    mix: Option<f32>,
+  },
 }
 
 #[derive(Deserialize, Default)]
@@ -533,7 +576,42 @@ impl TransformMixFile {
 impl ConstraintFile {
   fn name(&self) -> &str {
     match self {
-      Self::Ik { name, .. } | Self::Transform { name, .. } => name,
+      Self::Ik { name, .. } | Self::Transform { name, .. } | Self::Spring { name, .. } => name,
+    }
+  }
+
+  /// A spring's setup, each setting left out the default's; the default
+  /// setup for another kind
+  fn spring_setup(&self) -> SpringSetup {
+    let base = SpringSetup::default();
+    match self {
+      Self::Spring {
+        x,
+        y,
+        rotate,
+        scale_x,
+        inertia,
+        strength,
+        damping,
+        wind,
+        gravity,
+        limit,
+        mix,
+        ..
+      } => SpringSetup {
+        x: x.unwrap_or(base.x),
+        y: y.unwrap_or(base.y),
+        rotate: rotate.unwrap_or(base.rotate),
+        scale_x: scale_x.unwrap_or(base.scale_x),
+        inertia: inertia.unwrap_or(base.inertia),
+        strength: strength.unwrap_or(base.strength),
+        damping: damping.unwrap_or(base.damping),
+        wind: wind.unwrap_or(base.wind),
+        gravity: gravity.unwrap_or(base.gravity),
+        limit: limit.unwrap_or(base.limit),
+        mix: mix.unwrap_or(base.mix),
+      },
+      Self::Ik { .. } | Self::Transform { .. } => base,
     }
   }
 }
@@ -722,13 +800,24 @@ struct TransformKeyFile {
   shear_y: Option<f32>,
 }
 
-/// One constraint's timeline: an IK constraint's `ik` keys or a transform
-/// constraint's `transform` keys
+/// A spring constraint's key: each value left out is the constraint's
+/// setup value
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields, default)]
+struct SpringKeyFile {
+  mix: Option<f32>,
+  wind: Option<f32>,
+  gravity: Option<f32>,
+}
+
+/// One constraint's timeline: an IK constraint's `ik` keys, a transform
+/// constraint's `transform` keys or a spring's `spring` keys
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields, default)]
 struct ConstraintTimelinesFile {
   ik: Option<Vec<Key<IkKeyFile>>>,
   transform: Option<Vec<Key<TransformKeyFile>>>,
+  spring: Option<Vec<Key<SpringKeyFile>>>,
 }
 
 #[derive(Deserialize)]
@@ -983,6 +1072,9 @@ impl SkeletonFile {
             relative: *relative,
           },
         ),
+        ConstraintFile::Spring { name, bone, .. } => {
+          builder.spring(name.as_str(), bone, constraint.spring_setup())
+        }
       };
     }
     for (skin, _) in &self.skins.0 {
@@ -1236,7 +1328,9 @@ impl SkeletonFile {
             stretch: *stretch,
             max_stretch: *max_stretch,
           },
-          ConstraintFile::Transform { .. } => IkValues::of(&IkSetup::default(), 1),
+          ConstraintFile::Transform { .. } | ConstraintFile::Spring { .. } => {
+            IkValues::of(&IkSetup::default(), 1)
+          }
         };
         timelines.push(Timeline::Ik {
           constraint,
@@ -1253,7 +1347,7 @@ impl SkeletonFile {
       if let Some(keys) = &t.transform {
         let setup = match setup {
           ConstraintFile::Transform { mix, .. } => mix.mix(),
-          ConstraintFile::Ik { .. } => TransformMix::default(),
+          ConstraintFile::Ik { .. } | ConstraintFile::Spring { .. } => TransformMix::default(),
         };
         timelines.push(Timeline::TransformMix {
           constraint,
@@ -1264,6 +1358,18 @@ impl SkeletonFile {
             scale_x: key.scale_x.unwrap_or(setup.scale_x),
             scale_y: key.scale_y.unwrap_or(setup.scale_y),
             shear_y: key.shear_y.unwrap_or(setup.shear_y),
+          }),
+        });
+      }
+      if let Some(keys) = &t.spring {
+        // Keys for another kind fail as validation refuses them
+        let setup = SpringValues::of(&setup.spring_setup());
+        timelines.push(Timeline::Spring {
+          constraint,
+          frames: frames(keys, |key| SpringValues {
+            mix: key.mix.unwrap_or(setup.mix),
+            wind: key.wind.unwrap_or(setup.wind),
+            gravity: key.gravity.unwrap_or(setup.gravity),
           }),
         });
       }
@@ -1341,8 +1447,8 @@ mod tests {
     Animation, Attachment, BoneId, BoneSetup, BoundingBoxAttachment, ConstraintId, Curve,
     EventAudio, EventData, EventValues, IkBend, IkSetup, IkValues, Influence, Inherit,
     MeshAttachment, MeshVertices, PointAttachment, Region, RegionAttachment, SkeletonData,
-    SlotBlend, SlotId, SlotSetup, Timeline, TransformMix, TransformOffset, TransformSetup,
-    WeightedVertices,
+    SlotBlend, SlotId, SlotSetup, SpringSetup, SpringValues, Timeline, TransformMix,
+    TransformOffset, TransformSetup, WeightedVertices,
   };
   use crate::core::ui::Color;
 
@@ -1575,6 +1681,8 @@ mod tests {
       (name: "thigh", parent: "root", length: 10),
       (name: "shin", parent: "thigh", x: 10, length: 10),
       (name: "aim", parent: "root"),
+      (name: "hair_1", parent: "root", length: 8),
+      (name: "hair_2", parent: "hair_1", x: 8, length: 6),
     ],
     slots: [
       (name: "torso", bone: "torso", attachment: "torso", color: "#ff8000"),
@@ -1621,6 +1729,10 @@ mod tests {
                 mix: (rotate: 0.5, x: 0.25, y: -0.5, scale_x: 1, scale_y: 2, shear_y: 0.1),
                 offset: (rotation: 45, x: 1, y: 2, scale_x: 0.5, scale_y: -0.5, shear_y: 30),
                 local: true, relative: true),
+      Spring(name: "hair", bone: "hair_1", x: 0.25, y: 0.5, rotate: 1, scale_x: 0.75,
+             inertia: 0.25, strength: 120, damping: 3, wind: -4, gravity: 9.5, limit: 2000,
+             mix: 0.8),
+      Spring(name: "tip", bone: "hair_2", rotate: 0.5),
     ],
     events: {
       "step": (int: 1, float: 2.5, string: "left", audio: Some((path: "audio/step.ogg", volume: 0.8, balance: -0.5))),
@@ -1655,6 +1767,7 @@ mod tests {
         constraints: {
           "copy": (transform: [(0.25, (rotate: -1, shear_y: 3), Bezier(0.25, 0, 0.75, 1)), (1.0, (x: 2))]),
           "limb": (ik: [(0.0, (mix: 0.5)), (0.5, (softness: 1, bend: Positive, stretch: false), Stepped), (1.0, (mix: 0, softness: 0))]),
+          "hair": (spring: [(0.0, (wind: 10)), (0.5, (mix: 0.5, gravity: -2), Bezier(0.25, 0, 0.75, 1)), (1.0, (mix: 1, wind: 0, gravity: 0))]),
         },
         draw_order: [(0.25, ["head", "torso", "gear", "glow"]), (0.75, None)],
         events: [
@@ -1769,6 +1882,23 @@ mod tests {
         },
       )
       .bone("aim", Some("root"), origin())
+      .bone(
+        "hair_1",
+        Some("root"),
+        BoneSetup {
+          length: 8.0,
+          ..origin()
+        },
+      )
+      .bone(
+        "hair_2",
+        Some("hair_1"),
+        BoneSetup {
+          x: 8.0,
+          length: 6.0,
+          ..origin()
+        },
+      )
       .slot(
         "torso",
         "torso",
@@ -1843,6 +1973,31 @@ mod tests {
           },
           local: true,
           relative: true,
+        },
+      )
+      .spring(
+        "hair",
+        "hair_1",
+        SpringSetup {
+          x: 0.25,
+          y: 0.5,
+          rotate: 1.0,
+          scale_x: 0.75,
+          inertia: 0.25,
+          strength: 120.0,
+          damping: 3.0,
+          wind: -4.0,
+          gravity: 9.5,
+          limit: 2000.0,
+          mix: 0.8,
+        },
+      )
+      .spring(
+        "tip",
+        "hair_2",
+        SpringSetup {
+          rotate: 0.5,
+          ..SpringSetup::default()
         },
       )
       .attachment(
@@ -2121,6 +2276,45 @@ mod tests {
             ),
           ],
         },
+        // "hair" keys leave out values of its setup: mix 0.8, wind -4,
+        // gravity 9.5
+        Timeline::Spring {
+          constraint: ConstraintId(2),
+          frames: vec![
+            (
+              0.0,
+              SpringValues {
+                mix: 0.8,
+                wind: 10.0,
+                gravity: 9.5,
+              },
+              linear,
+            ),
+            (
+              0.5,
+              SpringValues {
+                mix: 0.5,
+                wind: -4.0,
+                gravity: -2.0,
+              },
+              Curve::Bezier {
+                cx1: 0.25,
+                cy1: 0.0,
+                cx2: 0.75,
+                cy2: 1.0,
+              },
+            ),
+            (
+              1.0,
+              SpringValues {
+                mix: 1.0,
+                wind: 0.0,
+                gravity: 0.0,
+              },
+              linear,
+            ),
+          ],
+        },
         Timeline::DrawOrder {
           frames: vec![(0.25, Some(slot_ids)), (0.75, None)],
         },
@@ -2172,7 +2366,7 @@ mod tests {
     assert_eq!(data.regions(), expected.regions());
     assert_eq!(data.events(), expected.events());
     assert_eq!(data.constraints(), expected.constraints());
-    assert_eq!(data.constraints().len(), 2);
+    assert_eq!(data.constraints().len(), 4);
     assert_eq!(data.animations(), expected.animations());
     assert_eq!(data.skins(), expected.skins());
     assert_eq!(data.default_mix(), expected.default_mix());
@@ -2973,6 +3167,161 @@ mod tests {
   }
 
   #[test]
+  fn springs_load_with_their_defaults_and_keys_as_the_builder_builds_them() {
+    let text = r#"(
+      bones: [
+        (name: "root"),
+        (name: "hair_1", parent: "root", length: 10),
+        (name: "hair_2", parent: "hair_1", x: 10, length: 8),
+        (name: "aim", parent: "root"),
+      ],
+      constraints: [
+        Spring(name: "root_sway", bone: "hair_1", rotate: 1, strength: 120),
+        Ik(name: "look", bones: ["hair_2"], target: "aim"),
+        Spring(name: "tip", bone: "hair_2", x: 0.5, y: 0.5, wind: 3),
+      ],
+      animations: {
+        "gust": (duration: 1.0, constraints: {
+          "tip": (spring: [(0.0, (mix: 0.25)), (0.5, (wind: 40, gravity: 10), Stepped), (1.0, ())]),
+        }),
+      },
+    )"#;
+    let long = |x: f32, length: f32| BoneSetup {
+      x,
+      length,
+      ..BoneSetup::default()
+    };
+    let tip = SpringSetup {
+      x: 0.5,
+      y: 0.5,
+      wind: 3.0,
+      ..SpringSetup::default()
+    };
+    let setup = SpringValues::of(&tip);
+    let expected = SkeletonData::builder()
+      .bone("root", None, BoneSetup::default())
+      .bone("hair_1", Some("root"), long(0.0, 10.0))
+      .bone("hair_2", Some("hair_1"), long(10.0, 8.0))
+      .bone("aim", Some("root"), BoneSetup::default())
+      .spring(
+        "root_sway",
+        "hair_1",
+        SpringSetup {
+          rotate: 1.0,
+          strength: 120.0,
+          ..SpringSetup::default()
+        },
+      )
+      .ik("look", &["hair_2"], "aim", IkSetup::default())
+      .spring("tip", "hair_2", tip)
+      .animation(animation(
+        "gust",
+        1.0,
+        vec![Timeline::Spring {
+          constraint: ConstraintId(2),
+          frames: vec![
+            (0.0, SpringValues { mix: 0.25, ..setup }, Curve::Linear),
+            (
+              0.5,
+              SpringValues {
+                wind: 40.0,
+                gravity: 10.0,
+                ..setup
+              },
+              Curve::Stepped,
+            ),
+            (1.0, setup, Curve::Linear),
+          ],
+        }],
+      ))
+      .build()
+      .expect("the twin");
+    let data = loaded(text);
+    assert_eq!(data.constraints(), expected.constraints());
+    assert_eq!(data.animations(), expected.animations());
+    // Mistakes: a bone that is not one, a spring that breaks a rule, keys
+    // for a spring on another kind, a value out of range, a misspelt setting
+    let spring_file = |constraints: &str, animations: &str| {
+      format!(
+        r#"(bones: [(name: "a", length: 5), (name: "b", parent: "a", length: 5), (name: "t")], constraints: [{constraints}], animations: {{ {animations} }})"#
+      )
+    };
+    for (text, item, reason) in [
+      (
+        spring_file(r#"Spring(name: "s", bone: "z", rotate: 1)"#, ""),
+        r#"constraint "s""#,
+        r#"its bone "z" is not a bone"#,
+      ),
+      (
+        spring_file(r#"Spring(name: "s", bone: "a")"#, ""),
+        r#"constraint "s""#,
+        "it moves nothing",
+      ),
+      (
+        spring_file(
+          r#"Spring(name: "s", bone: "b", rotate: 1), Spring(name: "r", bone: "a", rotate: 1)"#,
+          "",
+        ),
+        r#"constraint "s""#,
+        r#"listed before spring "r""#,
+      ),
+      (
+        spring_file(
+          r#"Ik(name: "c", bones: ["a"], target: "t")"#,
+          r#""w": (duration: 1.0, constraints: { "c": (spring: [(0.0, (mix: 1))]) })"#,
+        ),
+        r#"animation "w" timeline 0 (spring)"#,
+        r#"constraint "c" is an IK constraint; a spring timeline keys a spring constraint"#,
+      ),
+      (
+        spring_file(
+          r#"Spring(name: "s", bone: "a", rotate: 1)"#,
+          r#""w": (duration: 1.0, constraints: { "s": (ik: [(0.0, (mix: 1))]) })"#,
+        ),
+        r#"animation "w" timeline 0 (ik)"#,
+        r#"constraint "s" is a spring constraint"#,
+      ),
+      (
+        spring_file(
+          r#"Spring(name: "s", bone: "a", rotate: 1)"#,
+          r#""w": (duration: 1.0, constraints: { "s": (spring: [(0.0, (mix: 2))]) })"#,
+        ),
+        r#"animation "w" timeline 0 (spring)"#,
+        "key 0's mix is 2; it must be within 0 to 1",
+      ),
+      (
+        spring_file(
+          r#"Spring(name: "s", bone: "a", rotate: 1, stiffness: 3)"#,
+          "",
+        ),
+        "line 1",
+        "stiffness",
+      ),
+      (
+        spring_file(
+          r#"Spring(name: "s", bone: "a", rotate: 1)"#,
+          r#""w": (duration: 1.0, constraints: { "s": (spring: [(0.0, (gust: 1))]) })"#,
+        ),
+        "line 1",
+        "gust",
+      ),
+      (
+        spring_file(
+          r#"Spring(name: "s", bone: "a", target: "t", rotate: 1)"#,
+          "",
+        ),
+        "line 1",
+        "target",
+      ),
+    ] {
+      let error = failure(&text);
+      assert!(error.contains(PATH), "{error}");
+      assert!(error.contains(item), "{item} in {error}");
+      assert!(error.contains(reason), "{reason} in {error}");
+    }
+  }
+
+  #[test]
   fn an_image_is_named_from_the_asset_root_not_the_file_s_folder() {
     // The file is in rigs/; the image only exists at other/pic.png
     let mut world = registry_over(files(
@@ -3020,7 +3369,17 @@ mod tests {
     assert_eq!(data.animations().len(), 2);
     assert_eq!(data.skins().len(), 2);
     assert_eq!(data.mix("walk", "run"), 0.2);
-    assert_eq!(data.constraints().len(), 2);
+    assert_eq!(data.constraints().len(), 3);
+    match &data.constraints()[2] {
+      crate::core::skeleton::Constraint::Spring(spring) => assert_eq!(
+        spring.setup,
+        SpringSetup {
+          rotate: 1.0,
+          ..SpringSetup::default()
+        }
+      ),
+      other => panic!("{other:?}"),
+    }
     // Its deform keys are for the flag it declares: three positions
     let walk = data.animation("walk").expect("walk");
     let deforms: Vec<_> = walk
@@ -3047,10 +3406,16 @@ mod tests {
         Timeline::TransformMix { constraint, frames } => {
           Some((constraint.0, frames.len(), frames[1].1.rotate, false))
         }
+        Timeline::Spring { constraint, frames } => {
+          Some((constraint.0, frames.len(), frames[1].1.mix, false))
+        }
         _ => None,
       })
       .collect();
-    assert_eq!(constraints, [(0, 2, 0.5, false), (1, 2, 0.5, false)]);
+    assert_eq!(
+      constraints,
+      [(0, 2, 0.5, false), (1, 2, 0.5, false), (2, 2, 0.5, false)]
+    );
   }
 
   #[test]

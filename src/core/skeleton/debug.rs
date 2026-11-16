@@ -116,7 +116,8 @@ pub(crate) fn draw(world: &mut World, alpha: f32, pixel: f32, debug: &mut DebugD
       Some(drawn.root * space)
     };
     for constraint in data.constraints() {
-      let Some(target) = placed(constraint.target().index()) else {
+      // A spring has no target, and no mark until its motion shows
+      let Some(target) = constraint.target().and_then(|bone| placed(bone.index())) else {
         continue;
       };
       let goal = target.translation;
@@ -139,6 +140,7 @@ pub(crate) fn draw(world: &mut World, alpha: f32, pixel: f32, debug: &mut DebugD
             }
           }
         }
+        Constraint::Spring(_) => {}
       }
     }
 
@@ -530,6 +532,26 @@ mod tests {
       [vec![at, goal], vec![at + Vec2::new(8.0, 0.0), goal],]
     );
     assert!(marks(&mut world, ShapeKind::Cross).is_empty());
+  }
+
+  #[test]
+  fn the_overlay_marks_nothing_for_a_spring_and_still_marks_the_rest() {
+    use crate::core::skeleton::{IkSetup, SpringSetup};
+    let swing = SpringSetup {
+      rotate: 1.0,
+      ..SpringSetup::default()
+    };
+    // A spring alone: no target, nothing marked
+    let mut world = constrained(|b| b.spring("sway", "a", swing));
+    assert!(marks(&mut world, ShapeKind::Line).is_empty());
+    assert!(marks(&mut world, ShapeKind::Cross).is_empty());
+    // Among other constraints, theirs are marked as before
+    let mut world = constrained(|b| {
+      b.spring("sway", "a", swing)
+        .ik("reach", &["a"], "goal", IkSetup::default())
+    });
+    assert_eq!(marks(&mut world, ShapeKind::Line).len(), 1);
+    assert_eq!(marks(&mut world, ShapeKind::Cross).len(), 1);
   }
 
   /// A world with an entity at (100, 50) showing `data`, posed in one step

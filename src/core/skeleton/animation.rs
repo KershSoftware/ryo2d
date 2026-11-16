@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use super::constraint::{ConstraintId, TransformMix};
+use super::constraint::{ConstraintId, SpringValues, TransformMix};
 use super::curve::Curve;
 use super::data::{BoneId, SlotId};
 use super::ik::IkValues;
@@ -128,6 +128,13 @@ pub enum Timeline {
     constraint: ConstraintId,
     frames: Vec<Frame<TransformMix>>,
   },
+  /// A spring constraint's `mix`, `wind` and `gravity`, each easing to the
+  /// next key by the key's curve. The `mix` is 0 to 1 and `wind` and
+  /// `gravity` finite, or the data does not build
+  Spring {
+    constraint: ConstraintId,
+    frames: Vec<Frame<SpringValues>>,
+  },
   /// The draw order: every slot once, back to front, or `None` for the
   /// setup order; keys are stepped
   DrawOrder {
@@ -180,6 +187,7 @@ impl Timeline {
       Self::Deform { .. } => "deform",
       Self::Ik { .. } => "ik",
       Self::TransformMix { .. } => "transform mix",
+      Self::Spring { .. } => "spring",
       Self::DrawOrder { .. } => "draw order",
       Self::Event { .. } => "event",
     }
@@ -203,9 +211,9 @@ impl Timeline {
       Self::Deform {
         slot, attachment, ..
       } => Target::Attachment(*slot, attachment),
-      Self::Ik { constraint, .. } | Self::TransformMix { constraint, .. } => {
-        Target::Constraint(*constraint)
-      }
+      Self::Ik { constraint, .. }
+      | Self::TransformMix { constraint, .. }
+      | Self::Spring { constraint, .. } => Target::Constraint(*constraint),
       Self::DrawOrder { .. } | Self::Event { .. } => Target::Skeleton,
     }
   }
@@ -228,7 +236,7 @@ impl Timeline {
       Self::Attachment { .. } => &["attachment"],
       Self::Color { .. } => &["color"],
       Self::Deform { .. } => &["deform"],
-      Self::Ik { .. } | Self::TransformMix { .. } => &["values"],
+      Self::Ik { .. } | Self::TransformMix { .. } | Self::Spring { .. } => &["values"],
       Self::DrawOrder { .. } => &["draw order"],
       Self::Event { .. } => &["event"],
     }
@@ -251,6 +259,7 @@ impl Timeline {
       Self::Deform { frames, .. } => frames.first().map(|frame| frame.0),
       Self::Ik { frames, .. } => frames.first().map(|frame| frame.0),
       Self::TransformMix { frames, .. } => frames.first().map(|frame| frame.0),
+      Self::Spring { frames, .. } => frames.first().map(|frame| frame.0),
       Self::Attachment { frames, .. } => frames.first().map(|frame| frame.0),
       Self::DrawOrder { frames } => frames.first().map(|frame| frame.0),
       Self::Event { frames } => frames.first().map(|frame| frame.0),
@@ -277,6 +286,7 @@ impl Timeline {
       Self::Deform { frames, .. } => of(frames),
       Self::Ik { frames, .. } => of(frames),
       Self::TransformMix { frames, .. } => of(frames),
+      Self::Spring { frames, .. } => of(frames),
       Self::Attachment { frames, .. } => frames.iter().map(|frame| frame.0).collect(),
       Self::DrawOrder { frames } => frames.iter().map(|frame| frame.0).collect(),
       Self::Event { frames } => frames.iter().map(|frame| frame.0).collect(),

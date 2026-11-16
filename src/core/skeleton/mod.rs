@@ -8,7 +8,8 @@
 //!
 //! A [`Skeleton`] component shows one on an entity, posed by the entity's
 //! [`SkeletonAnimation`] in each fixed step, its constraints then bringing
-//! bones to their targets or making them copy a target bone's transform;
+//! bones to their targets or making them copy a target bone's transform
+//! (springs, which give a bone secondary motion, are held in the data);
 //! a [`BoneSocket`] on a child
 //! entity rides one of its bones; and [`SkeletonEvent`] and
 //! [`SkeletonTrackEvent`] messages tell the game what its animations did.
@@ -50,11 +51,13 @@ pub use attachment::{
 };
 pub use builder::{BoneSetup, SkeletonDataBuilder, SlotSetup};
 pub use component::{
-  BoneOverride, ConstraintOverride, IkOverride, Skeleton, Space, TransformMixOverride,
+  BoneOverride, ConstraintOverride, IkOverride, Skeleton, Space, SpringOverride,
+  TransformMixOverride,
 };
 pub use constraint::{
   Constraint, ConstraintId, IkBend, IkConstraint, IkSetup, MAX_CONSTRAINTS, MAX_IK_BONES,
-  TransformConstraint, TransformMix, TransformOffset, TransformSetup,
+  SpringConstraint, SpringSetup, SpringValues, TransformConstraint, TransformMix, TransformOffset,
+  TransformSetup,
 };
 pub use curve::Curve;
 pub use data::{

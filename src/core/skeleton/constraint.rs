@@ -1,7 +1,8 @@
 //! Constraints: rules that move bones after animation. An IK constraint
 //! turns bones so the last one's tip reaches a target bone; a transform
 //! constraint makes bones copy a target bone's rotation, place, scale or
-//! shear.
+//! shear; a spring constraint gives one bone secondary motion, lagging
+//! behind where animation puts it and swinging back.
 
 use std::sync::Arc;
 
@@ -29,6 +30,7 @@ pub const MAX_IK_BONES: usize = 16;
 pub enum Constraint {
   Ik(IkConstraint),
   Transform(TransformConstraint),
+  Spring(SpringConstraint),
 }
 
 impl Constraint {
@@ -36,22 +38,25 @@ impl Constraint {
     match self {
       Self::Ik(ik) => &ik.name,
       Self::Transform(transform) => &transform.name,
+      Self::Spring(spring) => &spring.name,
     }
   }
 
-  /// The bones it moves, first to last
+  /// The bones it moves, first to last (a spring's one bone)
   pub fn bones(&self) -> &[BoneId] {
     match self {
       Self::Ik(ik) => &ik.bones,
       Self::Transform(transform) => &transform.bones,
+      Self::Spring(spring) => std::slice::from_ref(&spring.bone),
     }
   }
 
-  /// The bone it follows
-  pub fn target(&self) -> BoneId {
+  /// The bone it follows; a spring follows none
+  pub fn target(&self) -> Option<BoneId> {
     match self {
-      Self::Ik(ik) => ik.target,
-      Self::Transform(transform) => transform.target,
+      Self::Ik(ik) => Some(ik.target),
+      Self::Transform(transform) => Some(transform.target),
+      Self::Spring(_) => None,
     }
   }
 }
@@ -230,4 +235,93 @@ pub struct TransformOffset {
   pub scale_y: f32,
   /// Radians
   pub shear_y: f32,
+}
+
+/// Gives one bone secondary motion: when its animated place moves, the bone
+/// lags behind and swings back. It has no target bone
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpringConstraint {
+  pub name: Arc<str>,
+  pub bone: BoneId,
+  pub setup: SpringSetup,
+}
+
+/// A spring constraint's settings. The amounts (`x`, `y`, `rotate`,
+/// `scale_x`) are all 0 by default, so set the ones wanted: a spring that
+/// moves nothing does not build
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SpringSetup {
+  /// How far the bone's place follows its origin's lag along x, 0 to 1
+  pub x: f32,
+  /// How far the bone's place follows its origin's lag along y, 0 to 1
+  pub y: f32,
+  /// How far the bone turns toward its lagging tip, 0 to 1. Needs a length
+  pub rotate: f32,
+  /// How far the bone's scale along its length follows its lagging tip, 0
+  /// to 1. Needs a length
+  pub scale_x: f32,
+  /// How much of the animated movement each step leaves behind, 0 to 1
+  /// (default 0.5)
+  pub inertia: f32,
+  /// The pull back, per second squared per unit of lag, above 0 (default
+  /// 100)
+  pub strength: f32,
+  /// The rate a second the speed dies away, 0 or more (default 5)
+  pub damping: f32,
+  /// An acceleration along the world's x, in units a second squared
+  /// (default 0)
+  pub wind: f32,
+  /// An acceleration along the world's y, down positive, in units a second
+  /// squared (default 0)
+  pub gravity: f32,
+  /// The most animated movement a second taken in, so a jump does not
+  /// fling the bone, 0 or more (default 5000)
+  pub limit: f32,
+  /// 0 (the animated pose) to 1 (the sprung pose) (default 1)
+  pub mix: f32,
+}
+
+impl Default for SpringSetup {
+  fn default() -> Self {
+    Self {
+      x: 0.0,
+      y: 0.0,
+      rotate: 0.0,
+      scale_x: 0.0,
+      inertia: 0.5,
+      strength: 100.0,
+      damping: 5.0,
+      wind: 0.0,
+      gravity: 0.0,
+      limit: 5000.0,
+      mix: 1.0,
+    }
+  }
+}
+
+/// A spring constraint's values that animations key and the game
+/// overrides; the rest are its setup's
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SpringValues {
+  /// 0 to 1
+  pub mix: f32,
+  pub wind: f32,
+  pub gravity: f32,
+}
+
+impl SpringValues {
+  /// The values a spring starts each step with: its setup's
+  pub fn of(setup: &SpringSetup) -> Self {
+    Self {
+      mix: setup.mix,
+      wind: setup.wind,
+      gravity: setup.gravity,
+    }
+  }
+}
+
+impl Default for SpringValues {
+  fn default() -> Self {
+    Self::of(&SpringSetup::default())
+  }
 }

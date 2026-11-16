@@ -10,7 +10,7 @@ use super::builder::{PendingConstraint, PendingKind, SkeletonDataBuilder};
 use super::constrain::ConstraintBones;
 use super::constraint::{
   Constraint, ConstraintId, IkBend, IkConstraint, IkSetup, MAX_CONSTRAINTS, MAX_IK_BONES,
-  TransformConstraint,
+  SpringConstraint, SpringSetup, TransformConstraint,
 };
 use super::curve::Curve;
 use super::data::{
@@ -357,6 +357,7 @@ pub(super) fn build(builder: SkeletonDataBuilder) -> Result<SkeletonData, Skelet
     let constraint = constraint_ok(item, pending, &bones, &bone_names)?;
     constraint_names.insert(pending.name.clone(), id);
     constraints.push(constraint);
+    spring_order_ok(&constraints, &bones)?;
   }
 
   // Animations: unique, finite, keys in time order, references resolve
@@ -471,31 +472,37 @@ fn constraint_ok(
     }
     ids.push(id);
   }
-  let Some(&target) = bone_names.get(&pending.target) else {
-    return Err(error(
-      item(),
-      format!("its target {:?} is not a bone", &*pending.target),
-    ));
-  };
   let name_of = |bone: BoneId| bones.get(bone.index()).map_or("", |bone| &*bone.name);
-  if ids.contains(&target) {
-    return Err(error(
-      item(),
-      format!("its target {:?} is one of its bones", name_of(target)),
-    ));
-  }
-  for &bone in &ids {
-    if descends_from(bones, target, bone) {
-      return Err(error(
-        item(),
-        format!(
-          "its target {:?} is below its bone {:?}; a bone cannot follow what it carries",
-          name_of(target),
-          name_of(bone)
-        ),
-      ));
+  let target = match &pending.target {
+    Some(name) => {
+      let Some(&target) = bone_names.get(name) else {
+        return Err(error(
+          item(),
+          format!("its target {:?} is not a bone", &**name),
+        ));
+      };
+      if ids.contains(&target) {
+        return Err(error(
+          item(),
+          format!("its target {:?} is one of its bones", name_of(target)),
+        ));
+      }
+      for &bone in &ids {
+        if descends_from(bones, target, bone) {
+          return Err(error(
+            item(),
+            format!(
+              "its target {:?} is below its bone {:?}; a bone cannot follow what it carries",
+              name_of(target),
+              name_of(bone)
+            ),
+          ));
+        }
+      }
+      Some(target)
     }
-  }
+    None => None,
+  };
   match &pending.kind {
     PendingKind::Ik(setup) => ik_ok(&item, &ids, setup, bones)?,
     PendingKind::Transform(setup) => {
@@ -527,8 +534,10 @@ fn constraint_ok(
         ],
       )?;
     }
+    PendingKind::Spring(setup) => spring_ok(&item, &ids, setup, bones)?,
   }
   let name = pending.name.clone();
+  let missing = || error(item(), "it has no target");
   Ok(match pending.kind {
     PendingKind::Ik(setup) => {
       // Left out, the bend is the default for the bone count, held so
@@ -536,17 +545,133 @@ fn constraint_ok(
       Constraint::Ik(IkConstraint {
         name,
         bones: ids,
-        target,
+        target: target.ok_or_else(missing)?,
         setup: IkSetup { bend, ..setup },
       })
     }
     PendingKind::Transform(setup) => Constraint::Transform(TransformConstraint {
       name,
       bones: ids,
-      target,
+      target: target.ok_or_else(missing)?,
       setup,
     }),
+    PendingKind::Spring(setup) => {
+      let Some(&bone) = ids.first() else {
+        return Err(error(item(), "it has no bone"));
+      };
+      Constraint::Spring(SpringConstraint { name, bone, setup })
+    }
   })
+}
+
+/// Checks a spring constraint's one bone and its settings: finite; the four
+/// amounts, `inertia` and `mix` 0 to 1; `strength` above 0; `damping` and
+/// `limit` not negative; moving something; and a length on its bone when it
+/// moves rotation or scale, which read where the tip lags
+fn spring_ok(
+  item: &impl Fn() -> String,
+  ids: &[BoneId],
+  setup: &SpringSetup,
+  bones: &[BoneData],
+) -> Result<(), SkeletonError> {
+  let [id] = ids else {
+    return Err(error(
+      item(),
+      format!("it has {} bones; a spring moves one", ids.len()),
+    ));
+  };
+  finite(
+    item,
+    &[
+      ("x", setup.x),
+      ("y", setup.y),
+      ("rotate", setup.rotate),
+      ("scale_x", setup.scale_x),
+      ("inertia", setup.inertia),
+      ("strength", setup.strength),
+      ("damping", setup.damping),
+      ("wind", setup.wind),
+      ("gravity", setup.gravity),
+      ("limit", setup.limit),
+      ("mix", setup.mix),
+    ],
+  )?;
+  let fractions = [
+    ("x", setup.x),
+    ("y", setup.y),
+    ("rotate", setup.rotate),
+    ("scale_x", setup.scale_x),
+    ("inertia", setup.inertia),
+    ("mix", setup.mix),
+  ];
+  if let Some((name, value)) = fractions
+    .iter()
+    .find(|(_, value)| !(0.0..=1.0).contains(value))
+  {
+    return Err(error(
+      item(),
+      format!("{name} is {value}; it must be within 0 to 1"),
+    ));
+  }
+  if setup.strength <= 0.0 {
+    return Err(error(
+      item(),
+      format!("strength is {}; it must be above 0", setup.strength),
+    ));
+  }
+  for (name, value) in [("damping", setup.damping), ("limit", setup.limit)] {
+    if value < 0.0 {
+      return Err(error(
+        item(),
+        format!("{name} is {value}; it must not be negative"),
+      ));
+    }
+  }
+  if setup.x == 0.0 && setup.y == 0.0 && setup.rotate == 0.0 && setup.scale_x == 0.0 {
+    return Err(error(
+      item(),
+      "it moves nothing; set x, y, rotate or scale_x above 0",
+    ));
+  }
+  if (setup.rotate > 0.0 || setup.scale_x > 0.0)
+    && let Some(bone) = bones.get(id.index())
+    && bone.length <= 0.0
+  {
+    return Err(error(
+      item(),
+      format!(
+        "it moves rotation or scale, but its bone {:?} has a length of {}; its tip is what lags, so the length must be above 0",
+        &*bone.name, bone.length
+      ),
+    ));
+  }
+  Ok(())
+}
+
+/// Checks a spring against the springs listed before it: a strand's
+/// springs go parent first, so the child lags its parent's sprung place. A
+/// spring listed before the spring of an ancestor of its bone fails
+fn spring_order_ok(constraints: &[Constraint], bones: &[BoneData]) -> Result<(), SkeletonError> {
+  let Some(Constraint::Spring(later)) = constraints.last() else {
+    return Ok(());
+  };
+  let name_of = |bone: BoneId| bones.get(bone.index()).map_or("", |bone| &*bone.name);
+  for earlier in constraints {
+    if let Constraint::Spring(earlier) = earlier
+      && descends_from(bones, earlier.bone, later.bone)
+    {
+      return Err(error(
+        format!("constraint {:?}", &*earlier.name),
+        format!(
+          "it is listed before spring {:?} on bone {:?}, above its bone {:?}; list a parent's spring before its child's",
+          &*later.name,
+          name_of(later.bone),
+          name_of(earlier.bone)
+        ),
+      ));
+    }
+  }
+  Ok(())
 }
 
 /// Whether `bone` is below `ancestor`: walking its parents reaches it
@@ -1016,12 +1141,11 @@ fn timeline_ok<'a>(
     Timeline::Attachment { .. } => {}
     Timeline::Ik { constraint, frames } => {
       let Some(Constraint::Ik(ik)) = counts.constraints.get(constraint.index()) else {
-        return Err(error(
-          item(),
-          format!(
-            "constraint {:?} is a transform constraint; an ik timeline keys an IK constraint",
-            name_of_constraint(counts.constraints, *constraint)
-          ),
+        return Err(other_kind(
+          &item,
+          counts.constraints,
+          *constraint,
+          "an ik timeline keys an IK constraint",
         ));
       };
       for (frame, (_, values, key_curve)) in frames.iter().enumerate() {
@@ -1041,12 +1165,11 @@ fn timeline_ok<'a>(
     }
     Timeline::TransformMix { constraint, frames } => {
       let Some(Constraint::Transform(_)) = counts.constraints.get(constraint.index()) else {
-        return Err(error(
-          item(),
-          format!(
-            "constraint {:?} is an IK constraint; a transform mix timeline keys a transform constraint",
-            name_of_constraint(counts.constraints, *constraint)
-          ),
+        return Err(other_kind(
+          &item,
+          counts.constraints,
+          *constraint,
+          "a transform mix timeline keys a transform constraint",
         ));
       };
       for (frame, (_, mix, key_curve)) in frames.iter().enumerate() {
@@ -1062,6 +1185,37 @@ fn timeline_ok<'a>(
             (&name("shear_y"), mix.shear_y),
           ],
         )?;
+        curve(&item, frame, key_curve)?;
+      }
+    }
+    Timeline::Spring { constraint, frames } => {
+      let Some(Constraint::Spring(_)) = counts.constraints.get(constraint.index()) else {
+        return Err(other_kind(
+          &item,
+          counts.constraints,
+          *constraint,
+          "a spring timeline keys a spring constraint",
+        ));
+      };
+      for (frame, (_, values, key_curve)) in frames.iter().enumerate() {
+        let name = |what: &str| format!("key {frame}'s {what}");
+        finite(
+          &item,
+          &[
+            (&name("mix"), values.mix),
+            (&name("wind"), values.wind),
+            (&name("gravity"), values.gravity),
+          ],
+        )?;
+        if !(0.0..=1.0).contains(&values.mix) {
+          return Err(error(
+            item(),
+            format!(
+              "key {frame}'s mix is {}; it must be within 0 to 1",
+              values.mix
+            ),
+          ));
+        }
         curve(&item, frame, key_curve)?;
       }
     }
@@ -1145,6 +1299,29 @@ fn timeline_ok<'a>(
   Ok(())
 }
 
+/// The error for a constraint's timeline keying a constraint of another
+/// kind: names the constraint and its kind, then `wants`
+fn other_kind(
+  item: &impl Fn() -> String,
+  constraints: &[Constraint],
+  constraint: ConstraintId,
+  wants: &str,
+) -> SkeletonError {
+  let kind = match constraints.get(constraint.index()) {
+    Some(Constraint::Ik(_)) => "an IK constraint",
+    Some(Constraint::Transform(_)) => "a transform constraint",
+    Some(Constraint::Spring(_)) => "a spring constraint",
+    None => "not a constraint",
+  };
+  error(
+    item(),
+    format!(
+      "constraint {:?} is {kind}; {wants}",
+      name_of_constraint(constraints, constraint)
+    ),
+  )
+}
+
 /// A constraint's name, for messages
 fn name_of_constraint(constraints: &[Constraint], constraint: ConstraintId) -> &str {
   constraints
@@ -1163,8 +1340,8 @@ mod tests {
   };
   use super::super::builder::{BoneSetup, SkeletonDataBuilder, SlotSetup};
   use super::super::constraint::{
-    Constraint, ConstraintId, IkBend, IkSetup, MAX_CONSTRAINTS, MAX_IK_BONES, TransformMix,
-    TransformOffset, TransformSetup,
+    Constraint, ConstraintId, IkBend, IkSetup, MAX_CONSTRAINTS, MAX_IK_BONES, SpringSetup,
+    SpringValues, TransformMix, TransformOffset, TransformSetup,
   };
   use super::super::curve::Curve;
   use super::super::data::{BoneId, EventData, Inherit, Region, SkeletonData, SlotId};
@@ -1803,7 +1980,7 @@ mod tests {
     assert_eq!(data.constraint("nothing"), None);
     let leg = &data.constraints()[1];
     assert_eq!(leg.bones(), [BoneId(1), BoneId(2)]);
-    assert_eq!(leg.target(), BoneId(3));
+    assert_eq!(leg.target(), Some(BoneId(3)));
     assert!(matches!(leg, Constraint::Ik(_)));
   }
 
@@ -2195,7 +2372,7 @@ mod tests {
     let built = |builder: SkeletonDataBuilder| match builder.build() {
       Ok(data) => match &data.constraints()[0] {
         Constraint::Ik(ik) => ik.setup.bend,
-        Constraint::Transform(_) => panic!("an IK constraint"),
+        _ => panic!("an IK constraint"),
       },
       Err(error) => panic!("{error}"),
     };
@@ -2687,6 +2864,340 @@ mod tests {
       )]),
       WALK_0_IK,
       "key 0's max_stretch is Some(1.5), but its constraint's is None",
+    );
+  }
+
+  // Springs
+
+  /// A spring that turns its bone
+  fn swing() -> SpringSetup {
+    SpringSetup {
+      rotate: 1.0,
+      ..SpringSetup::default()
+    }
+  }
+
+  const SWAY: &str = r#"constraint "sway""#;
+
+  #[test]
+  fn a_spring_builds_on_its_one_bone_with_no_target() {
+    let data = limb()
+      .spring("sway", "shin", swing())
+      .build()
+      .expect("a spring on a bone with a length");
+    let sway = &data.constraints()[0];
+    assert_eq!(sway.bones(), &[BoneId(2)]);
+    assert_eq!(sway.target(), None);
+    match sway {
+      Constraint::Spring(spring) => assert_eq!(spring.setup, swing()),
+      other => panic!("{other:?}"),
+    }
+    fails(
+      limb().spring("sway", "hips", swing()),
+      SWAY,
+      r#"its bone "hips" is not a bone"#,
+    );
+    fails(
+      leg(IkSetup::default()).spring("leg", "shin", swing()),
+      r#"constraint "leg""#,
+      "another constraint has the same name",
+    );
+  }
+
+  #[test]
+  fn a_spring_value_not_finite_or_out_of_range_fails() {
+    let with = |change: fn(&mut SpringSetup)| {
+      let mut setup = swing();
+      change(&mut setup);
+      limb().spring("sway", "shin", setup)
+    };
+    // Every value at the edge of its range builds
+    with(|s| {
+      s.x = 1.0;
+      s.y = 0.0;
+      s.rotate = 1.0;
+      s.scale_x = 1.0;
+      s.inertia = 0.0;
+      s.mix = 0.0;
+      s.damping = 0.0;
+      s.limit = 0.0;
+      s.strength = 1e-6;
+      s.wind = -1e6;
+      s.gravity = 1e6;
+    })
+    .build()
+    .expect("values at their edges");
+    with(|s| s.inertia = 1.0).build().expect("an inertia of 1");
+    fails(
+      with(|s| s.x = f32::NAN),
+      SWAY,
+      "x is NaN, not a finite number",
+    );
+    fails(
+      with(|s| s.strength = f32::INFINITY),
+      SWAY,
+      "strength is inf, not a finite number",
+    );
+    fails(
+      with(|s| s.gravity = f32::NEG_INFINITY),
+      SWAY,
+      "gravity is -inf, not a finite number",
+    );
+    fails(with(|s| s.wind = f32::NAN), SWAY, "wind is NaN");
+    fails(with(|s| s.limit = f32::NAN), SWAY, "limit is NaN");
+    fails(with(|s| s.damping = f32::NAN), SWAY, "damping is NaN");
+    fails(with(|s| s.mix = f32::NAN), SWAY, "mix is NaN");
+    fails(with(|s| s.inertia = f32::NAN), SWAY, "inertia is NaN");
+    fails(with(|s| s.y = f32::NAN), SWAY, "y is NaN");
+    fails(with(|s| s.rotate = f32::NAN), SWAY, "rotate is NaN");
+    fails(with(|s| s.scale_x = f32::NAN), SWAY, "scale_x is NaN");
+    fails(
+      with(|s| s.x = 1.5),
+      SWAY,
+      "x is 1.5; it must be within 0 to 1",
+    );
+    fails(
+      with(|s| s.y = -0.5),
+      SWAY,
+      "y is -0.5; it must be within 0 to 1",
+    );
+    fails(
+      with(|s| s.rotate = 2.0),
+      SWAY,
+      "rotate is 2; it must be within 0 to 1",
+    );
+    fails(
+      with(|s| s.scale_x = -0.1),
+      SWAY,
+      "scale_x is -0.1; it must be within 0 to 1",
+    );
+    fails(
+      with(|s| s.inertia = 1.1),
+      SWAY,
+      "inertia is 1.1; it must be within 0 to 1",
+    );
+    fails(
+      with(|s| s.mix = -1.0),
+      SWAY,
+      "mix is -1; it must be within 0 to 1",
+    );
+    fails(
+      with(|s| s.strength = 0.0),
+      SWAY,
+      "strength is 0; it must be above 0",
+    );
+    fails(
+      with(|s| s.strength = -3.0),
+      SWAY,
+      "strength is -3; it must be above 0",
+    );
+    fails(
+      with(|s| s.damping = -1.0),
+      SWAY,
+      "damping is -1; it must not be negative",
+    );
+    fails(
+      with(|s| s.limit = -2.0),
+      SWAY,
+      "limit is -2; it must not be negative",
+    );
+  }
+
+  #[test]
+  fn a_spring_that_moves_nothing_fails() {
+    fails(
+      limb().spring("sway", "shin", SpringSetup::default()),
+      SWAY,
+      "it moves nothing; set x, y, rotate or scale_x above 0",
+    );
+    // Any one amount moves something
+    for setup in [
+      SpringSetup {
+        x: 0.5,
+        ..SpringSetup::default()
+      },
+      SpringSetup {
+        y: 0.5,
+        ..SpringSetup::default()
+      },
+      SpringSetup {
+        scale_x: 0.5,
+        ..SpringSetup::default()
+      },
+    ] {
+      limb()
+        .spring("sway", "shin", setup)
+        .build()
+        .expect("a spring that moves one thing");
+    }
+  }
+
+  #[test]
+  fn a_spring_moving_rotation_or_scale_on_a_bone_without_length_fails() {
+    let reason = r#"it moves rotation or scale, but its bone "foot_target" has a length of 0; its tip is what lags"#;
+    fails(limb().spring("sway", "foot_target", swing()), SWAY, reason);
+    fails(
+      limb().spring(
+        "sway",
+        "foot_target",
+        SpringSetup {
+          scale_x: 1.0,
+          ..SpringSetup::default()
+        },
+      ),
+      SWAY,
+      reason,
+    );
+    // Its place alone needs no length
+    limb()
+      .spring(
+        "sway",
+        "foot_target",
+        SpringSetup {
+          x: 1.0,
+          y: 1.0,
+          ..SpringSetup::default()
+        },
+      )
+      .build()
+      .expect("a spring moving the place of a bone without a length");
+  }
+
+  #[test]
+  fn a_spring_listed_before_its_bone_s_ancestor_s_spring_fails() {
+    let long = BoneSetup {
+      length: 10.0,
+      ..BoneSetup::default()
+    };
+    // A strand of three, and a bone beside it
+    let strand = || {
+      limb()
+        .bone("hair_0", Some("root"), long)
+        .bone("hair_1", Some("hair_0"), long)
+        .bone("hair_2", Some("hair_1"), long)
+        .bone("ear", Some("root"), long)
+    };
+    strand()
+      .spring("s0", "hair_0", swing())
+      .spring("ear", "ear", swing())
+      .spring("s1", "hair_1", swing())
+      .ik("leg", &["thigh", "shin"], "foot_target", IkSetup::default())
+      .spring("s2", "hair_2", swing())
+      .build()
+      .expect("a strand listed parent first, with others between");
+    fails(
+      strand()
+        .spring("s1", "hair_1", swing())
+        .spring("s0", "hair_0", swing()),
+      r#"constraint "s1""#,
+      r#"it is listed before spring "s0" on bone "hair_0", above its bone "hair_1"; list a parent's spring before its child's"#,
+    );
+    // An ancestor further up counts too, and the first spring out of order
+    // is named
+    fails(
+      strand()
+        .spring("s2", "hair_2", swing())
+        .spring("s1", "hair_1", swing())
+        .spring("s0", "hair_0", swing()),
+      r#"constraint "s2""#,
+      r#"it is listed before spring "s1" on bone "hair_1", above its bone "hair_2""#,
+    );
+    fails(
+      strand()
+        .spring("s2", "hair_2", swing())
+        .spring("s0", "hair_0", swing()),
+      r#"constraint "s2""#,
+      r#"listed before spring "s0" on bone "hair_0""#,
+    );
+    // A spring of a bone beside it, in either order, builds
+    strand()
+      .spring("ear", "ear", swing())
+      .spring("s0", "hair_0", swing())
+      .build()
+      .expect("springs on bones side by side");
+  }
+
+  fn spring_keys(constraint: ConstraintId, keys: Vec<SpringValues>) -> Timeline {
+    Timeline::Spring {
+      constraint,
+      frames: keys
+        .into_iter()
+        .enumerate()
+        .map(|(at, key)| (at as f32 * 0.5, key, Curve::Linear))
+        .collect(),
+    }
+  }
+
+  #[test]
+  fn a_spring_key_out_of_range_or_for_another_kind_fails() {
+    const SPRUNG: ConstraintId = ConstraintId(5);
+    let walk = |timelines: Vec<Timeline>| {
+      let mut builder = keyed(Vec::new()).spring("sway", "shin", swing());
+      builder.animations.clear();
+      builder.animation(animation("walk", 1.0, timelines))
+    };
+    let key = |mix: f32, wind: f32, gravity: f32| SpringValues { mix, wind, gravity };
+    const WALK_0_SPRING: &str = r#"animation "walk" timeline 0 (spring)"#;
+    walk(vec![spring_keys(
+      SPRUNG,
+      vec![key(0.0, -40.0, 0.0), key(1.0, 1e6, -9.8)],
+    )])
+    .build()
+    .expect("keys within range");
+    fails(
+      walk(vec![spring_keys(
+        SPRUNG,
+        vec![key(0.5, 0.0, 0.0), key(1.5, 0.0, 0.0)],
+      )]),
+      WALK_0_SPRING,
+      "key 1's mix is 1.5; it must be within 0 to 1",
+    );
+    fails(
+      walk(vec![spring_keys(SPRUNG, vec![key(-0.5, 0.0, 0.0)])]),
+      WALK_0_SPRING,
+      "key 0's mix is -0.5; it must be within 0 to 1",
+    );
+    fails(
+      walk(vec![spring_keys(SPRUNG, vec![key(0.5, f32::NAN, 0.0)])]),
+      WALK_0_SPRING,
+      "key 0's wind is NaN, not a finite number",
+    );
+    fails(
+      walk(vec![spring_keys(
+        SPRUNG,
+        vec![key(0.5, 0.0, f32::INFINITY)],
+      )]),
+      WALK_0_SPRING,
+      "key 0's gravity is inf, not a finite number",
+    );
+    fails(
+      walk(vec![spring_keys(SPRUNG, vec![key(f32::NAN, 0.0, 0.0)])]),
+      WALK_0_SPRING,
+      "key 0's mix is NaN, not a finite number",
+    );
+    // Each kind of key keys its own kind of constraint
+    fails(
+      walk(vec![spring_keys(LEG, vec![key(1.0, 0.0, 0.0)])]),
+      WALK_0_SPRING,
+      r#"constraint "leg" is an IK constraint; a spring timeline keys a spring constraint"#,
+    );
+    fails(
+      walk(vec![ik_keys(SPRUNG, vec![ik_value(|_| {})])]),
+      WALK_0_IK,
+      r#"constraint "sway" is a spring constraint; an ik timeline keys an IK constraint"#,
+    );
+    fails(
+      walk(vec![mix_keys(SPRUNG, TransformMix::ALL)]),
+      r#"animation "walk" timeline 0 (transform mix)"#,
+      r#"constraint "sway" is a spring constraint; a transform mix timeline keys a transform constraint"#,
+    );
+    fails(
+      walk(vec![
+        spring_keys(SPRUNG, vec![key(1.0, 0.0, 0.0)]),
+        spring_keys(SPRUNG, vec![key(1.0, 0.0, 0.0)]),
+      ]),
+      r#"animation "walk" timeline 1 (spring)"#,
+      r#"another timeline already keys constraint "sway"'s values"#,
     );
   }
 

@@ -31,15 +31,15 @@ pub(crate) struct ConstraintBones {
   parts: Vec<(BoneId, (usize, usize))>,
   /// Where each constraint's are in `parts` (an IK constraint has none)
   part_spans: Vec<(usize, usize)>,
-  /// The bones an IK constraint or a local transform constraint changes,
-  /// in bone order, each once
+  /// The bones an IK constraint, a spring or a local transform constraint
+  /// changes, in bone order, each once
   changed: Vec<BoneId>,
 }
 
 impl ConstraintBones {
   /// The lists for `constraints` over `bones`, which come parents first.
-  /// After an IK constraint its bones and every bone below them are placed
-  /// again. After each bone of a transform constraint, the bones below
+  /// After an IK or spring constraint its bones and every bone below them
+  /// are placed again. After each bone of a transform constraint, the bones below
   /// that bone are, and in a local mode that bone too
   pub(super) fn of(bones: &[BoneData], constraints: &[Constraint]) -> Self {
     let id = |bone: usize| u8::try_from(bone).ok().map(BoneId);
@@ -47,7 +47,8 @@ impl ConstraintBones {
     let mut changed = BoneSet::default();
     for constraint in constraints {
       let (ik, local) = match constraint {
-        Constraint::Ik(_) => (true, true),
+        // A spring writes its bone's own values, as IK does
+        Constraint::Ik(_) | Constraint::Spring(_) => (true, true),
         Constraint::Transform(transform) => (false, transform.setup.local),
       };
       let mut own = BoneSet::default();
@@ -274,6 +275,8 @@ pub(crate) fn constrain(
           );
         }
       }
+      // A spring is held in the data but moves nothing in the pass
+      (Constraint::Spring(_), _) => {}
       _ => {}
     }
   }
@@ -876,6 +879,28 @@ mod tests {
       let changed = if local { ids(&[1, 3]) } else { ids(&[]) };
       assert_eq!(lists.changed, changed);
     }
+
+    // A spring writes its bone's own values, as IK does: after it, that
+    // bone and every bone below it are placed again, and the bone is changed
+    let data = SkeletonData::builder()
+      .bone("root", None, BoneSetup::default())
+      .bone("arm", Some("root"), long(0.0, 20.0))
+      .bone("staff", Some("root"), at(50.0, 0.0))
+      .bone("hand", Some("arm"), long(20.0, 5.0))
+      .spring(
+        "sway",
+        "arm",
+        crate::core::skeleton::SpringSetup {
+          rotate: 1.0,
+          ..crate::core::skeleton::SpringSetup::default()
+        },
+      )
+      .build()
+      .expect("a valid skeleton");
+    let lists = &data.index().constraint_bones;
+    assert_eq!(lists.again(0), ids(&[1, 3]));
+    assert!(lists.parts(0).is_empty(), "a spring has no parts");
+    assert_eq!(lists.changed, ids(&[1]));
   }
 
   /// Puts the limb's target at a point in the world

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use super::animation::Animation;
 use super::attachment::Attachment;
-use super::constraint::{IkSetup, TransformSetup};
+use super::constraint::{IkSetup, SpringSetup, TransformSetup};
 use super::data::{BoneId, EventData, Inherit, Region, SkeletonData, SlotBlend, SlotId};
 use super::validate::{self, MAX_BONES, MAX_SLOTS, SkeletonError};
 use crate::core::ui::Color;
@@ -89,13 +89,15 @@ pub(super) struct PendingAttachment {
 pub(super) enum PendingKind {
   Ik(IkSetup),
   Transform(TransformSetup),
+  Spring(SpringSetup),
 }
 
 #[derive(Debug, Clone)]
 pub(super) struct PendingConstraint {
   pub name: Arc<str>,
   pub bones: Vec<Arc<str>>,
-  pub target: Arc<str>,
+  /// None for a spring, which follows no bone
+  pub target: Option<Arc<str>>,
   pub kind: PendingKind,
 }
 
@@ -190,7 +192,7 @@ impl SkeletonDataBuilder {
     self.constraints.push(PendingConstraint {
       name: name.into(),
       bones: bones.iter().map(|&bone| Arc::from(bone)).collect(),
-      target: Arc::from(target),
+      target: Some(Arc::from(target)),
       kind: PendingKind::Ik(setup),
     });
     self
@@ -208,8 +210,21 @@ impl SkeletonDataBuilder {
     self.constraints.push(PendingConstraint {
       name: name.into(),
       bones: bones.iter().map(|&bone| Arc::from(bone)).collect(),
-      target: Arc::from(target),
+      target: Some(Arc::from(target)),
       kind: PendingKind::Transform(setup),
+    });
+    self
+  }
+
+  /// Adds a spring constraint giving `bone` secondary motion. Constraints
+  /// apply in the order added, so a strand's springs go parent first;
+  /// names resolve at [`build`](Self::build)
+  pub fn spring(mut self, name: impl Into<Arc<str>>, bone: &str, setup: SpringSetup) -> Self {
+    self.constraints.push(PendingConstraint {
+      name: name.into(),
+      bones: vec![Arc::from(bone)],
+      target: None,
+      kind: PendingKind::Spring(setup),
     });
     self
   }

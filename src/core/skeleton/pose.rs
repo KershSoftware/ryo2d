@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use glam::{Affine2, Mat2, Vec2, Vec4};
 
-use super::constraint::{Constraint, TransformMix};
+use super::constraint::{Constraint, SpringValues, TransformMix};
 use super::data::{BoneData, Inherit, SkeletonData, SlotId};
 use super::ik::IkValues;
 use crate::core::ui::Color;
@@ -74,6 +74,7 @@ impl BonePose {
 pub(crate) enum ConstraintValues {
   Ik(IkValues),
   Transform(TransformMix),
+  Spring(SpringValues),
 }
 
 impl ConstraintValues {
@@ -82,6 +83,7 @@ impl ConstraintValues {
     match constraint {
       Constraint::Ik(ik) => Self::Ik(IkValues::of(&ik.setup, ik.bones.len())),
       Constraint::Transform(transform) => Self::Transform(transform.setup.mix),
+      Constraint::Spring(spring) => Self::Spring(SpringValues::of(&spring.setup)),
     }
   }
 }
@@ -194,14 +196,18 @@ impl Pose {
 
   /// Holds each IK constraint's values in their range once every track has
   /// applied: its `mix` within 0 to 1 and its `softness` not negative (a
-  /// curve or an additive layer can carry either past its range). A
-  /// transform constraint's mixes are left as they are: they may be below 0
-  /// or above 1
+  /// curve or an additive layer can carry either past its range), and a
+  /// spring's `mix` within 0 to 1. A transform constraint's mixes are left
+  /// as they are: they may be below 0 or above 1
   pub(crate) fn clamp_constraints(&mut self) {
     for values in &mut self.constraints {
-      if let ConstraintValues::Ik(values) = values {
-        values.mix = values.mix.clamp(0.0, 1.0);
-        values.softness = values.softness.max(0.0);
+      match values {
+        ConstraintValues::Ik(values) => {
+          values.mix = values.mix.clamp(0.0, 1.0);
+          values.softness = values.softness.max(0.0);
+        }
+        ConstraintValues::Spring(values) => values.mix = values.mix.clamp(0.0, 1.0),
+        ConstraintValues::Transform(_) => {}
       }
     }
   }

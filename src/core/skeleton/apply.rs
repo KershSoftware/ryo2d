@@ -8,7 +8,7 @@ use glam::{Vec2, Vec4};
 
 use super::animation::{Animation, EventValues, Frame, Timeline, deform_width};
 use super::attachment::Attachment;
-use super::constraint::{Constraint, ConstraintId, TransformMix};
+use super::constraint::{Constraint, ConstraintId, SpringValues, TransformMix};
 use super::data::{BoneData, BoneId, SkeletonData, SlotId};
 use super::ik::IkValues;
 use super::pose::{BonePose, ConstraintValues, Pose, setup_order, srgb};
@@ -330,6 +330,23 @@ pub(crate) fn apply_layer(
             &mut values.shear_y,
             setup.shear_y,
             key.shear_y,
+            alpha,
+            blend,
+          );
+        }
+      }
+      Timeline::Spring { constraint, frames } => {
+        if let Some(key) = sample_spring(frames, time)
+          && let Some((Constraint::Spring(spring), ConstraintValues::Spring(values))) =
+            constraint_mut(data, pose, *constraint)
+        {
+          let setup = &spring.setup;
+          mix(&mut values.mix, setup.mix, key.mix, alpha, blend);
+          mix(&mut values.wind, setup.wind, key.wind, alpha, blend);
+          mix(
+            &mut values.gravity,
+            setup.gravity,
+            key.gravity,
             alpha,
             blend,
           );
@@ -671,6 +688,22 @@ fn sample_transform_mix(frames: &[Frame<TransformMix>], time: f32) -> Option<Tra
   })
 }
 
+/// A spring constraint's values at `time`, each eased toward the next key's
+fn sample_spring(frames: &[Frame<SpringValues>], time: f32) -> Option<SpringValues> {
+  Some(match locate(frames, time)? {
+    Sample::Hold(index) => frames[index].1,
+    Sample::Between(index, eased) => {
+      let (from, to) = (frames[index].1, frames[index + 1].1);
+      let lerp = |a: f32, b: f32| a + (b - a) * eased;
+      SpringValues {
+        mix: lerp(from.mix, to.mix),
+        wind: lerp(from.wind, to.wind),
+        gravity: lerp(from.gravity, to.gravity),
+      }
+    }
+  })
+}
+
 /// A colour key's value, 0 to 1 per component, interpolated in sRGB
 fn sample_color(frames: &[Frame<Color>], time: f32) -> Option<Vec4> {
   Some(match locate(frames, time)? {
@@ -695,7 +728,7 @@ mod tests {
   use super::*;
   use crate::core::ecs::Vec2;
   use crate::core::skeleton::{
-    BoneSetup, Curve, EventData, IkSetup, SlotId, SlotSetup, Timeline, TransformSetup,
+    BoneSetup, Curve, EventData, IkSetup, SlotId, SlotSetup, SpringSetup, Timeline, TransformSetup,
   };
   use crate::core::ui::Color;
 
@@ -1864,5 +1897,102 @@ mod tests {
     close(mix.x, -0.25);
     // The switches are stepped whatever the blend
     assert_eq!(values.bend, IkBend::Negative);
+  }
+
+  /// A "hair" bone with a spring "sway" (setup: mix 0.5, wind 2, gravity
+  /// 10)
+  fn sprung() -> SkeletonData {
+    SkeletonData::builder()
+      .bone("root", None, BoneSetup::default())
+      .bone(
+        "hair",
+        Some("root"),
+        BoneSetup {
+          length: 10.0,
+          ..BoneSetup::default()
+        },
+      )
+      .spring(
+        "sway",
+        "hair",
+        SpringSetup {
+          rotate: 1.0,
+          mix: 0.5,
+          wind: 2.0,
+          gravity: 10.0,
+          ..SpringSetup::default()
+        },
+      )
+      .build()
+      .expect("a valid skeleton")
+  }
+
+  fn spring_values(pose: &Pose) -> SpringValues {
+    match pose.constraints[0] {
+      ConstraintValues::Spring(values) => values,
+      other => panic!("{other:?}"),
+    }
+  }
+
+  fn spring_key(mix: f32, wind: f32, gravity: f32) -> SpringValues {
+    SpringValues { mix, wind, gravity }
+  }
+
+  #[test]
+  fn a_spring_key_sets_its_values_by_curve_and_alpha() {
+    let data = sprung();
+    // An eased key from mix 1, wind 6, gravity 0 to mix 0, wind -2, gravity
+    // 20 over a second, then a stepped key held to the end
+    let ease = Curve::Bezier {
+      cx1: 0.5,
+      cy1: 0.0,
+      cx2: 1.0,
+      cy2: 0.5,
+    };
+    let gust = animation(
+      2.0,
+      vec![Timeline::Spring {
+        constraint: ConstraintId(0),
+        frames: vec![
+          (0.0, spring_key(1.0, 6.0, 0.0), ease),
+          (1.0, spring_key(0.0, -2.0, 20.0), Curve::Stepped),
+          (2.0, spring_key(1.0, 0.0, 0.0), Curve::Linear),
+        ],
+      }],
+    );
+    let apply_at = |time: f32, alpha: f32, blend: MixBlend| {
+      let mut pose = Pose::setup(&data);
+      apply(
+        &gust,
+        &data,
+        &mut pose,
+        time,
+        alpha,
+        blend,
+        MixDirection::In,
+      );
+      spring_values(&pose)
+    };
+    // Half way through the eased key, at its curve's value
+    let eased = ease.value(0.5);
+    let full = apply_at(0.5, 1.0, MixBlend::Replace);
+    close(full.mix, 1.0 - eased);
+    close(full.wind, 6.0 - 8.0 * eased);
+    close(full.gravity, 20.0 * eased);
+    // At half alpha each moves half way from the setup's (0.5, 2, 10)
+    let half = apply_at(0.5, 0.5, MixBlend::Replace);
+    close(half.mix, 0.5 + (1.0 - eased - 0.5) * 0.5);
+    close(half.wind, 2.0 + (6.0 - 8.0 * eased - 2.0) * 0.5);
+    close(half.gravity, 10.0 + (20.0 * eased - 10.0) * 0.5);
+    // The stepped key holds until the next
+    assert_eq!(
+      apply_at(1.9, 1.0, MixBlend::Replace),
+      spring_key(0.0, -2.0, 20.0)
+    );
+    // Added, each adds its difference from the setup, times alpha
+    let added = apply_at(1.5, 0.5, MixBlend::Add);
+    close(added.mix, 0.5 + (0.0 - 0.5) * 0.5);
+    close(added.wind, 2.0 + (-2.0 - 2.0) * 0.5);
+    close(added.gravity, 10.0 + (20.0 - 10.0) * 0.5);
   }
 }

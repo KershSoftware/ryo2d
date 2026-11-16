@@ -4999,4 +4999,67 @@ mod tests {
     close(leg(&rig).softness, 0.0);
     close(level(&rig).rotate, 2.0);
   }
+
+  #[test]
+  fn a_spring_mix_is_clamped_after_the_tracks() {
+    use crate::core::skeleton::pose::ConstraintValues;
+    use crate::core::skeleton::{ConstraintId, SpringSetup, SpringValues};
+    // A spring of setup mix 0.5 and wind 0; "full" keys a mix of 1 and a
+    // wind of 5, "none" a mix of 0
+    let keys = |mix: f32, wind: f32| Timeline::Spring {
+      constraint: ConstraintId(0),
+      frames: vec![(
+        0.0,
+        SpringValues {
+          mix,
+          wind,
+          gravity: 0.0,
+        },
+        Curve::Linear,
+      )],
+    };
+    let data = SkeletonData::builder()
+      .bone("root", None, BoneSetup::default())
+      .bone(
+        "hair",
+        Some("root"),
+        BoneSetup {
+          length: 10.0,
+          ..BoneSetup::default()
+        },
+      )
+      .spring(
+        "sway",
+        "hair",
+        SpringSetup {
+          rotate: 1.0,
+          mix: 0.5,
+          ..SpringSetup::default()
+        },
+      )
+      .animation(clip("full", 1.0, vec![keys(1.0, 5.0)]))
+      .animation(clip("none", 1.0, vec![keys(0.0, 0.0)]))
+      .build()
+      .expect("a valid skeleton");
+    let sway = |rig: &Rig| match rig.pose.constraints[0] {
+      ConstraintValues::Spring(values) => values,
+      other => panic!("{other:?}"),
+    };
+    // Added over itself the mix comes to 1.5, held at 1; the wind, which
+    // has no range, comes to 10
+    let mut rig = Rig::of(data.clone());
+    rig.set(0, "full", true);
+    let add = rig.set(1, "full", true);
+    rig.entry(add).mix_blend = MixBlend::Add;
+    rig.step(0.1);
+    close(sway(&rig).mix, 1.0);
+    close(sway(&rig).wind, 10.0);
+    // "none" added over itself comes to -0.5, held at 0
+    let mut rig = Rig::of(data);
+    rig.set(0, "none", true);
+    let add = rig.set(1, "none", true);
+    rig.entry(add).mix_blend = MixBlend::Add;
+    rig.step(0.1);
+    close(sway(&rig).mix, 0.0);
+  }
 }

@@ -108,6 +108,8 @@ pub enum ConstraintOverride {
   Ik(IkOverride),
   /// For a transform constraint: any of its six mixes
   Transform(TransformMixOverride),
+  /// For a spring constraint: any of its mix, wind and gravity
+  Spring(SpringOverride),
 }
 
 /// The values an override sets on an IK constraint. Each one given replaces
@@ -149,10 +151,24 @@ pub struct TransformMixOverride {
   pub shear_y: Option<f32>,
 }
 
+/// The values an override sets on a spring constraint. Each one given
+/// replaces what the animations key (or the setup's); each left `None` is
+/// the animated one. The default sets nothing
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct SpringOverride {
+  /// 0 (the animated pose) to 1 (the sprung pose); taken within 0 to 1
+  pub mix: Option<f32>,
+  /// An acceleration along the world's x, in units a second squared
+  pub wind: Option<f32>,
+  /// An acceleration along the world's y, down positive, in units a second
+  /// squared
+  pub gravity: Option<f32>,
+}
+
 impl ConstraintOverride {
-  /// The override without its values that are not finite, an IK mix within
-  /// 0 to 1, an IK softness not below 0 and an IK `max_stretch` not below 1,
-  /// and whether any value was taken out
+  /// The override without its values that are not finite, an IK or spring
+  /// mix within 0 to 1, an IK softness not below 0 and an IK `max_stretch`
+  /// not below 1, and whether any value was taken out
   fn checked(self) -> (Self, bool) {
     fn keep(value: &mut Option<f32>, bad: &mut bool) {
       if value.is_some_and(|value| !value.is_finite()) {
@@ -187,6 +203,13 @@ impl ConstraintOverride {
         }
         Self::Transform(mix)
       }
+      Self::Spring(mut spring) => {
+        for value in [&mut spring.mix, &mut spring.wind, &mut spring.gravity] {
+          keep(value, &mut bad);
+        }
+        spring.mix = spring.mix.map(|mix| mix.clamp(0.0, 1.0));
+        Self::Spring(spring)
+      }
     };
     (checked, bad)
   }
@@ -198,6 +221,7 @@ impl ConstraintOverride {
       (self, values),
       (Self::Ik(_), Some(ConstraintValues::Ik(_)))
         | (Self::Transform(_), Some(ConstraintValues::Transform(_)))
+        | (Self::Spring(_), Some(ConstraintValues::Spring(_)))
     )
   }
 
@@ -224,6 +248,11 @@ impl ConstraintOverride {
         set(&mut values.scale_y, o.scale_y);
         set(&mut values.shear_y, o.shear_y);
       }
+      (Self::Spring(o), ConstraintValues::Spring(values)) => {
+        set(&mut values.mix, o.mix);
+        set(&mut values.wind, o.wind);
+        set(&mut values.gravity, o.gravity);
+      }
       _ => {}
     }
   }
@@ -243,7 +272,7 @@ enum Named {
   Slot,
   Skin,
   Constraint,
-  /// A constraint of the other kind than its override
+  /// A constraint of another kind than its override
   ConstraintKind,
 }
 
@@ -686,14 +715,14 @@ impl Skeleton {
   /// overrides (an IK constraint is off at a mix of 0, a transform
   /// constraint with every mix at 0): how a game lets a foot go in the air.
   ///
-  /// An IK mix is taken within 0 to 1 and a softness below 0 as 0. A value
+  /// An IK or spring mix is taken within 0 to 1 and a softness below 0 as 0. A value
   /// that is not finite is ignored, with one warning per skeleton. A switch
   /// the constraint cannot have (`stretch` on a chain, `compress` on two
   /// bones or a chain, a `softness` on other than two bones, a `bend` of
   /// `Pose` on two bones or any but `Positive` on one) is ignored in
   /// silence.
   ///
-  /// A name the data lacks, or a constraint of the other kind, warns once
+  /// A name the data lacks, or a constraint of another kind, warns once
   /// per skeleton per name and does nothing to the constraint, nor to an
   /// override it already has. Until the data lands the override is kept by
   /// name, and through a reload too: one kept for a name the data lacks, or
@@ -1267,7 +1296,7 @@ impl Skeleton {
       }
       Named::ConstraintKind => {
         log::warn!(
-          "skeleton constraint {name:?} is not of its override's kind (IK or transform); the override is ignored"
+          "skeleton constraint {name:?} is not of its override's kind (IK, transform or spring); the override is ignored"
         );
       }
     }
@@ -2764,5 +2793,208 @@ mod tests {
     played.step(0.1);
     close(leg_values(&played.skeleton).mix, 0.6);
     assert_eq!(log.warnings().len(), 1, "{:?}", log.warnings());
+  }
+
+  /// A "hair" bone under a "head" with a spring "sway" (setup: rotate 1,
+  /// mix 0.5, wind 2, gravity 3), keyed by "gust" to mix 0.75, wind 10 and
+  /// gravity 4, and an IK constraint "look" on the head; with
+  /// `spring: false`, the same without the spring and its keys
+  fn sprung_as(spring: bool) -> SkeletonData {
+    use crate::core::skeleton::{ConstraintId, Curve, IkSetup, SpringSetup, SpringValues};
+    let long = |x: f32| BoneSetup {
+      x,
+      length: 10.0,
+      ..BoneSetup::default()
+    };
+    let builder = SkeletonData::builder()
+      .bone("root", None, BoneSetup::default())
+      .bone("head", Some("root"), long(0.0))
+      .bone("hair", Some("head"), long(10.0))
+      .bone(
+        "aim",
+        Some("root"),
+        BoneSetup {
+          y: 20.0,
+          ..BoneSetup::default()
+        },
+      )
+      .ik("look", &["head"], "aim", IkSetup::default());
+    let mut timelines = vec![Timeline::Rotate {
+      bone: crate::core::skeleton::BoneId(2),
+      frames: vec![(0.0, 0.0, Curve::Linear), (1.0, 1.0, Curve::Linear)],
+    }];
+    let builder = if spring {
+      timelines.push(Timeline::Spring {
+        constraint: ConstraintId(1),
+        frames: vec![(
+          0.0,
+          SpringValues {
+            mix: 0.75,
+            wind: 10.0,
+            gravity: 4.0,
+          },
+          Curve::Linear,
+        )],
+      });
+      builder.spring(
+        "sway",
+        "hair",
+        SpringSetup {
+          rotate: 1.0,
+          mix: 0.5,
+          wind: 2.0,
+          gravity: 3.0,
+          ..SpringSetup::default()
+        },
+      )
+    } else {
+      builder
+    };
+    builder
+      .animation(Animation {
+        name: Arc::from("gust"),
+        duration: 1.0,
+        timelines,
+      })
+      .build()
+      .expect("a valid skeleton")
+  }
+
+  fn sway_values(skeleton: &Skeleton) -> crate::core::skeleton::SpringValues {
+    match skeleton.pose.constraints[1] {
+      ConstraintValues::Spring(values) => values,
+      other => panic!("{other:?}"),
+    }
+  }
+
+  fn swaying() -> Played {
+    let mut played = Played::new(sprung_as(true));
+    played.play("gust", true);
+    played
+  }
+
+  #[test]
+  fn a_spring_override_beats_its_keys_is_kept_by_name_and_cleared() {
+    let log = capture_log();
+    let mut played = swaying();
+    // Set before the data lands: kept by name until it does
+    played.skeleton.override_constraint(
+      "sway",
+      ConstraintOverride::Spring(SpringOverride {
+        wind: Some(-6.0),
+        ..SpringOverride::default()
+      }),
+    );
+    played.step(0.1);
+    let sway = sway_values(&played.skeleton);
+    close(sway.mix, 0.75);
+    close(sway.wind, -6.0);
+    close(sway.gravity, 4.0);
+    // Set again, it replaces the override
+    played.skeleton.override_constraint(
+      "sway",
+      ConstraintOverride::Spring(SpringOverride {
+        mix: Some(0.0),
+        gravity: Some(-9.0),
+        ..SpringOverride::default()
+      }),
+    );
+    played.step(0.1);
+    let sway = sway_values(&played.skeleton);
+    close(sway.mix, 0.0);
+    close(sway.wind, 10.0);
+    close(sway.gravity, -9.0);
+    // Through a reload it is kept by name
+    played.reload(sprung_as(true));
+    played.step(0.1);
+    close(sway_values(&played.skeleton).gravity, -9.0);
+    // Cleared, from the next step the keys have them again
+    played.skeleton.clear_constraint_override("sway");
+    played.step(0.1);
+    let sway = sway_values(&played.skeleton);
+    close(sway.mix, 0.75);
+    close(sway.gravity, 4.0);
+    // An override of another kind on a spring, or a spring's on another
+    // kind, warns once each and changes nothing
+    for _ in 0..3 {
+      played
+        .skeleton
+        .override_constraint("sway", ik_override(IkOverride::default()));
+      played.skeleton.override_constraint(
+        "look",
+        ConstraintOverride::Spring(SpringOverride {
+          mix: Some(0.0),
+          ..SpringOverride::default()
+        }),
+      );
+      played.step(0.1);
+    }
+    close(sway_values(&played.skeleton).mix, 0.75);
+    close(leg_values(&played.skeleton).mix, 1.0);
+    assert_eq!(log.containing("\"sway\""), 1, "{:?}", log.warnings());
+    assert_eq!(log.containing("\"look\""), 1, "{:?}", log.warnings());
+    assert_eq!(log.warnings().len(), 2, "{:?}", log.warnings());
+  }
+
+  #[test]
+  fn a_spring_override_value_not_finite_is_dropped_with_one_warning() {
+    let log = capture_log();
+    let mut played = swaying();
+    played.step(0.1);
+    for _ in 0..3 {
+      played.skeleton.override_constraint(
+        "sway",
+        ConstraintOverride::Spring(SpringOverride {
+          mix: Some(2.0),
+          wind: Some(f32::NAN),
+          gravity: Some(f32::INFINITY),
+        }),
+      );
+      played.step(0.1);
+    }
+    // What is finite applies, the mix taken within 0 to 1; the rest is keyed
+    let sway = sway_values(&played.skeleton);
+    close(sway.mix, 1.0);
+    close(sway.wind, 10.0);
+    close(sway.gravity, 4.0);
+    assert_eq!(log.containing("not finite"), 1, "{:?}", log.warnings());
+    assert_eq!(log.warnings().len(), 1, "{:?}", log.warnings());
+    // A keyed or overridden mix below 0 is held at 0 too
+    played.skeleton.override_constraint(
+      "sway",
+      ConstraintOverride::Spring(SpringOverride {
+        mix: Some(-1.0),
+        ..SpringOverride::default()
+      }),
+    );
+    played.step(0.1);
+    close(sway_values(&played.skeleton).mix, 0.0);
+  }
+
+  #[test]
+  fn a_skeleton_with_springs_steps_and_poses_as_one_without() {
+    // Springs hold their settings and keys but move no bone: every step's
+    // pose, and the pose drawn between steps, is the one without them
+    let mut with = swaying();
+    let mut without = Played::new(sprung_as(false));
+    without.play("gust", true);
+    for _ in 0..12 {
+      with.step(0.1);
+      without.step(0.1);
+      assert_eq!(with.skeleton.pose.bones, without.skeleton.pose.bones);
+      assert_eq!(
+        with.skeleton.pose.skeleton_space,
+        without.skeleton.pose.skeleton_space
+      );
+      assert_eq!(with.skeleton.pose.world, without.skeleton.pose.world);
+      for bone in 0..4 {
+        for between in [None, Some(0.5), Some(1.0)] {
+          assert_eq!(
+            with.skeleton.drawn_bone(bone, between),
+            without.skeleton.drawn_bone(bone, between)
+          );
+        }
+      }
+    }
   }
 }
