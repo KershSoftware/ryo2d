@@ -2115,6 +2115,28 @@ mod tests {
   }
 
   #[test]
+  fn a_knee_is_kept_through_a_step_that_solves_nothing() {
+    let (mut world, mut step, _) = world();
+    let (body, _) = dipping_leg(&mut world);
+    let knee = |world: &World| bone(world, body, "shin").translation;
+    // A step whose target is on the hip, or not finite, writes nothing.
+    // The knee kept is not forgotten: the next step resumes on the branch
+    // past the dip, where a fresh solve would put it before the dip
+    for (what, nothing) in [("not finite", f32::NAN), ("on the hip", 0.0)] {
+      let followed = leg_onto_the_far_branch(&mut world, &mut step, body);
+      aim_leg(&mut world, body, nothing);
+      carried(&mut world, &mut step, body, 0.0);
+      aim_leg(&mut world, body, 61.3);
+      carried(&mut world, &mut step, body, 0.0);
+      assert!(
+        knee(&world).distance(followed) < 0.01,
+        "{what}: {} not {followed}",
+        knee(&world)
+      );
+    }
+  }
+
+  #[test]
   fn a_held_skeleton_s_springs_go_on_where_they_were() {
     let (mut world, mut step, _) = world();
     let data = tailed(&mut world);

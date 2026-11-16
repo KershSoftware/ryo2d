@@ -570,13 +570,15 @@ fn solve(
       // pose outside one only uses it, and swings nowhere
       let followed = state.knees.get(at).copied().flatten();
       let swing = dt.map_or(0.0, |h| f64::from(KNEE_SWING) * f64::from(h.max(0.0)));
-      let knee = two_bones_following(
+      let solved = two_bones_following(
         &mut upper, &mut lower, length, target, values, uniform, followed, swing,
       );
+      // A solve that wrote nothing (a target on the hip, a value not
+      // finite) leaves the knee kept as it was
       if dt.is_some()
         && let Some(kept) = state.knees.get_mut(at)
       {
-        *kept = knee;
+        *kept = solved.kept(followed);
       }
       for (bone, solved) in [(first, upper), (second, lower)] {
         if let Some(own) = pose.bones.get_mut(bone.index()) {

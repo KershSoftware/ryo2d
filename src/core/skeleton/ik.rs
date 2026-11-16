@@ -257,6 +257,28 @@ pub(crate) struct Knee {
   limb: Bent,
 }
 
+/// What a two-bone solve leaves to keep (`two_bones_following`): a knee,
+/// under an uneven first bone; no knee, under an even one, which keeps
+/// none; or nothing, when the solve wrote nothing, and the knee kept from
+/// before stands
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum Solved {
+  Knee(Knee),
+  Even,
+  Nothing,
+}
+
+impl Solved {
+  /// The knee to keep after this solve, `last` having been kept before it
+  pub(crate) fn kept(self, last: Option<Knee>) -> Option<Knee> {
+    match self {
+      Self::Knee(knee) => Some(knee),
+      Self::Even => None,
+      Self::Nothing => last,
+    }
+  }
+}
+
 /// How much farther, as a share of the square of its distance, a trough a
 /// knee comes to may be than the side's nearest and still be taken for it
 const NEAREST_TIE: f64 = 1e-6;
@@ -277,9 +299,11 @@ const FIRST_BONE_SWINGS: f64 = 2.0;
 
 /// `two_bones`, which under an uneven `first` follows the knee it solved
 /// last (`last`) when given one, rather than choosing afresh, and gives the
-/// knee it solved for the caller to keep. `None` when nothing was solved
-/// that way: under an even `first`, which keeps no knee, and when nothing
-/// is written. `swing` is the most the bend may move toward a new branch in
+/// knee it solved for the caller to keep (`Solved::Knee`). Under an even
+/// `first`, which keeps no knee, `Solved::Even`; when nothing is written
+/// (the cases `two_bones` lists, and a joint on `first`'s origin, where
+/// only `second` turns), `Solved::Nothing`, and the knee kept before
+/// stands. `swing` is the most the bend may move toward a new branch in
 /// this solve (`KNEE_SWING` times a step's length; 0 for a pose outside a
 /// step).
 ///
@@ -299,7 +323,8 @@ const FIRST_BONE_SWINGS: f64 = 2.0;
 /// of bend a solve, and less where the first bone would turn more than
 /// `FIRST_BONE_SWINGS` swings, the tip pointing at the target and off it
 /// until the swing arrives. A fresh solve (no `last`) takes its bend at
-/// once
+/// once, and so does a `last` solved on the other side (its `bend` keyed
+/// or overridden over), whose bend is measured on that side
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn two_bones_following(
   first: &mut BonePose,
@@ -310,9 +335,9 @@ pub(crate) fn two_bones_following(
   uniform: bool,
   last: Option<Knee>,
   swing: f64,
-) -> Option<Knee> {
+) -> Solved {
   if !(finite(first) && finite(second) && given(length, target, values)) || values.mix <= 0.0 {
-    return None;
+    return Solved::Nothing;
   }
   let mix = values.mix.min(1.0);
   let to_target = target - Vec2::new(first.x, first.y);
@@ -322,14 +347,14 @@ pub(crate) fn two_bones_following(
   let unturned = first.linear_turned(0.0);
   let determinant = unturned.determinant();
   if distance <= NO_LENGTH || !determinant.is_finite() || determinant.abs() <= FLAT {
-    return None;
+    return Solved::Nothing;
   }
   let axis = Vec2::from_angle(second.rotation + second.shear_x) * second.scale_x;
   let part_one = unturned * Vec2::new(second.x, second.y);
   let part_two = unturned * (axis * length);
   let (l1, l2) = (part_one.length(), part_two.length());
   if !(l1.is_finite() && l2.is_finite()) || l2 <= NO_LENGTH || length <= 0.0 {
-    return None;
+    return Solved::Nothing;
   }
   if l1 <= NO_LENGTH {
     // The joint is on the first bone's origin, whatever the first bone
@@ -340,21 +365,24 @@ pub(crate) fn two_bones_following(
     if rotation.is_finite() {
       second.rotation = rotation;
     }
-    return None;
+    return Solved::Nothing;
   }
   if !even(first) {
     // Part two's length changes as the second bone turns: the bend is
     // found in the first bone's own space, where both parts are rigid
-    let (solved, aim, knee) =
-      uneven_rotations(first, second, length, to_target, values, last, swing)?;
+    let Some((solved, aim, knee)) =
+      uneven_rotations(first, second, length, to_target, values, last, swing)
+    else {
+      return Solved::Nothing;
+    };
     let first_rotation = turned(first.rotation, solved, mix);
     let second_rotation = turned(second.rotation, aim, mix);
     if !(first_rotation.is_finite() && second_rotation.is_finite()) {
-      return None;
+      return Solved::Nothing;
     }
     first.rotation = first_rotation;
     second.rotation = second_rotation;
-    return Some(knee);
+    return Solved::Knee(knee);
   }
 
   let reach = l1 + l2;
@@ -418,13 +446,13 @@ pub(crate) fn two_bones_following(
   let second_rotation = turned(second.rotation, aim, mix);
   let written = [first_rotation, second_rotation, scale_x, scale_y];
   if !written.iter().all(|value| value.is_finite()) {
-    return None;
+    return Solved::Nothing;
   }
   first.rotation = first_rotation;
   first.scale_x = scale_x;
   first.scale_y = scale_y;
   second.rotation = second_rotation;
-  None
+  Solved::Even
 }
 
 /// The most an uneven limb's bend changes in one step of its walks, in
@@ -465,6 +493,9 @@ fn uneven_rotations(
   swing: f64,
 ) -> Option<(f32, f32, Knee)> {
   let limb = Bent::of(first, second, length, values.bend)?;
+  // A knee solved on the other side has its bend measured there: followed
+  // on this side it would swing, so the fresh rule is taken instead
+  let last = last.filter(|last| last.limb.side == limb.side);
   let distance = f64::from(to_target.length());
   // The farthest reach is needed only for softness, or to choose afresh
   let wants_far = values.softness > 0.0 || last.is_none();
@@ -3438,7 +3469,8 @@ mod tests {
       false,
       *last,
       SWING,
-    );
+    )
+    .kept(*last);
     (first, second)
   }
 
@@ -3848,6 +3880,50 @@ mod tests {
   }
 
   #[test]
+  fn a_knee_whose_bend_changes_side_lands_on_its_target_at_once() {
+    // Sheared and unevenly scaled first bones, the second bone off their
+    // axis at (40, 12), length 40, the target at 0.6 of the nearer side's
+    // farthest reach: followed for five steps on one side, then switched
+    // to the other (a keyed or overridden `bend`). The knee kept was solved
+    // on the old side, so the new side takes the fresh rule: in that one
+    // step the tip is on the target and the knee where a fresh solve puts
+    // it. Followed on the new side as a mirrored bend, the knee swung
+    let second = bone(40.0, 12.0, 0.9);
+    let firsts = [
+      ("an x shear of 0.6", uneven(1.0, 1.0, 0.6)),
+      ("an x shear of -0.6", uneven(1.0, 1.0, -0.6)),
+      ("a scale of (1.5, 1) sheared 0.3", uneven(1.5, 1.0, 0.3)),
+      ("a scale of (1, 1.5) sheared -0.3", uneven(1.0, 1.5, -0.3)),
+    ];
+    for (name, first) in firsts {
+      let farthest = side_reaches(&first, &second, 40.0, true)
+        .0
+        .min(side_reaches(&first, &second, 40.0, false).0);
+      for from_positive in [true, false] {
+        for quarter in 0..4 {
+          let toward = Vec2::from_angle(0.4 + quarter as f32 * FRAC_PI_2);
+          let target = ORIGIN + toward * 0.6 * farthest;
+          let what = format!("{name}, from positive: {from_positive}, toward {toward}");
+          let on = |positive: bool| IkValues {
+            bend: bent(positive),
+            ..values()
+          };
+          let mut last = None;
+          for _ in 0..5 {
+            followed((first, second), 40.0, target, on(from_positive), &mut last);
+          }
+          let switched = on(!from_positive);
+          let (a, b) = followed((first, second), 40.0, target, switched, &mut last);
+          assert_eq!(last.and_then(|knee| knee.swinging_from), None, "{what}");
+          assert_near(tip(&a, &b, 40.0), target, &what);
+          let fresh = solved((first, second), 40.0, target, switched, false);
+          assert_near(joint(&a, &b), joint(&fresh.0, &fresh.1), &what);
+        }
+      }
+    }
+  }
+
+  #[test]
   fn a_held_crest_that_dissolves_swings_the_knee() {
     // A first bone sheared -0.3 and stretched across from a scale of 1 to
     // 1.8 over 30 steps, the second bone at (40, 12), length 40, the
@@ -4203,7 +4279,7 @@ mod tests {
         Some(handed),
         SWING,
       );
-      assert_eq!(kept, None, "limb {index}");
+      assert!(!matches!(kept, Solved::Knee(_)), "limb {index}: {kept:?}");
       let (mut c, mut d) = (first, second);
       two_bones_as_it_stood(&mut c, &mut d, length, target, values, uniform);
       assert_eq!((bits(&a), bits(&b)), (bits(&c), bits(&d)), "limb {index}");
