@@ -4,6 +4,33 @@ Small issues found while building each sub-project and left for later: deferred 
 
 Items from 4f on were copied from their execution records. Items from earlier sub-projects come from notes kept at the time, and some may have been fixed since: check before working on one.
 
+## Skeleton authoring
+
+- Owner decisions (2026-11-15 to 2026-11-16):
+  - Import from an animation tool (the skeleton's planned fourth part) was set aside: the owner will not use a tool, and Claude authors animations. In its place the owner chose five items: springs for secondary motion, pivots on region attachments, a contact sheet, a side for chains, and smaller items (a stretch limit, the exact solve under an unevenly scaled first bone, skeleton-wide culling, event sounds). The design (the spec's section "Authoring: details settled at planning (2026-11-15)") and the plan were approved together and ran subagent-driven; the owner then pre-approved finishing all open work overnight (merge and push still asked).
+  - The exact uneven two-bone solve: a reach that dips and rises cannot be both exact and smooth. The owner chose "exact, rare knee pop", then, when a second pop showed (the farthest bend switching crest as a squash animates), "exact, following its last pose": the knee keeps state and follows its last bend.
+  - Disk: the owner approved deleting `target/debug` as needed until the merge (used twice).
+  - Hand-play: the Crowd page's footsteps were a wall of sound with no way off (every hero sounding; the voice limit capped overlap, not the start rate), and the cape no longer rippled (springs had replaced its flap keys, and a spring at a steady pace only trails). Fixed in the demo (a Footsteps row, Off / A few / All, defaulting to four walkers; the flap keys restored about the hang, springs on top; a gust that blows in gusts), shown running and committed at the owner's word.
+- Not hand-checked at merge: the web build in a browser; hot reload of springs, pivots and event sounds by hand; any GPU backend but Metal; a quiet machine (the comparison with main ran nine alternating rounds, the first three under loads of 10 to 2.6: every case within 5%, the worst `skeletons_update_mesh` +3.3%). The release suite's five failures (the console demo's pages, four; the demo kit's `a_reserved_key_listed_later_is_caught_in_debug_builds`) need developer tools or debug assertions and were not re-run on main.
+- Rulings the owner may revisit:
+  - **The spring model is the engine's own**, written as equations in the design (origin and tip lag in world space, inertia, a speed limit, strength, damping a rate a second, wind and gravity, sub-steps). Spine's mass is left out (it only scales strength) and so is shear (it would read the same lag as rotation). Sub-steps are capped at 64 a step, past which strength saturates.
+  - **A held scene keeps its springs** and a flip mirrors them; a teleport, a reload, an appear, a disabled step or a gap under a hold resets them.
+  - **A sprung bone's turn is measured from where its place actually goes**, so a pinned bone turns as its tip lags (the design's first wording, read literally, never turned it).
+  - **A fixed-side chain is solved from straight** as an even arc; its animated curve comes back only by mix.
+  - **`IkValues::of(setup, bones)`** resolves `bend` by bone count, as the build does.
+  - **"Even" for the closed form and stretch is to 1e-6**, not 1e-4: the knee popped as a scale crossed the old threshold. A bone scaled by under 1e-4 loses stretch.
+  - **The uneven walk goes past a shallow dip** to the side's least distance; **where the followed branch is lost the knee swings at 6 rad/s** (not judged by eye), the tip briefly off target; **leaving the reach is instant**. After four rounds the remaining pops were recorded rather than reworked.
+  - **Culling widens by the pose's actual deform offsets**, not the keys (layers and overshooting curves pass every key).
+  - **A misspelt `at_bone` and a looping sound named by an event warn once**; the looping sound still plays as its definition says.
+  - **The allocation guard counts the audio engine's own per-play allocations apart** (at most 10 a play), in the sounds case only.
+  - **The prelude's spring names carry their kind** (`SpringConstraintSetup`, `SpringConstraintValues`, `SpringConstraintOverride`).
+- Limits recorded (the `ryo-skeleton` skill, the module notes, `docs/backlog/skeleton.md`): springs tuned at the engine's fixed rate, not saved or networked, not colliding; a skeleton riding another's socket has springs that see the carrier's motion a step late (fixing it means stepping carriers before riders: a design change); the uneven knee's remaining pops (a squash with the target moving at once: over 10 steps 43 pops above 0.1 of the reach in 6,048 runs, worst 0.35; squashes under 10 steps: over 3 steps 6, worst 0.27), its swings on steep but continuous motion, the lower crest a fast exit holds (3.6% to 8.1% short), and the swing lengths at faster passes; stretch off on an uneven first bone; a fixed-side chain ignoring its sway; event sounds up to a step late, not following the skeleton, stopped only with their scene, and in a crowd sharing one sound the first in entity order heard; the contact sheet steps at the engine's default rate unless `--hz`, and warms one-shots unless `--once`; culling's outline padding assumes an image drawn at its own size.
+- Deferred findings:
+  - **For a game developer.** `draw_list.rs` `push_sprite_reaching` takes eight parameters behind a lint allowance. `ryo2d sheet` leaves an empty output folder behind if drawing fails.
+- Pre-existing bugs seen along the way:
+  - Outlines, glows and directional outlines reaching into view from a sprite or run just off screen were culled with their quad (two culls ignored the padding): fixed on this branch.
+  - `cargo doc` warns twice in `tilemap/padded.rs` (on main before this branch).
+
 ## Skeleton constraints
 
 - Owner decisions (2026-11-14 to 2026-11-15):
