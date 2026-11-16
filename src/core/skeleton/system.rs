@@ -115,11 +115,15 @@ pub(crate) fn update_skeletons(
     };
     // A skeleton whose scene is stopped under another is frozen with it:
     // nothing advances and nothing is sent, and what its calls caused
-    // waits for the step it updates again
+    // waits for the step it updates again. The hold is counted, so its
+    // springs go on from where they were
     if store
       .as_ref()
       .is_some_and(|store| store.holds(skeleton.scope()))
     {
+      if let Some(number) = number {
+        skeleton.bypass_change_detection().held(number);
+      }
       continue;
     }
     // Data still on its way has no version: there is nothing to pose yet
@@ -141,6 +145,14 @@ pub(crate) fn update_skeletons(
     // travel there; and its bones land with them, not drawn between this
     // pose and the one before, which was posed for the other side
     let turned = skeleton.seen().is_some() && skeleton.flip() != stand.flip;
+    // A step after one it spent disabled, or a teleport, puts its springs
+    // at rest: what they swung from is not where it now is
+    if let Some(number) = number {
+      skeleton.arrive(number);
+    }
+    if teleported {
+      skeleton.reset_springs();
+    }
     skeleton.step(rig, (id, version), animation, dt, stand, fired);
     if let Some(number) = number {
       skeleton.took_step(number);
@@ -1656,5 +1668,184 @@ mod tests {
     // Putting a skeleton on the entity asks again, as the first did
     world.entity_mut(body).insert(Skeleton::new(data));
     assert!(world.get::<Interpolated>(body).is_some());
+  }
+
+  /// A tail 40 long hanging down from a root, swayed by a spring that
+  /// turns it
+  fn tailed(world: &mut World) -> Handle<SkeletonData> {
+    world
+      .resource_mut::<Assets<SkeletonData>>()
+      .add(tail_data())
+  }
+
+  fn tail_data() -> SkeletonData {
+    let down = BoneSetup {
+      rotation: std::f32::consts::FRAC_PI_2,
+      length: 40.0,
+      ..BoneSetup::default()
+    };
+    let swing = crate::core::skeleton::SpringSetup {
+      rotate: 1.0,
+      ..crate::core::skeleton::SpringSetup::default()
+    };
+    SkeletonData::builder()
+      .bone("root", None, BoneSetup::default())
+      .bone("tail", Some("root"), down)
+      .spring("sway", "tail", swing)
+      .build()
+      .expect("a valid skeleton")
+  }
+
+  /// One fixed step, its snapshot first, with `body` carried `by` along x
+  /// before it
+  fn carried(world: &mut World, step: &mut Schedule, body: Entity, by: f32) {
+    snapshot(world);
+    if let Some(mut transform) = world.get_mut::<Transform>(body) {
+      transform.translation.x += by;
+    }
+    step.run(world);
+  }
+
+  /// The spring's motion, as the skeleton keeps it
+  fn motion(world: &World, body: Entity) -> crate::core::skeleton::constrain::SpringState {
+    let skeleton = world.get::<Skeleton>(body).expect("a skeleton");
+    skeleton.constrained.springs()[0]
+  }
+
+  /// Whether the spring is at rest and the tail hangs as animated
+  fn at_rest(world: &World, body: Entity) -> bool {
+    let motion = motion(world, body);
+    let tail = bone(world, body, "tail").matrix2.x_axis.to_angle();
+    motion.tip == Default::default()
+      && motion.origin == Default::default()
+      && (tail - std::f32::consts::FRAC_PI_2).abs() < 1e-6
+  }
+
+  /// Six steps carrying `body` 4 a step: the tail swings
+  fn swing(world: &mut World, step: &mut Schedule, body: Entity) {
+    for _ in 0..6 {
+      carried(world, step, body, 4.0);
+    }
+    assert!(motion(world, body).tip.offset.length() > 0.5);
+  }
+
+  #[test]
+  fn a_spring_forgets_on_a_teleport_a_reload_and_an_appear() {
+    let (mut world, mut step, _) = world();
+    let mut frame = appearing();
+    let data = tailed(&mut world);
+    let body = world
+      .spawn((Transform::IDENTITY, Skeleton::new(data.clone())))
+      .id();
+    carried(&mut world, &mut step, body, 0.0);
+
+    // A jump made inside a step, its entity skipping: the spring takes up
+    // from where the entity now is, at rest
+    swing(&mut world, &mut step, body);
+    snapshot(&mut world);
+    world
+      .get_mut::<Transform>(body)
+      .expect("placed")
+      .translation
+      .x += 500.0;
+    world
+      .get_mut::<PreviousGlobalTransform>(body)
+      .expect("interpolated")
+      .skip = true;
+    step.run(&mut world);
+    assert!(at_rest(&world, body), "teleported in a step");
+    // The same jump without the skip flings it as far as the limit lets it
+    swing(&mut world, &mut step, body);
+    carried(&mut world, &mut step, body, 500.0);
+    assert!(motion(&world, body).tip.offset.length() > 30.0);
+
+    // `skip_interpolation` made outside a step
+    swing(&mut world, &mut step, body);
+    world
+      .get_mut::<Transform>(body)
+      .expect("placed")
+      .translation
+      .x += 500.0;
+    world.skip_interpolation(body);
+    carried(&mut world, &mut step, body, 0.0);
+    assert!(at_rest(&world, body), "teleported between steps");
+
+    // A reload that a step takes up
+    swing(&mut world, &mut step, body);
+    *world
+      .resource_mut::<Assets<SkeletonData>>()
+      .get_mut(&data)
+      .expect("the data") = tail_data();
+    carried(&mut world, &mut step, body, 0.0);
+    assert!(at_rest(&world, body), "reloaded");
+
+    // A reload the frame takes up, as the skeleton appears for it
+    swing(&mut world, &mut step, body);
+    *world
+      .resource_mut::<Assets<SkeletonData>>()
+      .get_mut(&data)
+      .expect("the data") = tail_data();
+    frame.run(&mut world);
+    assert!(at_rest(&world, body), "appeared");
+    carried(&mut world, &mut step, body, 0.0);
+    assert!(at_rest(&world, body), "and stepped after");
+
+    // A step spent disabled
+    swing(&mut world, &mut step, body);
+    world.entity_mut(body).insert(crate::core::ecs::Disabled);
+    carried(&mut world, &mut step, body, 0.0);
+    world
+      .entity_mut(body)
+      .remove::<crate::core::ecs::Disabled>();
+    carried(&mut world, &mut step, body, 0.0);
+    assert!(at_rest(&world, body), "after a disabled step");
+
+    // The game's own call
+    swing(&mut world, &mut step, body);
+    world
+      .get_mut::<Skeleton>(body)
+      .expect("a skeleton")
+      .reset_springs();
+    carried(&mut world, &mut step, body, 0.0);
+    assert!(at_rest(&world, body), "reset by the game");
+  }
+
+  #[test]
+  fn a_held_skeleton_s_springs_go_on_where_they_were() {
+    let (mut world, mut step, _) = world();
+    let data = tailed(&mut world);
+    let body = crate::core::skeleton::in_scene(&mut world, 4, |world| {
+      world.spawn((Transform::IDENTITY, Skeleton::new(data))).id()
+    });
+    carried(&mut world, &mut step, body, 0.0);
+    swing(&mut world, &mut step, body);
+    let before = motion(&world, body);
+    // Held by its scene for five steps: nothing moves
+    crate::core::skeleton::hold_scenes(&mut world, [4].into_iter());
+    for _ in 0..5 {
+      carried(&mut world, &mut step, body, 0.0);
+    }
+    assert_eq!(motion(&world, body), before);
+    // Let go, it goes on from where it was: one step on from there, not
+    // from rest
+    crate::core::skeleton::hold_scenes(&mut world, std::iter::empty());
+    carried(&mut world, &mut step, body, 0.0);
+    let setup = crate::core::skeleton::SpringSetup {
+      rotate: 1.0,
+      ..crate::core::skeleton::SpringSetup::default()
+    };
+    let values = crate::core::skeleton::SpringValues::of(&setup);
+    let mut expected = before.tip;
+    crate::core::skeleton::spring::advance(&mut expected, Vec2::ZERO, 1.0 / 60.0, &setup, &values);
+    let after = motion(&world, body);
+    assert!(after.tip.offset.length() > 0.1, "{after:?}");
+    assert!(
+      (after.tip.offset - expected.offset).length() < 1e-5,
+      "{after:?}"
+    );
+    assert!(
+      (after.tip.speed - expected.speed).length() < 1e-4,
+      "{after:?}"
+    );
   }
 }

@@ -1,8 +1,8 @@
 //! The `debug:skeletons` overlay: every skeleton's bones and joints, the
 //! outlines of the regions its slots show, the triangles and hulls of
 //! their meshes, its bounding boxes and points, and its constraints' marks
-//! (each target, and the lines that reach for it), where the frame draws
-//! the skeleton.
+//! (each target, and the lines that reach for it, and each spring's lag),
+//! where the frame draws the skeleton.
 
 use glam::Vec2;
 
@@ -43,7 +43,9 @@ type Shown = (
 /// the first); each bounding box its slots show; each point as a cross
 /// with a line the way it faces; and each constraint's target, an IK
 /// constraint's crossed and reached for from its last bone's tip, a
-/// transform constraint's joined to each of its bones.
+/// transform constraint's joined to each of its bones; and a line from
+/// where animation puts each spring's bone's tip to where the spring has
+/// put it.
 ///
 /// All of it is where the frame draws the skeleton (`alpha` of the way
 /// from the last fixed step to the next, lifted on a floor, flipped), so
@@ -115,8 +117,27 @@ pub(crate) fn draw(world: &mut World, alpha: f32, pixel: f32, debug: &mut DebugD
       let space = skeleton.drawn_bone(index, drawn.between)?;
       Some(drawn.root * space)
     };
+    let mut springs = skeleton.constrained.springs().iter();
     for constraint in data.constraints() {
-      // A spring has no target, and no mark until its motion shows
+      if let Constraint::Spring(spring) = constraint {
+        // From where animation puts the bone's tip to where the spring has
+        // put it, the lag kept in the skeleton's space beside the tip drawn
+        let lag = springs.next().map_or(Vec2::ZERO, |motion| motion.lag);
+        let index = spring.bone.index();
+        let length = data.bones().get(index).map(|bone| bone.length);
+        let space = skeleton.drawn_bone(index, drawn.between);
+        if lag != Vec2::ZERO
+          && let (Some(length), Some(space)) = (length, space)
+        {
+          let tip = space.transform_point2(Vec2::new(length, 0.0));
+          let (from, to) = (
+            drawn.root.transform_point2(tip + lag),
+            drawn.root.transform_point2(tip),
+          );
+          pen.line(from, to, constraint_color);
+        }
+        continue;
+      }
       let Some(target) = constraint.target().and_then(|bone| placed(bone.index())) else {
         continue;
       };
@@ -535,15 +556,52 @@ mod tests {
   }
 
   #[test]
-  fn the_overlay_marks_nothing_for_a_spring_and_still_marks_the_rest() {
+  fn the_overlay_draws_a_line_from_a_spring_s_animated_tip_to_its_sprung_tip() {
     use crate::core::skeleton::{IkSetup, SpringSetup};
     let swing = SpringSetup {
       rotate: 1.0,
       ..SpringSetup::default()
     };
-    // A spring alone: no target, nothing marked
+    // A spring at rest has nothing to show
     let mut world = constrained(|b| b.spring("sway", "a", swing));
     assert!(marks(&mut world, ShapeKind::Line).is_empty());
+    assert!(marks(&mut world, ShapeKind::Cross).is_empty());
+    // Gravity pulls the tip of "a", 10 along x from the entity at
+    // (100, 50), down: the line runs from where animation puts the tip to
+    // where the spring has put it
+    let falling = SpringSetup {
+      gravity: 600.0,
+      ..swing
+    };
+    let data = SkeletonData::builder()
+      .bone(
+        "a",
+        None,
+        BoneSetup {
+          length: 10.0,
+          ..BoneSetup::default()
+        },
+      )
+      .spring("sway", "a", falling)
+      .build()
+      .expect("a valid skeleton");
+    let (mut world, entity) = spawned(data);
+    for _ in 0..10 {
+      step(&mut world, entity);
+    }
+    let lines = marks(&mut world, ShapeKind::Line);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    let skeleton = world.get::<Skeleton>(entity).expect("the skeleton");
+    let sprung = skeleton
+      .bone_world("a")
+      .expect("a posed bone")
+      .transform_point2(Vec2::new(10.0, 0.0));
+    assert!(sprung.y > 50.5, "pulled down: {sprung}");
+    assert!(
+      lines[0][0].abs_diff_eq(Vec2::new(110.0, 50.0), 1e-3),
+      "{lines:?}"
+    );
+    assert!(lines[0][1].abs_diff_eq(sprung, 1e-3), "{lines:?}");
     assert!(marks(&mut world, ShapeKind::Cross).is_empty());
     // Among other constraints, theirs are marked as before
     let mut world = constrained(|b| {

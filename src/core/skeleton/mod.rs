@@ -8,8 +8,8 @@
 //!
 //! A [`Skeleton`] component shows one on an entity, posed by the entity's
 //! [`SkeletonAnimation`] in each fixed step, its constraints then bringing
-//! bones to their targets or making them copy a target bone's transform
-//! (springs, which give a bone secondary motion, are held in the data);
+//! bones to their targets, making them copy a target bone's transform, or
+//! giving them secondary motion with springs that lag and swing back;
 //! a [`BoneSocket`] on a child
 //! entity rides one of its bones; and [`SkeletonEvent`] and
 //! [`SkeletonTrackEvent`] messages tell the game what its animations did.
@@ -38,6 +38,7 @@ mod pose;
 mod scope;
 mod skin;
 mod socket;
+mod spring;
 mod state;
 mod system;
 mod transform_constraint;

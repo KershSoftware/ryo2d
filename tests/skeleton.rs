@@ -3101,3 +3101,70 @@ fn skeletons_sharing_data_keep_their_own_deform() {
   // The shared data is as it was made
   assert_eq!(version(&engine, &data), made);
 }
+
+/// A tail 40 long hanging down from a root, which the spring "sway" turns
+fn tailed() -> SkeletonData {
+  let down = BoneSetup {
+    rotation: FRAC_PI_2,
+    length: 40.0,
+    ..BoneSetup::default()
+  };
+  let swing = SpringSetup {
+    rotate: 1.0,
+    ..SpringSetup::default()
+  };
+  SkeletonData::builder()
+    .bone("root", None, BoneSetup::default())
+    .bone("tail", Some("root"), down)
+    .spring("sway", "tail", swing)
+    .build()
+    .expect("a valid skeleton")
+}
+
+/// Carries `entity` `by` along x, and runs a frame
+fn carry(engine: &mut HeadlessEngine, entity: Entity, by: f32) {
+  let mut placed = engine
+    .world_mut()
+    .get_mut::<Transform>(entity)
+    .expect("placed");
+  placed.translation.x += by;
+  engine.step().expect("a frame");
+}
+
+#[test]
+fn a_paused_clock_holds_a_swinging_spring_and_a_teleport_puts_it_at_rest() {
+  let Some(mut engine) = engine() else {
+    return;
+  };
+  let data = engine.assets().add(tailed());
+  let body = spawn(&mut engine, &data, Transform::IDENTITY);
+  for _ in 0..6 {
+    carry(&mut engine, body, 3.0);
+  }
+  let swung = bone(&engine, body, "tail");
+  assert!(heading(swung) > FRAC_PI_2 + 1e-3, "it trails: {swung:?}");
+
+  // Paused, no step runs: the tail holds where it swung to, frame after
+  // frame
+  time(&mut engine).game.pause();
+  for _ in 0..30 {
+    engine.step().expect("a frame");
+    assert_eq!(bone(&engine, body, "tail"), swung);
+  }
+  // Resumed, it swings on from there, not from rest
+  time(&mut engine).game.resume();
+  engine.step().expect("a frame");
+  let on = heading(bone(&engine, body, "tail"));
+  assert!(on != heading(swung) && on > FRAC_PI_2 + 1e-3, "{on}");
+
+  // Teleported, it hangs as animated where it lands
+  engine
+    .world_mut()
+    .get_mut::<Transform>(body)
+    .expect("placed")
+    .translation
+    .x += 300.0;
+  engine.world_mut().skip_interpolation(body);
+  engine.step().expect("a frame");
+  close(heading(bone(&engine, body, "tail")), FRAC_PI_2);
+}

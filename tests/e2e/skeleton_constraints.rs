@@ -1,8 +1,9 @@
 //! Constrained skeletons drawn through the world batch: an arm whose IK
 //! constraint brings its hand to a target is drawn where its step posed
 //! it, and is flipped, y-sorted and drawn between steps as any skeleton
-//! is, and a part a transform constraint holds level stays level while
-//! the arm carrying it turns, read back as display bytes. The rigs and
+//! is, a part a transform constraint holds level stays level while the
+//! arm carrying it turns, and a tail on a spring trails a moving body and
+//! settles, read back as display bytes. The rigs and
 //! the frame helpers are the skeleton pixel tests' own (`skeleton.rs`).
 //!
 //! Tests skip when no GPU is available.
@@ -289,6 +290,74 @@ fn a_part_held_level_stays_level_while_its_arm_turns() {
     skeleton.override_bone("arm", turned);
     assert_boxes(&settled(&mut engine), &[(drawn, GREEN)], what);
   }
+}
+
+/// The centre of the pixels of `colour` in `frame`, if any
+fn centre_of(frame: &image::RgbaImage, colour: [u8; 4]) -> Option<Vec2> {
+  let (mut sum, mut count) = (Vec2::ZERO, 0.0);
+  for (x, y, pixel) in frame.enumerate_pixels() {
+    if pixel.0 == colour {
+      sum += Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
+      count += 1.0;
+    }
+  }
+  (count > 0.0).then(|| sum / count)
+}
+
+#[test]
+fn a_tail_on_a_spring_swings_behind_a_moving_body_and_settles() {
+  let Some(mut engine) = engine() else {
+    return;
+  };
+  // A tail 30 px long with no art hangs down from where the body stands;
+  // a 4 px square marks its tip, upright whatever the tail does. A spring
+  // turns the tail toward where its tip lags
+  let world = engine.world_mut();
+  let mut tail = Part {
+    colour: UNSEEN,
+    ..part("tail", WHITE, (1, 1))
+  }
+  .turned(std::f32::consts::FRAC_PI_2);
+  tail.bone.length = 30.0;
+  let mut tip = part("tip", GREEN, (4, 4)).under("tail", 30.0, 0.0);
+  tip.bone.inherit = BoneInherit::OnlyTranslation;
+  let swing = SpringSetup {
+    rotate: 1.0,
+    ..SpringSetup::default()
+  };
+  let data = rig_with(world, &[tail, tip], Images::Each, |builder| {
+    builder.spring("sway", "tail", swing)
+  });
+  let hero = stand(world, data, (12.0, 10.0), Renderable::skeleton());
+  // Still, the tip is straight below, its square at (10, 38)
+  assert_boxes(&settled(&mut engine), &[((10, 38, 4, 4), GREEN)], "still");
+
+  // Carried right 2 px a step, the tip trails to the left of the body
+  for _ in 0..8 {
+    engine
+      .world_mut()
+      .get_mut::<Transform>(hero)
+      .unwrap()
+      .translation
+      .x += 2.0;
+    engine.step().unwrap();
+  }
+  let drawn = frame(&engine);
+  let body = engine
+    .world()
+    .get::<GlobalTransform>(hero)
+    .unwrap()
+    .translation();
+  let trailing = centre_of(&drawn, GREEN).expect("the tip is drawn");
+  // A frame of whole steps draws the body a step back, 2 px behind
+  assert!(
+    trailing.x < body.x - 2.0 - 2.0,
+    "the tip at {trailing} trails the body at {body}"
+  );
+
+  // Stopped, it swings back and settles straight below, at (26, 38)
+  engine.step_frames(300).unwrap();
+  assert_boxes(&settled(&mut engine), &[((26, 38, 4, 4), GREEN)], "settled");
 }
 
 #[cfg(dev_tools)]

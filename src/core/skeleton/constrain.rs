@@ -7,10 +7,13 @@
 use glam::{Affine2, Vec2};
 
 use super::component::{SetOverride, apply_override, invertible};
-use super::constraint::{Constraint, IkConstraint, TransformConstraint, TransformMix};
+use super::constraint::{
+  Constraint, IkConstraint, SpringConstraint, SpringValues, TransformConstraint, TransformMix,
+};
 use super::data::{BoneData, BoneId, BoneSet, SkeletonData};
 use super::ik::{IkValues, chain, one_bone, two_bones};
 use super::pose::{BonePose, ConstraintValues, Pose};
+use super::spring::{SpringPoint, advance, onto_bone, sprung};
 use super::transform_constraint::{in_its_own_values, in_the_world};
 
 /// What a constraint pass needs of the data, worked out once as the data
@@ -141,6 +144,23 @@ pub(crate) struct Constrained {
   chain: Vec<BonePose>,
   /// A chain's solve's scratch
   joints: Vec<Vec2>,
+  /// Each spring's motion, in the data's order of springs
+  springs: Vec<SpringState>,
+}
+
+/// What a spring keeps from step to step: its bone's origin and tip, each
+/// an offset from where animation puts it and its speed, in world units;
+/// where animation put the two at the last step; and, for the overlay, how
+/// far the bone's tip is from where animation put it, in the skeleton's
+/// space. Unprimed, it is at rest and takes up the next points it is given
+/// as its last
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) struct SpringState {
+  pub(super) origin: SpringPoint,
+  pub(super) tip: SpringPoint,
+  pub(super) last: [Vec2; 2],
+  pub(super) primed: bool,
+  pub(super) lag: Vec2,
 }
 
 impl Constrained {
@@ -167,12 +187,56 @@ impl Constrained {
       None => (Vec::new(), Vec::new()),
     };
     let values = data.constraints().iter().map(ConstraintValues::setup);
+    let springs = data
+      .constraints()
+      .iter()
+      .filter(|constraint| matches!(constraint, Constraint::Spring(_)))
+      .count();
     Self {
       animated: changed.iter().filter_map(setup).collect(),
       values: values.collect(),
       changed: BoneSet::default(),
       chain,
       joints,
+      springs: vec![SpringState::default(); springs],
+    }
+  }
+
+  /// Every spring at rest: offsets and speeds 0, taking up the next points
+  /// it is given as its last
+  pub(super) fn forget_springs(&mut self) {
+    self.springs.fill(SpringState::default());
+  }
+
+  /// Each spring's motion, in the data's order of springs
+  pub(super) fn springs(&self) -> &[SpringState] {
+    &self.springs
+  }
+
+  /// Mirrors every spring across its entity's axes, as the entity's flip
+  /// changed along those `axes` (-1 for an axis now mirrored the other way,
+  /// 1 for one not): `root` is the entity's transform, whose origin and
+  /// axes the mirror is about. Offsets and speeds are mirrored, and the
+  /// last points about the entity's origin, so a turning character's cape
+  /// swings on round. An entity whose axes are flat forgets them instead
+  pub(super) fn mirror_springs(&mut self, root: Affine2, axes: Vec2) {
+    if self.springs.is_empty() {
+      return;
+    }
+    if !invertible(root.matrix2) {
+      self.forget_springs();
+      return;
+    }
+    let mirror = root.matrix2 * glam::Mat2::from_diagonal(axes) * root.matrix2.inverse();
+    let about = root.translation;
+    for spring in self.springs.iter_mut().filter(|spring| spring.primed) {
+      for point in [&mut spring.origin, &mut spring.tip] {
+        point.offset = mirror * point.offset;
+        point.speed = mirror * point.speed;
+      }
+      for last in &mut spring.last {
+        *last = about + mirror * (*last - about);
+      }
     }
   }
 
@@ -226,13 +290,20 @@ impl Constrained {
 /// bones below it again, leaving the bone's own values alone and the bone
 /// unmarked; in a local mode it changes the bone's own values, marks it,
 /// and places it and the bones below it again. One whose mixes are all 0,
-/// or one of them not a number, changes nothing
+/// or one of them not a number, changes nothing.
+///
+/// A spring advances its motion by `dt` when given one (a step; a pose
+/// outside a step gives none and applies the offsets it has), then moves
+/// its bone's own values by its offsets, marks it, and places it and the
+/// bones below it again. At a mix of 0, or with both offsets 0, it changes
+/// nothing
 pub(crate) fn constrain(
   pose: &mut Pose,
   data: &SkeletonData,
   root: Affine2,
   overrides: &[SetOverride],
   state: &mut Constrained,
+  dt: Option<f32>,
 ) {
   let bones = data.bones().len();
   if pose.bones.len() != bones || pose.skeleton_space.len() != bones {
@@ -241,6 +312,7 @@ pub(crate) fn constrain(
   }
   let lists = &data.index().constraint_bones;
   state.changed = BoneSet::default();
+  let mut springs = 0;
   for (at, constraint) in data.constraints().iter().enumerate() {
     match (constraint, pose.constraints.get(at).copied()) {
       (Constraint::Ik(ik), Some(ConstraintValues::Ik(values))) => {
@@ -275,11 +347,98 @@ pub(crate) fn constrain(
           );
         }
       }
-      // A spring is held in the data but moves nothing in the pass
-      (Constraint::Spring(_), _) => {}
+      (Constraint::Spring(spring), values) => {
+        let at_spring = springs;
+        springs += 1;
+        let (Some(ConstraintValues::Spring(values)), Some(motion)) =
+          (values, state.springs.get_mut(at_spring))
+        else {
+          continue;
+        };
+        let Some(animated_tip) = spring_step(pose, data, root, spring, values, dt, motion) else {
+          continue;
+        };
+        state.changed.set(spring.bone.index());
+        place_listed(pose, data, root, lists.again(at), overrides, &state.changed);
+        // For the overlay: how far the spring has put the tip
+        let tip = data
+          .bones()
+          .get(spring.bone.index())
+          .map(|bone| bone.length);
+        let placed = pose.skeleton_space.get(spring.bone.index());
+        if let (Some(length), Some(placed), Some(motion)) =
+          (tip, placed, state.springs.get_mut(at_spring))
+        {
+          motion.lag = animated_tip - placed.transform_point2(Vec2::new(length, 0.0));
+        }
+      }
       _ => {}
     }
   }
+}
+
+/// One spring's turn in the pass: its bone's origin and tip in the world,
+/// as animation and the constraints before it left them, advance its
+/// motion by `dt` (when given) and its offsets are written into the bone's
+/// own values. The bone's tip in the skeleton's space as it was, when they
+/// were written; `None`, with nothing written, at a mix of 0, with both
+/// offsets 0, or when the bone cannot be moved (its parent is flat, or it
+/// is not placed where a number can say)
+fn spring_step(
+  pose: &mut Pose,
+  data: &SkeletonData,
+  root: Affine2,
+  spring: &SpringConstraint,
+  values: SpringValues,
+  dt: Option<f32>,
+  motion: &mut SpringState,
+) -> Option<Vec2> {
+  let bone = spring.bone.index();
+  let space = *pose.skeleton_space.get(bone)?;
+  let length = data.bones().get(bone)?.length;
+  let tip_here = space.transform_point2(Vec2::new(length, 0.0));
+  let placed = root * space;
+  let (origin, tip) = (placed.translation, root.transform_point2(tip_here));
+  motion.lag = Vec2::ZERO;
+  if !(origin.is_finite() && tip.is_finite()) {
+    return None;
+  }
+  if !motion.primed {
+    *motion = SpringState {
+      last: [origin, tip],
+      primed: true,
+      ..SpringState::default()
+    };
+  }
+  if let Some(h) = dt {
+    let setup = &spring.setup;
+    advance(
+      &mut motion.origin,
+      origin - motion.last[0],
+      h,
+      setup,
+      &values,
+    );
+    advance(&mut motion.tip, tip - motion.last[1], h, setup, &values);
+    motion.last = [origin, tip];
+  }
+  let at_rest = motion.origin.offset == Vec2::ZERO && motion.tip.offset == Vec2::ZERO;
+  // A mix that is not a number counts as 0
+  let mixed = values.mix > 0.0;
+  if !mixed || at_rest {
+    return None;
+  }
+  let change = sprung(
+    origin,
+    tip,
+    [motion.origin, motion.tip],
+    &spring.setup,
+    values.mix,
+  );
+  let parent = root.matrix2 * pose.parent_space(data, bone).matrix2;
+  let frame = root.matrix2 * pose.direction_space(data, bone);
+  let own = pose.bones.get_mut(bone)?;
+  onto_bone(own, parent, frame, placed.matrix2.x_axis, change).then_some(tip_here)
 }
 
 /// Whether a transform constraint at `mix` does anything: each mix a
@@ -456,7 +615,7 @@ mod tests {
   use crate::core::skeleton::pose::ConstraintValues;
   use crate::core::skeleton::{
     Animation, BoneOverride, BoneSetup, ConstraintId, Curve, IkSetup, Inherit, Skeleton,
-    SkeletonAnimation, SkeletonDataBuilder, Timeline, TransformMix, TransformOffset,
+    SkeletonAnimation, SkeletonDataBuilder, SpringSetup, Timeline, TransformMix, TransformOffset,
     TransformSetup,
   };
   use crate::testing::asset_world;
@@ -736,7 +895,7 @@ mod tests {
     pose.compute_world(data, Affine2::IDENTITY);
     let tip = data.bone("end").expect("the mark").index();
     let unsolved = pose.skeleton_space[tip].translation;
-    constrain(&mut pose, data, Affine2::IDENTITY, &[], &mut state);
+    constrain(&mut pose, data, Affine2::IDENTITY, &[], &mut state, None);
     assert_eq!(room(&state), sized);
     assert!(pose.skeleton_space[tip].translation.distance(unsolved) > 1.0);
     near(pose.skeleton_space[tip].translation, end - stood);
@@ -1343,7 +1502,7 @@ mod tests {
     let placed = (bits(&pose.skeleton_space), own_bits(&pose.bones));
     let data = rig.data();
     let mut state = Constrained::new(data);
-    constrain(&mut pose, data, Affine2::IDENTITY, &[], &mut state);
+    constrain(&mut pose, data, Affine2::IDENTITY, &[], &mut state, None);
     assert_eq!((bits(&pose.skeleton_space), own_bits(&pose.bones)), placed);
     // The data's own pose is constrained: the eye turns to look down
     let skeleton = rig.posed(Affine2::IDENTITY, |_| {});
@@ -2471,5 +2630,253 @@ mod tests {
     );
     assert_eq!(bits(&off.pose.world), bits(&free.pose.world));
     assert!((heading(&off, "lower") - 1.0).abs() < 0.001);
+  }
+
+  /// A tail 40 long hanging straight down from a root at the skeleton's
+  /// origin, swayed by the spring "sway" set up as `setup`
+  fn tail(setup: SpringSetup) -> SkeletonDataBuilder {
+    let down = BoneSetup {
+      rotation: FRAC_PI_2,
+      length: 40.0,
+      ..BoneSetup::default()
+    };
+    SkeletonData::builder()
+      .bone("root", None, BoneSetup::default())
+      .bone("tail", Some("root"), down)
+      .spring("sway", "tail", setup)
+  }
+
+  /// A spring that turns its bone, as the setup's defaults have it
+  fn swinging() -> SpringSetup {
+    SpringSetup {
+      rotate: 1.0,
+      ..SpringSetup::default()
+    }
+  }
+
+  /// The entity at `x` along the world's x
+  fn along(x: f32) -> Affine2 {
+    Affine2::from_translation(Vec2::new(x, 0.0))
+  }
+
+  /// Where a bone's tip, `length` along it, is in the world
+  fn tip(skeleton: &Skeleton, name: &str, length: f32) -> Vec2 {
+    let world = skeleton.bone_world(name).expect("a posed bone");
+    world.transform_point2(Vec2::new(length, 0.0))
+  }
+
+  #[test]
+  fn a_spring_lags_a_moving_parent_and_settles() {
+    let rig = built(tail(swinging()));
+    let (mut skeleton, mut twin) = (rig.skeleton(), rig.skeleton());
+    rig.step(&mut skeleton, along(0.0));
+    rig.step(&mut twin, along(0.0));
+    let room = skeleton.constrained.springs().as_ptr();
+    // At rest it hangs as animated
+    assert_eq!(heading(&skeleton, "tail"), FRAC_PI_2);
+    // Carried right at 180 a second, its tip trails to the left: the tail
+    // turns past straight down, clockwise being positive
+    let mut x = 0.0;
+    for _ in 0..30 {
+      x += 3.0;
+      rig.step(&mut skeleton, along(x));
+      rig.step(&mut twin, along(x));
+      assert!(heading(&skeleton, "tail") > FRAC_PI_2 + 1e-3);
+      assert!(tip(&skeleton, "tail", 40.0).x < x);
+      // The same steps give the same pose, to the bit
+      assert_eq!(own_bits(&skeleton.pose.bones), own_bits(&twin.pose.bones));
+    }
+    // Stopped, it swings back past the vertical and settles to rest
+    let mut least = f32::MAX;
+    for _ in 0..300 {
+      rig.step(&mut skeleton, along(x));
+      least = least.min(heading(&skeleton, "tail"));
+    }
+    assert!(least < FRAC_PI_2 - 1e-3, "it swings back: {least}");
+    assert!((heading(&skeleton, "tail") - FRAC_PI_2).abs() < 1e-3);
+    // Its state is the room it was given with the data
+    assert_eq!(skeleton.constrained.springs().as_ptr(), room);
+    assert_eq!(skeleton.constrained.springs().len(), 1);
+  }
+
+  #[test]
+  fn a_strand_lags_link_by_link() {
+    // Three links of 15 hanging down, each with its spring, parent first:
+    // each lags its parent's sprung place, so the lag grows down the strand
+    let down = BoneSetup {
+      rotation: FRAC_PI_2,
+      length: 15.0,
+      ..BoneSetup::default()
+    };
+    let on = BoneSetup {
+      x: 15.0,
+      length: 15.0,
+      ..BoneSetup::default()
+    };
+    let rig = built(
+      SkeletonData::builder()
+        .bone("root", None, BoneSetup::default())
+        .bone("hair_0", Some("root"), down)
+        .bone("hair_1", Some("hair_0"), on)
+        .bone("hair_2", Some("hair_1"), on)
+        .spring("s0", "hair_0", swinging())
+        .spring("s1", "hair_1", swinging())
+        .spring("s2", "hair_2", swinging()),
+    );
+    let mut skeleton = rig.skeleton();
+    rig.step(&mut skeleton, along(0.0));
+    let mut x = 0.0;
+    for _ in 0..8 {
+      x += 3.0;
+      rig.step(&mut skeleton, along(x));
+    }
+    let lag = |name: &str| x - tip(&skeleton, name, 15.0).x;
+    let lags = [lag("hair_0"), lag("hair_1"), lag("hair_2")];
+    assert!(lags[0] > 0.1, "{lags:?}");
+    assert!(lags[1] > lags[0] + 0.1, "{lags:?}");
+    assert!(lags[2] > lags[1] + 0.1, "{lags:?}");
+
+    // Two springs on one bone: the second sways the place the first left,
+    // so the bone turns further than under one
+    let twice = built(tail(swinging()).spring("again", "tail", swinging()));
+    let once = built(tail(swinging()));
+    let (mut a, mut b) = (twice.skeleton(), once.skeleton());
+    twice.step(&mut a, along(0.0));
+    once.step(&mut b, along(0.0));
+    for step in 1..=6 {
+      twice.step(&mut a, along(step as f32 * 3.0));
+      once.step(&mut b, along(step as f32 * 3.0));
+    }
+    assert!(heading(&a, "tail") > heading(&b, "tail") + 1e-3);
+  }
+
+  #[test]
+  fn pause_holds_a_spring_and_placing_again_does_not_advance_it() {
+    let rig = built(tail(swinging()));
+    let mut skeleton = rig.skeleton();
+    rig.step(&mut skeleton, along(0.0));
+    for step in 1..=5 {
+      rig.step(&mut skeleton, along(step as f32 * 4.0));
+    }
+    let springs = skeleton.constrained.springs().to_vec();
+    let posed = (
+      own_bits(&skeleton.pose.bones),
+      bits(&skeleton.pose.skeleton_space),
+      bits(&skeleton.pose.world),
+    );
+    // Placed again where it stands, however often: the step's pose, to the
+    // bit, and the springs where they were
+    let data = rig.data().clone();
+    for _ in 0..3 {
+      skeleton.place_again(&data, along(20.0).into());
+      assert_eq!(skeleton.constrained.springs(), &springs[..]);
+      assert_eq!(
+        (
+          own_bits(&skeleton.pose.bones),
+          bits(&skeleton.pose.skeleton_space),
+          bits(&skeleton.pose.world),
+        ),
+        posed
+      );
+    }
+    // Placed again elsewhere (it rides a socket), its offsets apply there
+    // and nothing advances: the tail is turned as it was
+    skeleton.place_again(&data, along(60.0).into());
+    assert_eq!(skeleton.constrained.springs(), &springs[..]);
+    assert_eq!(own_bits(&skeleton.pose.bones), posed.0);
+  }
+
+  #[test]
+  fn a_flip_mirrors_a_spring_s_swing() {
+    use crate::core::skeleton::component::Flip;
+    // An entity turned 0.3, carried along the world's x so its tail swings
+    let rig = built(tail(swinging()));
+    let mut skeleton = rig.skeleton();
+    let turned = |x: f32| Affine2::from_angle_translation(0.3, Vec2::new(x, 0.0));
+    rig.step(&mut skeleton, turned(0.0));
+    for step in 1..=6 {
+      rig.step(&mut skeleton, turned(step as f32 * 4.0));
+    }
+    let root = turned(24.0);
+    let before = tip(&skeleton, "tail", 40.0) - root.translation;
+    let unflipped = skeleton.constrained.springs()[0].tip;
+    let speed = unflipped.speed;
+    assert!(speed.length() > 1.0, "it is swinging: {speed}");
+    // Flipped across the entity's own axis where it stands: the swing is
+    // the mirror image, offsets, speeds and all
+    let mirror =
+      root.matrix2 * glam::Mat2::from_diagonal(Vec2::new(-1.0, 1.0)) * root.matrix2.inverse();
+    let flipped = Stand {
+      root,
+      flip: Flip { x: true, y: false },
+    };
+    let data = rig.data().clone();
+    skeleton.place_again(&data, flipped);
+    let after = tip(&skeleton, "tail", 40.0) - root.translation;
+    near(after, mirror * before);
+    let motion = skeleton.constrained.springs()[0];
+    near(motion.tip.speed, mirror * speed);
+    // And it swings on round from there: the step after, flipped and
+    // standing still, takes up from the mirrored motion, not from rest
+    rig.step(&mut skeleton, flipped);
+    let next = skeleton.constrained.springs()[0];
+    assert!(next.tip.offset.length() > 0.5, "{next:?}");
+    assert!(
+      (next.tip.offset - motion.tip.offset).length()
+        < (next.tip.offset - unflipped.offset).length(),
+      "{next:?}"
+    );
+  }
+
+  #[test]
+  fn a_keyed_gust_and_an_overridden_mix_reach_a_spring() {
+    use crate::core::skeleton::{ConstraintOverride, SpringOverride, SpringValues};
+    // "gust" keys a wind of 600 to the right
+    let gust = Timeline::Spring {
+      constraint: ConstraintId(0),
+      frames: vec![(
+        0.0,
+        SpringValues {
+          mix: 1.0,
+          wind: 600.0,
+          gravity: 0.0,
+        },
+        Curve::Linear,
+      )],
+    };
+    let rig = built(tail(swinging()).animation(clip("gust", vec![gust])));
+    let mut skeleton = rig.skeleton();
+    let mut animation = playing("gust");
+    for _ in 0..20 {
+      rig.step_playing(&mut skeleton, &mut animation, along(0.0));
+    }
+    // Blown right, the tip is to the right of straight down
+    assert!(tip(&skeleton, "tail", 40.0).x > 1.0);
+    assert!(heading(&skeleton, "tail") < FRAC_PI_2 - 1e-3);
+    // An overridden mix of 0 leaves the tail as animated in that step
+    let mix = |mix: f32| {
+      ConstraintOverride::Spring(SpringOverride {
+        mix: Some(mix),
+        ..SpringOverride::default()
+      })
+    };
+    skeleton.override_constraint("sway", mix(0.0));
+    rig.step_playing(&mut skeleton, &mut animation, along(0.0));
+    assert_eq!(heading(&skeleton, "tail"), FRAC_PI_2);
+    // and the gust still blows it meanwhile: at a mix of 0.5 the tail,
+    // whose place stays, points at the animated tip plus half the tip's
+    // offset
+    skeleton.override_constraint("sway", mix(0.5));
+    rig.step_playing(&mut skeleton, &mut animation, along(0.0));
+    let motion = skeleton.constrained.springs()[0];
+    assert!(motion.tip.offset.x > 1.0, "{motion:?}");
+    let animated_tip = Vec2::new(0.0, 40.0);
+    let sprung = animated_tip + motion.tip.offset * 0.5;
+    assert!(
+      (heading(&skeleton, "tail") - sprung.to_angle()).abs() < 1e-4,
+      "{} against {}",
+      heading(&skeleton, "tail"),
+      sprung.to_angle()
+    );
   }
 }

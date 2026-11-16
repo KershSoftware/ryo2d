@@ -472,6 +472,10 @@ pub struct Skeleton {
   /// The number of the fixed step that last stepped it, or after which it
   /// was last posed outside a step (0: none)
   stepped: u64,
+  /// The number of the last fixed step that stepped it, held it, or after
+  /// which it was posed outside a step (0: none): a step that does not
+  /// follow it found it disabled, and its springs forget
+  counted: u64,
   /// The numbers of its last two placings: each new pose, for its sockets
   /// to be placed on, takes a number (0: none yet)
   placing: u64,
@@ -500,6 +504,7 @@ impl Skeleton {
       root: Affine2::IDENTITY,
       flip: Flip::default(),
       stepped: 0,
+      counted: 0,
       placing: 0,
       placed_before: 0,
       warned: Vec::new(),
@@ -512,6 +517,16 @@ impl Skeleton {
   /// The data it shows
   pub fn data(&self) -> &Handle<SkeletonData> {
     &self.data
+  }
+
+  /// Puts every spring of its data at rest: each bone it sways is where
+  /// animation puts it from the next step (or placing), and the springs
+  /// take up the motion from there. The engine does this itself when the
+  /// data is taken up (added, or reloaded), when the skeleton appears, when
+  /// its entity teleports (`skip_interpolation`, or a pool's acquire) and
+  /// after a step its entity spent disabled; a scene's hold keeps them
+  pub fn reset_springs(&mut self) {
+    self.constrained.forget_springs();
   }
 
   /// The world transform of the bone called `name`, as the skeleton's last
@@ -916,12 +931,30 @@ impl Skeleton {
       self.settle();
     }
     self.stepped = number;
+    self.counted = number;
   }
 
   /// It was posed outside a step, after fixed step `latest`: its next step
   /// follows on from that pose
   pub(crate) fn posed_after(&mut self, latest: u64) {
     self.stepped = latest;
+    self.counted = latest;
+  }
+
+  /// Its scene held it through fixed step `number`: a hold is not a gap,
+  /// so its springs go on from where they were when it carries on
+  pub(crate) fn held(&mut self, number: u64) {
+    self.counted = number;
+  }
+
+  /// Fixed step `number` is about to step it. If the step before neither
+  /// stepped nor held it, it was disabled (a hold is counted, and data
+  /// that has yet to land makes the pose anew anyway): its springs forget
+  /// what they were doing, as after a teleport
+  pub(crate) fn arrive(&mut self, number: u64) {
+    if self.counted != 0 && self.counted.wrapping_add(1) != number {
+      self.reset_springs();
+    }
   }
 
   /// Nothing is drawn between its last two poses: each bone's previous
@@ -975,7 +1008,7 @@ impl Skeleton {
       ),
       None => self.pose.reset(data),
     }
-    self.finish(data, animation, stand, carried);
+    self.finish(data, animation, stand, carried, Some(dt));
   }
 
   /// A pose outside a step, for a skeleton that has none for `data` as it
@@ -1000,7 +1033,7 @@ impl Skeleton {
       Some(animation) => animation.apply_unadvanced(data, &mut self.pose),
       None => self.pose.reset(data),
     }
-    self.finish(data, animation, stand, None);
+    self.finish(data, animation, stand, None, None);
     self.settle();
   }
 
@@ -1010,13 +1043,15 @@ impl Skeleton {
   /// overrides are put over the constraints' animated values, and the
   /// bones are placed where it stands, the data's constraints applied.
   /// After new data (`carried`), a bone with no transform from the pose
-  /// before takes its current one as its previous one
+  /// before takes its current one as its previous one. A step's `dt`
+  /// advances the springs; a pose outside a step gives none
   fn finish(
     &mut self,
     data: &SkeletonData,
     animation: Option<&mut SkeletonAnimation>,
     stand: Stand,
     carried: Option<Carried>,
+    dt: Option<f32>,
   ) {
     // The animation state starts each pose from the setup pose, so what
     // the game set is put over its result every time
@@ -1045,7 +1080,7 @@ impl Skeleton {
         .and_then(|bone| self.pose.bones.get(bone.index()).copied());
     }
     self.apply_constraint_overrides(data);
-    self.place(data, stand);
+    self.place(data, stand, dt);
     if let Some(carried) = carried {
       // A bone with no transform from the pose before draws where it is
       let placed = self
@@ -1085,7 +1120,8 @@ impl Skeleton {
   /// constraints' values as animation left them: a world-space override
   /// depends on where it stands, a constraint on where that puts its
   /// target, and an override set or cleared since the step shows at once.
-  /// So it gives the pose a step gives there, however often it runs
+  /// So it gives the pose a step gives there, however often it runs. Its
+  /// springs apply the offsets they have and do not advance
   pub(crate) fn place_again(&mut self, data: &SkeletonData, stand: Stand) {
     self.constrained.restore(&mut self.pose);
     self.apply_constraint_overrides(data);
@@ -1104,7 +1140,7 @@ impl Skeleton {
         *pose = animated;
       }
     }
-    self.place(data, stand);
+    self.place(data, stand, None);
   }
 
   /// Applies the bone overrides and computes the bones' transforms, in one
@@ -1112,8 +1148,17 @@ impl Skeleton {
   /// its bone's parent, which is placed by then, overrides and all. Data
   /// with constraints then has them applied, in order, to the bones as
   /// that pass placed them in the skeleton's space, before the bones are
-  /// put in the world
-  fn place(&mut self, data: &SkeletonData, stand: Stand) {
+  /// put in the world. Its springs advance by `dt` when given one; flipped
+  /// another way than it was last placed, they are mirrored first
+  fn place(&mut self, data: &SkeletonData, stand: Stand, dt: Option<f32>) {
+    if self.flip != stand.flip {
+      let axis = |was: bool, now: bool| if was == now { 1.0 } else { -1.0 };
+      let axes = Vec2::new(
+        axis(self.flip.x, stand.flip.x),
+        axis(self.flip.y, stand.flip.y),
+      );
+      self.constrained.mirror_springs(stand.root, axes);
+    }
     self.root = stand.root;
     self.flip = stand.flip;
     let root = stand.affine();
@@ -1134,6 +1179,7 @@ impl Skeleton {
       root,
       &self.overrides,
       &mut self.constrained,
+      dt,
     );
     self.pose.apply_root(root);
   }
@@ -2972,27 +3018,44 @@ mod tests {
   }
 
   #[test]
-  fn a_skeleton_with_springs_steps_and_poses_as_one_without() {
-    // Springs hold their settings and keys but move no bone: every step's
-    // pose, and the pose drawn between steps, is the one without them
-    let mut with = swaying();
-    let mut without = Played::new(sprung_as(false));
-    without.play("gust", true);
-    for _ in 0..12 {
-      with.step(0.1);
-      without.step(0.1);
-      assert_eq!(with.skeleton.pose.bones, without.skeleton.pose.bones);
-      assert_eq!(
-        with.skeleton.pose.skeleton_space,
-        without.skeleton.pose.skeleton_space
-      );
-      assert_eq!(with.skeleton.pose.world, without.skeleton.pose.world);
-      for bone in 0..4 {
-        for between in [None, Some(0.5), Some(1.0)] {
-          assert_eq!(
-            with.skeleton.drawn_bone(bone, between),
-            without.skeleton.drawn_bone(bone, between)
-          );
+  fn a_spring_at_rest_or_at_a_mix_of_0_poses_as_one_without() {
+    // A springs-only rig takes the constraint path; at rest (nothing moves
+    // its bone and no wind or gravity blows it) its spring changes nothing,
+    // so every step's pose, and the pose drawn between steps, is the one
+    // without it, to the bit. So it is at a mix of 0 whatever moves
+    let still = ConstraintOverride::Spring(SpringOverride {
+      wind: Some(0.0),
+      gravity: Some(0.0),
+      ..SpringOverride::default()
+    });
+    let off = ConstraintOverride::Spring(SpringOverride {
+      mix: Some(0.0),
+      ..SpringOverride::default()
+    });
+    for (playing, value) in [(false, still), (true, off)] {
+      let mut with = Played::new(sprung_as(true));
+      let mut without = Played::new(sprung_as(false));
+      if playing {
+        with.play("gust", true);
+        without.play("gust", true);
+      }
+      with.skeleton.override_constraint("sway", value);
+      for _ in 0..12 {
+        with.step(0.1);
+        without.step(0.1);
+        assert_eq!(with.skeleton.pose.bones, without.skeleton.pose.bones);
+        assert_eq!(
+          with.skeleton.pose.skeleton_space,
+          without.skeleton.pose.skeleton_space
+        );
+        assert_eq!(with.skeleton.pose.world, without.skeleton.pose.world);
+        for bone in 0..4 {
+          for between in [None, Some(0.5), Some(1.0)] {
+            assert_eq!(
+              with.skeleton.drawn_bone(bone, between),
+              without.skeleton.drawn_bone(bone, between)
+            );
+          }
         }
       }
     }

@@ -251,9 +251,11 @@ pub struct SpringConstraint {
 /// moves nothing does not build
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SpringSetup {
-  /// How far the bone's place follows its origin's lag along x, 0 to 1
+  /// How far the bone's place follows its origin's lag along the world's
+  /// x, 0 to 1
   pub x: f32,
-  /// How far the bone's place follows its origin's lag along y, 0 to 1
+  /// How far the bone's place follows its origin's lag along the world's
+  /// y, 0 to 1
   pub y: f32,
   /// How far the bone turns toward its lagging tip, 0 to 1. Needs a length
   pub rotate: f32,

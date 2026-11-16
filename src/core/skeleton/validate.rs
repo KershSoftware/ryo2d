@@ -3115,6 +3115,13 @@ mod tests {
       .spring("s0", "hair_0", swing())
       .build()
       .expect("springs on bones side by side");
+    // Two springs on one bone build: the second takes the first's sprung
+    // place as its bone's animated one
+    strand()
+      .spring("s0", "hair_0", swing())
+      .spring("again", "hair_0", swing())
+      .build()
+      .expect("two springs on one bone");
   }
 
   fn spring_keys(constraint: ConstraintId, keys: Vec<SpringValues>) -> Timeline {

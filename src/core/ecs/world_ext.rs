@@ -48,8 +48,10 @@ impl WorldExt for World {
     if let Some(mut emitter) = self.get_mut::<ParticleEmitter>(entity) {
       emitter.teleported = true;
     }
-    // A skeleton's sockets ride its bones, so they jump with it
-    if self.get::<Skeleton>(entity).is_some() {
+    // A skeleton's sockets ride its bones, so they jump with it, and its
+    // springs do not swing from where it was
+    if let Some(mut skeleton) = self.get_mut::<Skeleton>(entity) {
+      skeleton.reset_springs();
       skip_sockets(self, entity);
     }
   }
