@@ -366,6 +366,71 @@ mod tests {
     assert_eq!(flat, bone(0.0, 0.0));
   }
 
+  #[test]
+  fn what_is_not_finite_changes_nothing_and_comes_out_at_rest() {
+    let setup = SpringSetup {
+      rotate: 1.0,
+      ..SpringSetup::default()
+    };
+    // Movement that is not finite counts as none
+    let start = SpringPoint {
+      offset: Vec2::new(2.0, -1.0),
+      speed: Vec2::new(0.5, 3.0),
+    };
+    let still_moved = |moved: Vec2| {
+      let mut point = start;
+      advance(&mut point, moved, 1.0 / 60.0, &setup, &still());
+      point
+    };
+    let none = still_moved(Vec2::ZERO);
+    assert_eq!(still_moved(Vec2::new(f32::NAN, 1.0)), none);
+    assert_eq!(still_moved(Vec2::new(0.0, f32::INFINITY)), none);
+    // A step that is not above 0, or not finite, changes nothing
+    for h in [0.0, -0.1, f32::NAN, f32::INFINITY] {
+      let mut point = start;
+      advance(&mut point, Vec2::ONE, h, &setup, &still());
+      assert_eq!(point, start);
+    }
+    // A point that overflows comes out at rest
+    let mut point = SpringPoint {
+      offset: Vec2::new(3e38, 0.0),
+      speed: Vec2::ZERO,
+    };
+    let stiff = SpringSetup {
+      strength: 1e6,
+      ..setup
+    };
+    advance(&mut point, Vec2::ZERO, 1.0 / 60.0, &stiff, &still());
+    assert_eq!(point, SpringPoint::default());
+  }
+
+  #[test]
+  fn a_bone_of_no_animated_length_neither_turns_nor_stretches() {
+    let every = SpringSetup {
+      x: 1.0,
+      y: 1.0,
+      rotate: 1.0,
+      scale_x: 1.0,
+      ..SpringSetup::default()
+    };
+    let offsets = [
+      SpringPoint {
+        offset: Vec2::new(2.0, 4.0),
+        speed: Vec2::ZERO,
+      },
+      SpringPoint {
+        offset: Vec2::new(0.0, 10.0),
+        speed: Vec2::ZERO,
+      },
+    ];
+    let at = Vec2::new(5.0, 5.0);
+    let change = sprung(at, at, offsets, &every, 1.0);
+    assert_eq!(change.turn, 0.0);
+    assert_eq!(change.stretch, 1.0);
+    // Its place still follows its origin
+    assert_eq!(change.moved, Vec2::new(2.0, 4.0));
+  }
+
   /// Steps a point kicked by `kick` in its first step for `seconds` at
   /// `hz`, the largest offset seen, and where it ends
   fn kicked(setup: &SpringSetup, hz: f32, seconds: f32, kick: Vec2) -> (f32, SpringPoint) {

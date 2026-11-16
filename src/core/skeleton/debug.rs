@@ -610,6 +610,44 @@ mod tests {
     });
     assert_eq!(marks(&mut world, ShapeKind::Line).len(), 1);
     assert_eq!(marks(&mut world, ShapeKind::Cross).len(), 1);
+    // A later constraint that moves the bone again: the line still runs
+    // from where the spring found the tip to where the bone's tip is drawn
+    let data = SkeletonData::builder()
+      .bone(
+        "a",
+        None,
+        BoneSetup {
+          length: 10.0,
+          ..BoneSetup::default()
+        },
+      )
+      .bone(
+        "goal",
+        None,
+        BoneSetup {
+          y: 20.0,
+          ..BoneSetup::default()
+        },
+      )
+      .spring("sway", "a", falling)
+      .ik("reach", &["a"], "goal", IkSetup::default())
+      .build()
+      .expect("a valid skeleton");
+    let (mut world, entity) = spawned(data);
+    for _ in 0..10 {
+      step(&mut world, entity);
+    }
+    let lines = marks(&mut world, ShapeKind::Line);
+    let skeleton = world.get::<Skeleton>(entity).expect("the skeleton");
+    let drawn_tip = skeleton
+      .bone_world("a")
+      .expect("a posed bone")
+      .transform_point2(Vec2::new(10.0, 0.0));
+    let spring_line = lines
+      .iter()
+      .find(|line| line[0].abs_diff_eq(Vec2::new(110.0, 50.0), 1e-3));
+    let spring_line = spring_line.unwrap_or_else(|| panic!("{lines:?}"));
+    assert!(spring_line[1].abs_diff_eq(drawn_tip, 1e-3), "{lines:?}");
   }
 
   /// A world with an entity at (100, 50) showing `data`, posed in one step

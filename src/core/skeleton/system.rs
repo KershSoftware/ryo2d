@@ -1990,4 +1990,29 @@ mod tests {
       "{after:?}"
     );
   }
+
+  #[test]
+  fn a_skeleton_disabled_then_enabled_under_a_hold_forgets_its_springs() {
+    let (mut world, mut step, _) = world();
+    let data = tailed(&mut world);
+    let body = crate::core::skeleton::in_scene(&mut world, 4, |world| {
+      world.spawn((Transform::IDENTITY, Skeleton::new(data))).id()
+    });
+    carried(&mut world, &mut step, body, 0.0);
+    swing(&mut world, &mut step, body);
+    // Disabled for two steps, then enabled while its scene is held: the
+    // steps it missed are a gap, and the hold does not hide them
+    world.entity_mut(body).insert(crate::core::ecs::Disabled);
+    for _ in 0..2 {
+      carried(&mut world, &mut step, body, 0.0);
+    }
+    world
+      .entity_mut(body)
+      .remove::<crate::core::ecs::Disabled>();
+    crate::core::skeleton::hold_scenes(&mut world, [4].into_iter());
+    carried(&mut world, &mut step, body, 0.0);
+    crate::core::skeleton::hold_scenes(&mut world, std::iter::empty());
+    carried(&mut world, &mut step, body, 0.0);
+    assert!(at_rest(&world, body), "the gap before the hold forgets");
+  }
 }

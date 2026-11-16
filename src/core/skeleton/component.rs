@@ -946,8 +946,12 @@ impl Skeleton {
   }
 
   /// Its scene held it through fixed step `number`: a hold is not a gap,
-  /// so its springs go on from where they were when it carries on
+  /// so its springs go on from where they were when it carries on. A gap
+  /// before it (the skeleton disabled, then enabled under the hold) is
+  /// found as a step finds one
   pub(crate) fn held(&mut self, number: u64) {
+    // One disabled before the hold came missed steps all the same
+    self.arrive(number);
     self.counted = number;
   }
 
@@ -1161,7 +1165,9 @@ impl Skeleton {
         axis(self.flip.x, stand.flip.x),
         axis(self.flip.y, stand.flip.y),
       );
-      self.constrained.mirror_springs(stand.root, axes);
+      // About the stand the last points were recorded under: the step's
+      // movement then comes out as it was, mirrored with its history
+      self.constrained.mirror_springs(self.root, axes);
     }
     self.root = stand.root;
     self.flip = stand.flip;
