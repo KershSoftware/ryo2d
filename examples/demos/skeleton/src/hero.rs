@@ -35,9 +35,10 @@ pub fn load(ctx: &mut SceneContext) -> Option<Handle<SkeletonData>> {
 ///
 /// It is a skeleton entity as a character wants one. Its `Skeleton` makes
 /// the entity `Interpolated`, so its bones move smoothly between fixed
-/// steps with nothing asked for here; and it has a blob shadow under its
+/// steps with nothing asked for here; it has a blob shadow under its
 /// feet, not a drop shadow (each part of a skeleton casts its own drop
-/// shadow, darker where they overlap)
+/// shadow, darker where they overlap); and its `SkeletonSounds` has the
+/// engine play its footsteps' sound where it stands as each one fires
 pub fn spawn(ctx: &mut SceneContext, data: &Handle<SkeletonData>, at: Vec2, scale: f32) -> Entity {
   ctx
     .world
@@ -45,6 +46,7 @@ pub fn spawn(ctx: &mut SceneContext, data: &Handle<SkeletonData>, at: Vec2, scal
       Transform::from_xy(at.x, at.y).with_uniform_scale(scale),
       Skeleton::new(data.clone()),
       SkeletonAnimation::new(),
+      SkeletonSounds::new(),
       Renderable::skeleton().with_blob_shadow(shadow(scale)),
     ))
     .id()

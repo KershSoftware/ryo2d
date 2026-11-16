@@ -46,16 +46,20 @@
     (name: "hand", bone: "hand", attachment: "hand"),
   ],
 
-  // A part's middle is half way between its joints; the hand's image has
-  // the palm's middle 14 below its own
+  // Each part is placed by its joint pixels (README.md's commands draw
+  // them there): `pivot` is the pixel on its bone's origin, and `along` the
+  // pixel of the next joint, which lays the part along its bone. The upper
+  // arm's bolts are 130 apart and the forearm's elbow and wrist 120, as the
+  // bones are long. The hand's wrist is the palm's middle, the stand's foot
+  // the middle of its bottom edge, and the caps' pivots their middles
   skins: {
     "default": {
-      "post": { "post": Region(region: "post", y: -140) },
-      "upper": { "upper": Region(region: "upper", x: 65) },
-      "hub": { "hub": Region(region: "hub") },
-      "fore": { "fore": Region(region: "fore", x: 60) },
-      "elbow": { "elbow": Region(region: "elbow") },
-      "hand": { "hand": Region(region: "hand", y: -14) },
+      "post": { "post": Region(region: "post", pivot: (30, 280)) },
+      "upper": { "upper": Region(region: "upper", pivot: (14, 14), along: (144, 14)) },
+      "hub": { "hub": Region(region: "hub", pivot: (24, 24)) },
+      "fore": { "fore": Region(region: "fore", pivot: (12, 12), along: (132, 12)) },
+      "elbow": { "elbow": Region(region: "elbow", pivot: (15, 15)) },
+      "hand": { "hand": Region(region: "hand", pivot: (42, 42)) },
     },
   },
 

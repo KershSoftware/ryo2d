@@ -42,6 +42,11 @@ pub static EMBEDDED: &[(&str, &[u8])] = &[
     include_bytes!("../assets/reacher.skeleton.ron"),
   ),
   ("sword.png", include_bytes!("../assets/sword.png")),
+  ("tail.png", include_bytes!("../assets/tail.png")),
+  (
+    "tail.skeleton.ron",
+    include_bytes!("../assets/tail.skeleton.ron"),
+  ),
   ("walker.png", include_bytes!("../assets/walker.png")),
   (
     "walker.skeleton.ron",

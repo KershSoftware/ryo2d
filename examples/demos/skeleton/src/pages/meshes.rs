@@ -1,8 +1,9 @@
 //! Meshes: an attachment drawn as triangles, where a region is one
 //! rectangle on one bone. The hero's cape is a mesh whose vertices are
-//! weighted over three bones, so the cloth bends as the bones swing; the
-//! banner's flag is a mesh on one bone that stands still, rippled by the
-//! deform keys of an animation
+//! weighted over three bones, so the cloth bends as the bones swing, and
+//! springs swing those bones as the hero moves (a gust of wind is a spring
+//! override); the banner's flag is a mesh on one bone that stands still,
+//! rippled by the deform keys of an animation
 
 use demo_kit::prelude::*;
 
@@ -14,13 +15,19 @@ const BANNER: &str = "banner.skeleton.ron";
 /// size on screen against its art's
 const POLE: Vec2 = Vec2::new(640.0, GROUND);
 const BANNER_SCALE: f32 = 0.5;
-/// The animations the cape's bones are keyed in, and how fast each carries
-/// the hero
+/// The gaits, and how fast each carries the hero
 const GAITS: [(&str, f32); 3] = [("walk", WALK_SPEED), ("run", RUN_SPEED), ("idle", 0.0)];
 /// The skin that has the cape's mesh
 const CAPE: &str = "cape";
 /// Seconds a hit flash takes to fade
 const FLASH: f32 = 0.3;
+/// The springs that swing the cape's two bones, as the hero's file names
+/// them
+const SPRINGS: [&str; 2] = ["cape_upper", "cape_lower"];
+/// A gust: how long it blows, and its strongest wind, an acceleration
+/// along the world's x in pixels a second squared (to the right)
+const GUST: f32 = 2.0;
+const GUST_WIND: f32 = 1800.0;
 
 pub struct MeshesPage {
   hero: Option<Entity>,
@@ -31,10 +38,15 @@ pub struct MeshesPage {
   flag: String,
   /// Seconds of the hit flash left
   flash: f32,
+  /// Seconds of the gust blown so far, while it blows
+  gust: Option<f32>,
   /// Settings
   gait: usize,
   caped: bool,
   ripple: f32,
+  springs: bool,
+  /// What the springs were last overridden to: their mix and wind
+  sprung: Option<(f32, f32)>,
   /// What the hero was last asked to play and to wear
   playing_gait: usize,
   wearing: Option<bool>,
@@ -49,9 +61,12 @@ impl Default for MeshesPage {
       cape: String::new(),
       flag: String::new(),
       flash: 0.0,
+      gust: None,
       gait: 0,
       caped: true,
       ripple: 1.0,
+      springs: true,
+      sprung: None,
       playing_gait: 0,
       wearing: None,
     }
@@ -132,6 +147,37 @@ impl MeshesPage {
     }
   }
 
+  /// The wind the gust blows now: it rises and falls away over its time
+  fn wind(&self) -> f32 {
+    self.gust.map_or(0.0, |blown| {
+      GUST_WIND * (std::f32::consts::PI * blown / GUST).sin().max(0.0)
+    })
+  }
+
+  /// Overrides the cape's springs: their mix (0 turns them off, and the
+  /// cape hangs as the animation holds it) and the gust's wind. Written
+  /// only when either changes
+  fn blow(&mut self, ctx: &mut SceneContext, hero: Entity) {
+    let wanted = (if self.springs { 1.0 } else { 0.0 }, self.wind());
+    if self.sprung == Some(wanted) {
+      return;
+    }
+    let Some(mut skeleton) = ctx.world.get_mut::<Skeleton>(hero) else {
+      return;
+    };
+    for spring in SPRINGS {
+      skeleton.override_constraint(
+        spring,
+        SkeletonConstraintOverride::Spring(SpringOverride {
+          mix: Some(wanted.0),
+          wind: Some(wanted.1),
+          ..Default::default()
+        }),
+      );
+    }
+    self.sprung = Some(wanted);
+  }
+
   /// Shows the hit flash as far as it has faded. The flash is the entity's
   /// sprite effect: every part of the skeleton takes it, the cape's mesh
   /// as the regions do
@@ -149,18 +195,22 @@ impl DemoPage for MeshesPage {
   }
 
   fn description(&self) -> &str {
-    "A mesh attachment is drawn as triangles. The cape's vertices are weighted over three bones and bend as they swing; deform keys ripple the banner's.\n\
-     The cape is a skin, worn on this page alone. In a development build's console, debug:skeletons draws each mesh's hull and its triangles."
+    "A mesh attachment is drawn as triangles. The cape's vertices are weighted over three bones, which springs swing; deform keys ripple the banner's.\n\
+     The cape is a skin, worn on this page alone. A gust is a wind override on the springs. In a development build's console, debug:skeletons draws each mesh's hull and its triangles."
   }
 
   fn settings(&mut self, s: &mut Settings) {
     s.choice("Gait", &mut self.gait, &["Walk", "Run", "Idle"]);
     s.toggle("Cape", &mut self.caped);
     s.float("Ripple speed", &mut self.ripple, 0.0..=2.0, 0.1);
+    s.toggle("Springs", &mut self.springs);
   }
 
   fn controls(&self) -> Vec<Control> {
-    vec![Control::key(KeyCode::Space, "Flash the hero")]
+    vec![
+      Control::key(KeyCode::Space, "Flash the hero"),
+      Control::key(KeyCode::KeyG, "A gust of wind"),
+    ]
   }
 
   fn enter(&mut self, ctx: &mut SceneContext) {
@@ -214,6 +264,7 @@ impl DemoPage for MeshesPage {
     self.playing_gait = self.gait;
     // Worn before the first frame, so the hero never shows without it
     self.wear(ctx);
+    self.blow(ctx, hero);
   }
 
   fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
@@ -224,8 +275,8 @@ impl DemoPage for MeshesPage {
     if self.gait != self.playing_gait
       && let Some(mut state) = ctx.world.get_mut::<SkeletonAnimation>(hero)
     {
-      // The cape's bones are keyed in each gait, so they crossfade with
-      // the rest of the body
+      // No gait keys the cape's bones: the springs carry its swing from
+      // one to the next
       state.set_animation(0, GAITS[self.gait].0, true);
       self.playing_gait = self.gait;
     }
@@ -237,6 +288,13 @@ impl DemoPage for MeshesPage {
     {
       state.time_scale = self.ripple;
     }
+
+    if ctx.input.key_pressed(KeyCode::KeyG) {
+      self.gust = Some(0.0);
+    } else if let Some(blown) = self.gust {
+      self.gust = (blown + dt < GUST).then_some(blown + dt);
+    }
+    self.blow(ctx, hero);
 
     if ctx.input.key_pressed(KeyCode::Space) {
       self.flash = FLASH;
@@ -258,12 +316,22 @@ impl DemoPage for MeshesPage {
     } else {
       "The cape's skin is off: its slot shows nothing"
     };
+    let swung = match (self.springs, self.gust.is_some()) {
+      (false, _) => {
+        "Springs off (an override's mix of 0): the cape hangs as the animation holds it".to_string()
+      }
+      (true, false) => {
+        "Springs swing the cape's two bones; no animation keys them (G: a gust)".to_string()
+      }
+      (true, true) => format!("A gust: the springs' wind overridden to {:.0}", self.wind()),
+    };
     hero::readout(
       ui,
       &[
         "Two meshes: a cape and a banner".to_string(),
         self.cape.clone(),
         self.flag.clone(),
+        swung,
         worn.to_string(),
         "In a development build's console, debug:skeletons draws each mesh's hull and its triangles"
           .to_string(),

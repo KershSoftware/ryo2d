@@ -1,10 +1,13 @@
 //! Constraints: bones placed by a rule after animation. An arm on a stand
 //! reaches for the pointer by two-bone IK, and a transform constraint keeps
 //! the tray in its hand level; a walker crosses uneven ground on two-part
-//! legs whose feet IK puts on targets the page plants and steps ahead.
+//! legs whose feet IK puts on targets the page plants and steps ahead; and
+//! a tail of seven parts reaches for the pointer by chain IK kept to one
+//! side, whatever way its swaying animation bends it.
 //!
 //! The page moves only target bones, with world-space bone overrides, and
-//! sets the arm's constraints' values with `override_constraint`.
+//! sets the arm's and the tail's constraints' values with
+//! `override_constraint`.
 
 use std::f32::consts::PI;
 
@@ -12,9 +15,10 @@ use demo_kit::prelude::*;
 
 use crate::hero::{self, EDGE, GRASS, HAZE, SKY};
 
-/// The two skeleton files
+/// The three skeleton files
 const REACHER: &str = "reacher.skeleton.ron";
 const WALKER: &str = "walker.skeleton.ron";
+const TAIL: &str = "tail.skeleton.ron";
 
 /// Where the arm's stand is, right of the readout so the arm never
 /// reaches over it, and its shoulder above the stand's foot (as the rig has
@@ -27,6 +31,17 @@ const TARGET: Color = Color::rgb(255, 214, 102);
 /// How far above the wrist the `horizon` bone is kept: the overlay's line
 /// from the hand to it is a short tick
 const HORIZON: f32 = 24.0;
+
+/// Where the tail's mound stands, below the readout, and its first joint
+/// above the mound's foot (as the rig has it)
+const TAIL_AT: f32 = 230.0;
+const TAIL_ROOT: f32 = 27.0;
+/// The sides the tail's chain can keep, as the setting offers them
+const SIDES: [(IkBend, &str); 3] = [
+  (IkBend::Positive, "Positive"),
+  (IkBend::Negative, "Negative"),
+  (IkBend::Pose, "Pose"),
+];
 
 /// The ground: its mean height on the 1280 x 720 canvas, and the top of the
 /// image drawn for it, clear above its highest point
@@ -191,15 +206,18 @@ impl Gait {
 pub struct ConstraintsPage {
   reacher: Option<Entity>,
   walker: Option<Entity>,
+  tail: Option<Entity>,
   gait: Gait,
-  /// Settings: the arm's IK values, the tray's rotate mix, and the
-  /// walker's speed
+  /// Settings: the arm's IK values, the tray's rotate mix, the walker's
+  /// speed, and the side and mix of the tail's chain
   bend: usize,
   softness: f32,
   stretch: bool,
   mix: f32,
   level: f32,
   speed: f32,
+  side: usize,
+  tail_mix: f32,
   /// Where the pointer was when the page opened: until it moves, the arm
   /// reaches for a place that circles its shoulder, in and out of reach
   pointer_at_first: Option<Vec2>,
@@ -215,6 +233,7 @@ impl Default for ConstraintsPage {
     Self {
       reacher: None,
       walker: None,
+      tail: None,
       gait: Gait::new(560.0, 120.0),
       bend: 0,
       softness: 0.0,
@@ -222,6 +241,8 @@ impl Default for ConstraintsPage {
       mix: 1.0,
       level: 1.0,
       speed: 120.0,
+      side: 0,
+      tail_mix: 1.0,
       pointer_at_first: None,
       pointing: false,
       clock: 0.0,
@@ -359,6 +380,46 @@ impl ConstraintsPage {
     debug.width(2.0).circle(self.target, 10.0, TARGET);
   }
 
+  /// The tail's first joint in the world, as the rig puts it on its mound
+  fn tail_root() -> Vec2 {
+    Vec2::new(TAIL_AT, ground_height(TAIL_AT) - TAIL_ROOT)
+  }
+
+  /// Moves the tail's target, to the pointer or round its root, and sets
+  /// its chain's side and mix from the settings
+  fn sway(&mut self, ctx: &mut SceneContext, tail: Entity) {
+    let root = Self::tail_root();
+    let target = if self.pointing {
+      self.target
+    } else {
+      // Over its root, from deep in its curl to near its full length
+      let turn = -PI / 2.0 + 0.9 * (self.clock * 0.5).sin();
+      let out = 150.0 + 90.0 * (self.clock * 0.83).sin();
+      root + Vec2::new(turn.cos(), turn.sin()) * out
+    };
+    let Some(mut skeleton) = ctx.world.get_mut::<Skeleton>(tail) else {
+      return;
+    };
+    skeleton.override_bone(
+      "target",
+      BoneOverride {
+        translation: Some(target),
+        space: BoneSpace::World,
+        ..Default::default()
+      },
+    );
+    skeleton.override_constraint(
+      "tail",
+      SkeletonConstraintOverride::Ik(IkConstraintOverride {
+        mix: Some(self.tail_mix),
+        bend: Some(SIDES[self.side].0),
+        ..Default::default()
+      }),
+    );
+    let mut debug = ctx.debug_draw();
+    debug.width(2.0).cross(target, 10.0, TARGET);
+  }
+
   /// Walks the walker on and puts its body and its feet's targets where its
   /// gait has them
   fn walk(&mut self, ctx: &mut SceneContext, walker: Entity, dt: f32) {
@@ -389,6 +450,20 @@ impl ConstraintsPage {
     place("foot_far", self.gait.feet[1].at());
   }
 
+  /// What the tail's chain does, for the readout
+  fn tail_line(&self) -> String {
+    match SIDES[self.side].0 {
+      IkBend::Pose => {
+        "IK \"tail\": a chain closing as its sway bends it, so it turns over as the sway does"
+          .to_string()
+      }
+      _ => format!(
+        "IK \"tail\": a chain kept to the {} side; its sway shows only by Tail mix",
+        SIDES[self.side].1.to_lowercase()
+      ),
+    }
+  }
+
   /// What the arm does with its target now, for the readout
   fn reaching(&self) -> String {
     let at = format!("Target {:.0} from the shoulder", self.distance);
@@ -416,7 +491,8 @@ impl DemoPage for ConstraintsPage {
 
   fn description(&self) -> &str {
     "Constraints place bones by a rule after animation: two-bone IK reaches the wrist for the pointer and puts the walker's feet on its targets.\n\
-     A transform constraint keeps the tray level. Bend, Softness, Stretch and Mix are the arm's IK values, set with override_constraint."
+     A transform constraint keeps the tray level. Bend, Softness, Stretch and Mix are the arm's IK values, set with override_constraint. \
+     A chain IK reaches the tail's sting for the pointer, kept to one side however its sway bends it; Pose lets the sway choose, and turn it over."
   }
 
   fn settings(&mut self, s: &mut Settings) {
@@ -426,10 +502,12 @@ impl DemoPage for ConstraintsPage {
     s.float("Mix", &mut self.mix, 0.0..=1.0, 0.1);
     s.float("Level hand", &mut self.level, 0.0..=1.0, 0.1);
     s.float("Speed", &mut self.speed, 40.0..=240.0, 20.0);
+    s.choice("Tail side", &mut self.side, &SIDES.map(|(_, name)| name));
+    s.float("Tail mix", &mut self.tail_mix, 0.0..=1.0, 0.1);
   }
 
   fn controls(&self) -> Vec<Control> {
-    vec![Control::mouse("Move the arm's target")]
+    vec![Control::mouse("Move the arm's and the tail's target")]
   }
 
   fn enter(&mut self, ctx: &mut SceneContext) {
@@ -450,12 +528,25 @@ impl DemoPage for ConstraintsPage {
         .with_z_order(-28),
     ));
 
-    let (Ok(arm), Ok(walker)) = (
+    let (Ok(arm), Ok(walker), Ok(tail)) = (
       ctx.assets().load_now::<SkeletonData>(REACHER),
       ctx.assets().load_now::<SkeletonData>(WALKER),
+      ctx.assets().load_now::<SkeletonData>(TAIL),
     ) else {
       return;
     };
+    // The tail stands behind the walker, swaying all the while
+    let tail = spawn(
+      ctx,
+      tail,
+      Vec2::new(TAIL_AT, ground_height(TAIL_AT)),
+      90.0,
+      -2,
+    );
+    self.tail = Some(tail);
+    if let Some(mut state) = ctx.world.get_mut::<SkeletonAnimation>(tail) {
+      state.set_animation(0, "sway", true);
+    }
     let arm = spawn(ctx, arm, Vec2::new(STAND, ground_height(STAND)), 70.0, -1);
     self.reacher = Some(arm);
     let hip = self.gait.hip();
@@ -464,6 +555,7 @@ impl DemoPage for ConstraintsPage {
     // Posed before the first frame, so it never shows its setup pose
     self.reach(ctx, arm);
     self.walk(ctx, walker, 0.0);
+    self.sway(ctx, tail);
   }
 
   fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
@@ -473,6 +565,9 @@ impl DemoPage for ConstraintsPage {
     }
     if let Some(walker) = self.walker {
       self.walk(ctx, walker, dt);
+    }
+    if let Some(tail) = self.tail {
+      self.sway(ctx, tail);
     }
   }
 
@@ -495,6 +590,7 @@ impl DemoPage for ConstraintsPage {
           self.level
         ),
         "IK \"leg_near\" and \"leg_far\": put each foot on a target the page plants".to_string(),
+        self.tail_line(),
         self.reaching(),
         "In a development build's console, debug:skeletons marks each target".to_string(),
       ],

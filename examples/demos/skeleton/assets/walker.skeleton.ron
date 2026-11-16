@@ -45,17 +45,22 @@
     (name: "hip_near", bone: "thigh_near", attachment: "joint"),
   ],
 
-  // A part's middle from its upper joint: the thigh's image has its joints
-  // 12 in from each end, the shin's knee is 10 in from its end
+  // Each part is placed by its joint pixels (README.md's commands draw
+  // them there): `pivot` is the pixel on its bone's origin, and `along` the
+  // pixel of the next joint, which lays the part along its bone. The
+  // thigh's hip and knee are 12 in from its ends, 70 apart; the shin's knee
+  // is 10 in from its end and the bottom of its foot 70 along from it, at
+  // the tip of its bone, so the IK puts the foot's edge on its target. The
+  // body's hip is on its lower edge, and the caps' pivots their middles
   skins: {
     "default": {
-      "thigh_far": { "thigh": Region(region: "thigh", x: 35) },
-      "shin_far": { "shin": Region(region: "shin", x: 30) },
-      "body": { "body": Region(region: "body", y: -26) },
-      "thigh_near": { "thigh": Region(region: "thigh", x: 35) },
-      "shin_near": { "shin": Region(region: "shin", x: 30) },
-      "knee_near": { "joint": Region(region: "joint") },
-      "hip_near": { "joint": Region(region: "joint") },
+      "thigh_far": { "thigh": Region(region: "thigh", pivot: (12, 12), along: (82, 12)) },
+      "shin_far": { "shin": Region(region: "shin", pivot: (10, 12), along: (80, 12)) },
+      "body": { "body": Region(region: "body", pivot: (48, 62)) },
+      "thigh_near": { "thigh": Region(region: "thigh", pivot: (12, 12), along: (82, 12)) },
+      "shin_near": { "shin": Region(region: "shin", pivot: (10, 12), along: (80, 12)) },
+      "knee_near": { "joint": Region(region: "joint", pivot: (11, 11)) },
+      "hip_near": { "joint": Region(region: "joint", pivot: (11, 11)) },
     },
   },
 

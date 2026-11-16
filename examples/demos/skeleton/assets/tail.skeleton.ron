@@ -1,0 +1,91 @@
+// The Constraints page's tail: six segments and a sting rising out of a
+// stone mound, drawn for the demo (see README.md) and written by hand.
+//
+// A chain IK reaches the sting's point for the `target` bone, which the
+// page moves to the pointer. The chain is kept to the positive side
+// (clockwise on screen): solved from straight, it curls as an even arc that
+// way, however its animation bends it. The `sway` animation swings it
+// through straight, into an S and bent the other way: a chain left to
+// follow its pose (`bend: Pose`, the page's Tail side setting) changes
+// sides as it does, and this one never does.
+//
+// Units are the art's pixels, drawn at full size. The origin is the
+// mound's foot, on the ground. Angles are degrees, clockwise.
+(
+  images: { "parts": "tail.png" },
+
+  // Where each part is in the image, as README.md's packing command puts them
+  regions: {
+    "segment": (image: "parts", rect: (8, 8, 84, 40)),
+    "sting": (image: "parts", rect: (100, 8, 64, 36)),
+    "mound": (image: "parts", rect: (8, 56, 120, 40)),
+  },
+
+  // The tail rises from the hole in the mound's top, 27 above its foot.
+  // Its parts shorten toward the sting, 50 long at the root to 28, and the
+  // sting is 30 to its point
+  bones: [
+    (name: "root"),
+    (name: "base", parent: "root", y: -27, rotation: -90),
+    (name: "tail_1", parent: "base", length: 50),
+    (name: "tail_2", parent: "tail_1", x: 50, length: 45),
+    (name: "tail_3", parent: "tail_2", x: 45, length: 40),
+    (name: "tail_4", parent: "tail_3", x: 40, length: 36),
+    (name: "tail_5", parent: "tail_4", x: 36, length: 32),
+    (name: "tail_6", parent: "tail_5", x: 32, length: 28),
+    (name: "sting", parent: "tail_6", x: 28, length: 30),
+    (name: "target", parent: "root", x: 120, y: -200),
+  ],
+
+  // Root to sting, each over the one before, then the mound in front, so
+  // the tail comes out of its hole
+  slots: [
+    (name: "tail_1", bone: "tail_1", attachment: "segment"),
+    (name: "tail_2", bone: "tail_2", attachment: "segment"),
+    (name: "tail_3", bone: "tail_3", attachment: "segment"),
+    (name: "tail_4", bone: "tail_4", attachment: "segment"),
+    (name: "tail_5", bone: "tail_5", attachment: "segment"),
+    (name: "tail_6", bone: "tail_6", attachment: "segment"),
+    (name: "sting", bone: "sting", attachment: "sting"),
+    (name: "mound", bone: "root", attachment: "mound"),
+  ],
+
+  // Each part placed by its joint pixels: a segment's joints are its
+  // bolt's middle (20, 20) and the middle of its other end (70, 20), 50
+  // apart, and the sting's are its bolt (16, 18) and its point (63, 18).
+  // Each segment is drawn at its bone's length over 50 (the sting at 30
+  // over 47), so its joints fall on its bone's two ends; the pivot stays on
+  // its pixel at any size
+  skins: {
+    "default": {
+      "tail_1": { "segment": Region(region: "segment", pivot: (20, 20), along: (70, 20)) },
+      "tail_2": { "segment": Region(region: "segment", width: 75.6, height: 36, pivot: (20, 20), along: (70, 20)) },
+      "tail_3": { "segment": Region(region: "segment", width: 67.2, height: 32, pivot: (20, 20), along: (70, 20)) },
+      "tail_4": { "segment": Region(region: "segment", width: 60.48, height: 28.8, pivot: (20, 20), along: (70, 20)) },
+      "tail_5": { "segment": Region(region: "segment", width: 53.76, height: 25.6, pivot: (20, 20), along: (70, 20)) },
+      "tail_6": { "segment": Region(region: "segment", width: 47.04, height: 22.4, pivot: (20, 20), along: (70, 20)) },
+      "sting": { "sting": Region(region: "sting", width: 40.85, height: 22.98, pivot: (16, 18), along: (63, 18)) },
+      "mound": { "mound": Region(region: "mound", pivot: (60, 40)) },
+    },
+  },
+
+  constraints: [
+    Ik(name: "tail", bones: ["tail_1", "tail_2", "tail_3", "tail_4", "tail_5", "tail_6", "sting"], target: "target", bend: Positive),
+  ],
+
+  // Four seconds round: straight, an S (the root half bent clockwise, the
+  // tip half back), straight, bent the other way, straight
+  animations: {
+    "sway": (
+      duration: 4.0,
+      bones: {
+        "tail_1": (rotate: [(0.0, 0, Bezier(0.4, 0, 0.6, 1)), (1.0, 12, Bezier(0.4, 0, 0.6, 1)), (2.0, 0, Bezier(0.4, 0, 0.6, 1)), (3.0, -10, Bezier(0.4, 0, 0.6, 1)), (4.0, 0)]),
+        "tail_2": (rotate: [(0.0, 0, Bezier(0.4, 0, 0.6, 1)), (1.0, 14, Bezier(0.4, 0, 0.6, 1)), (2.0, 0, Bezier(0.4, 0, 0.6, 1)), (3.0, -12, Bezier(0.4, 0, 0.6, 1)), (4.0, 0)]),
+        "tail_3": (rotate: [(0.0, 0, Bezier(0.4, 0, 0.6, 1)), (1.0, 8, Bezier(0.4, 0, 0.6, 1)), (2.0, 0, Bezier(0.4, 0, 0.6, 1)), (3.0, -12, Bezier(0.4, 0, 0.6, 1)), (4.0, 0)]),
+        "tail_4": (rotate: [(0.0, 0, Bezier(0.4, 0, 0.6, 1)), (1.0, -14, Bezier(0.4, 0, 0.6, 1)), (2.0, 0, Bezier(0.4, 0, 0.6, 1)), (3.0, -12, Bezier(0.4, 0, 0.6, 1)), (4.0, 0)]),
+        "tail_5": (rotate: [(0.0, 0, Bezier(0.4, 0, 0.6, 1)), (1.0, -18, Bezier(0.4, 0, 0.6, 1)), (2.0, 0, Bezier(0.4, 0, 0.6, 1)), (3.0, -14, Bezier(0.4, 0, 0.6, 1)), (4.0, 0)]),
+        "tail_6": (rotate: [(0.0, 0, Bezier(0.4, 0, 0.6, 1)), (1.0, -18, Bezier(0.4, 0, 0.6, 1)), (2.0, 0, Bezier(0.4, 0, 0.6, 1)), (3.0, -14, Bezier(0.4, 0, 0.6, 1)), (4.0, 0)]),
+      },
+    ),
+  },
+)

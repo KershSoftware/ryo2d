@@ -22,11 +22,12 @@ const PAGES: usize = 9;
 
 /// The skeleton files the pages show: the hero on every page but the
 /// Constraints page, the banner beside it on the Meshes page, and the
-/// Constraints page's reaching arm and walker
+/// Constraints page's reaching arm, walker and tail
 const HERO: &str = "hero.skeleton.ron";
 const BANNER: &str = "banner.skeleton.ron";
 const REACHER: &str = "reacher.skeleton.ron";
 const WALKER: &str = "walker.skeleton.ron";
+const TAIL: &str = "tail.skeleton.ron";
 
 /// The frames each page runs
 const FRAMES: u32 = 120;
@@ -120,10 +121,10 @@ fn pixels_near(engine: &mut HeadlessEngine, color: [u8; 3], tolerance: u8) -> us
 }
 
 /// Steps every page for two seconds, checking that it has a hero (the
-/// Constraints page has its arm and walker instead), that each of its
-/// skeletons (the heroes, the Meshes page's banner, the arm and the walker)
-/// is posed and drawn as the engine asks of a figure of many parts, and
-/// that nothing warns
+/// Constraints page has its arm, walker and tail instead), that each of its
+/// skeletons (the heroes, the Meshes page's banner, the arm, the walker and
+/// the tail) is posed and drawn as the engine asks of a figure of many
+/// parts, and that nothing warns
 fn every_page_steps(mut engine_on: impl FnMut(usize) -> Option<HeadlessEngine>) {
   for page in 0..PAGES {
     // A capture for each page, opened before its engine
@@ -135,6 +136,7 @@ fn every_page_steps(mut engine_on: impl FnMut(usize) -> Option<HeadlessEngine>) 
     if page == CONSTRAINTS {
       assert_eq!(showing(&mut engine, REACHER).len(), 1, "the arm");
       assert_eq!(showing(&mut engine, WALKER).len(), 1, "the walker");
+      assert_eq!(showing(&mut engine, TAIL).len(), 1, "the tail");
     } else {
       assert!(
         !heroes(&mut engine).is_empty(),
@@ -369,6 +371,72 @@ fn footsteps_play_the_event_s_sound_and_puff_dust() {
   // Heard from where the hero is: it walks to and fro, so not always from
   // the listener's own place
   assert!(steps.iter().any(|step| step.pan != 0.0));
+}
+
+/// The footsteps the audio log has started after voice `after`, which is
+/// moved on to the last voice it has
+fn footsteps(engine: &mut HeadlessEngine, after: &mut u32) -> usize {
+  let started: Vec<u32> = engine
+    .audio_log()
+    .into_iter()
+    .filter(|entry| entry.kind == AudioLogKind::Start && entry.voice > *after)
+    .filter(|entry| entry.sound == "audio/footstep.sound.ron")
+    .map(|entry| entry.voice)
+    .collect();
+  *after = started.iter().copied().fold(*after, u32::max);
+  started.len()
+}
+
+#[test]
+fn every_hero_s_footsteps_play_through_skeleton_sounds() {
+  // Every hero on every page has the engine play its events' sounds
+  for page in 0..PAGES {
+    if page == CONSTRAINTS {
+      continue;
+    }
+    let Some(mut engine) = engine_on(page) else {
+      return;
+    };
+    engine.step_frames(10).unwrap();
+    for hero in heroes(&mut engine) {
+      assert!(
+        engine.world().get::<SkeletonSounds>(hero).is_some(),
+        "page {}: a hero without SkeletonSounds",
+        page + 1
+      );
+    }
+    // A walking hero is heard, on a page that plays no sound itself
+    if page == MESHES {
+      engine.step_frames(FRAMES).unwrap();
+      let heard = footsteps(&mut engine, &mut 0);
+      assert!(heard >= 3, "the Meshes page's hero: {heard} footsteps");
+    }
+  }
+
+  // The Events page's Sound row takes them off the hero, and puts them on
+  let Some(mut engine) = engine_on(EVENTS) else {
+    return;
+  };
+  engine.step_frames(FRAMES).unwrap();
+  let hero = hero(&mut engine);
+  let mut heard = 0;
+  assert!(footsteps(&mut engine, &mut heard) >= 3);
+  // Rows: the gait, the sound
+  engine.tap_key(KeyCode::ArrowDown);
+  engine.step_frames(2).unwrap();
+  engine.tap_key(KeyCode::ArrowRight);
+  engine.step_frames(2).unwrap();
+  footsteps(&mut engine, &mut heard);
+  engine.step_frames(FRAMES).unwrap();
+  assert!(engine.world().get::<SkeletonSounds>(hero).is_none());
+  assert_eq!(footsteps(&mut engine, &mut heard), 0, "the sound is off");
+  engine.tap_key(KeyCode::ArrowRight);
+  engine.step_frames(FRAMES).unwrap();
+  assert!(engine.world().get::<SkeletonSounds>(hero).is_some());
+  assert!(
+    footsteps(&mut engine, &mut heard) >= 3,
+    "the sound is on again"
+  );
 }
 
 #[test]
@@ -861,40 +929,178 @@ fn the_meshes_page_shows_a_weighted_cape_and_a_deformed_banner() {
   assert!(keyed, "the ripple keys the flag's shape, a vertex each");
 }
 
+/// The cape's two bones, each with its parent
+const CAPE_BONES: [(&str, &str); 2] = [("cape_upper", "torso"), ("cape_lower", "cape_upper")];
+
+/// How far each cape bone is turned from where its parent holds it in the
+/// setup pose (the upper hangs half a turn from the torso, the lower in
+/// line with the upper), in radians: what its spring has swung it
+fn cape_swing(engine: &HeadlessEngine, hero: Entity) -> [f32; 2] {
+  let setup = [std::f32::consts::PI, 0.0];
+  [0, 1].map(|index| {
+    let (name, parent) = CAPE_BONES[index];
+    let own = bone(engine, hero, name).matrix2.x_axis;
+    let held = bone(engine, hero, parent).matrix2.x_axis;
+    wrapped(held.angle_to(own) - setup[index])
+  })
+}
+
+/// The most either cape bone swings over `frames` steps
+fn most_swing(engine: &mut HeadlessEngine, hero: Entity, frames: u32) -> f32 {
+  let mut most = 0.0f32;
+  for _ in 0..frames {
+    engine.step().unwrap();
+    for swing in cape_swing(engine, hero) {
+      most = most.max(swing.abs());
+    }
+  }
+  most
+}
+
+/// Moves the Meshes page's panel down `rows` rows and taps `key` once
+fn meshes_row(engine: &mut HeadlessEngine, rows: usize, key: KeyCode) {
+  for _ in 0..rows {
+    engine.tap_key(KeyCode::ArrowDown);
+    engine.step_frames(2).unwrap();
+  }
+  engine.tap_key(key);
+  engine.step_frames(2).unwrap();
+}
+
 #[test]
-fn the_cape_s_bones_are_keyed_in_idle_walk_and_run_and_the_gait_row_picks_one() {
+fn the_cape_swings_by_springs_lagging_the_hero_as_it_turns_and_settling() {
   let Some(mut engine) = engine_on(MESHES) else {
     return;
   };
   engine.step_frames(10).unwrap();
   let hero = one(&mut engine, HERO);
   {
+    // A spring on each cape bone, and no animation keys either
     let data = engine.world().get::<Skeleton>(hero).unwrap().data().clone();
     let assets = engine.assets();
     let data = assets.get(&data).unwrap();
-    for animation in ["idle", "walk", "run"] {
-      let timelines = &data.animation(animation).unwrap().timelines;
-      for bone in ["cape_upper", "cape_lower"] {
-        let id = data.bone(bone).unwrap_or_else(|| panic!("the {bone} bone"));
-        let keyed = timelines
-          .iter()
-          .any(|timeline| matches!(timeline, SkeletonTimeline::Rotate { bone, .. } if *bone == id));
-        assert!(keyed, "{animation} keys {bone}");
+    for (name, _) in CAPE_BONES {
+      let id = data.bone(name).unwrap_or_else(|| panic!("the {name} bone"));
+      let sprung = data.constraints().iter().any(
+        |constraint| matches!(constraint, SkeletonConstraint::Spring(spring) if spring.bone == id),
+      );
+      assert!(sprung, "a spring swings {name}");
+      for animation in data.animations() {
+        let keyed = animation.timelines.iter().any(|timeline| {
+          matches!(timeline,
+            SkeletonTimeline::Rotate { bone, .. }
+            | SkeletonTimeline::Translate { bone, .. }
+            | SkeletonTimeline::Scale { bone, .. } if *bone == id)
+        });
+        assert!(!keyed, "{} keys {name}", animation.name);
       }
     }
   }
-  // The panel's first row is the gait: walk, run, idle
+
+  // Walking, the cape trails behind the hero
   assert_eq!(playing(&engine, hero, 0).as_deref(), Some("walk"));
+  let walking = most_swing(&mut engine, hero, 60);
+  assert!(walking > 0.1, "walking, the cape swings {walking} at most");
+
+  // The panel's first row is the gait: walk, run, idle. Running, it
+  // streams out further
   engine.tap_key(KeyCode::ArrowRight);
   engine.step_frames(5).unwrap();
   assert_eq!(playing(&engine, hero, 0).as_deref(), Some("run"));
+  let running = most_swing(&mut engine, hero, 60);
+  assert!(
+    running > walking,
+    "running, the cape swings {running}; walking {walking}"
+  );
+
+  // Standing, it settles to hang as the setup pose holds it
   engine.tap_key(KeyCode::ArrowRight);
   engine.step_frames(5).unwrap();
   assert_eq!(playing(&engine, hero, 0).as_deref(), Some("idle"));
-  // Standing, the cape hangs: its lower bone points down, near enough
-  engine.step_frames(60).unwrap();
+  engine.step_frames(240).unwrap();
+  let settled = cape_swing(&engine, hero);
+  assert!(
+    settled.iter().all(|swing| swing.abs() < 0.03),
+    "standing, the cape swings {settled:?}"
+  );
   let hangs = bone(&engine, hero, "cape_lower").matrix2.x_axis.normalize();
   assert!(hangs.y > 0.95, "the cape hangs {hangs}");
+
+  // The hero turned a fifth of a turn about its feet in one step: the
+  // torso turns with it at once, and the cape is left behind where the pose
+  // holds it, swings, then follows it round and settles
+  let torso = bone(&engine, hero, "torso").matrix2.x_axis;
+  engine
+    .world_mut()
+    .get_mut::<Transform>(hero)
+    .unwrap()
+    .rotation = 0.2 * std::f32::consts::TAU;
+  engine.step().unwrap();
+  let torso_turned = torso.angle_to(bone(&engine, hero, "torso").matrix2.x_axis);
+  assert!(
+    (torso_turned - 0.2 * std::f32::consts::TAU).abs() < 0.05,
+    "the torso turned {torso_turned}"
+  );
+  let lagging = cape_swing(&engine, hero);
+  assert!(
+    lagging.iter().any(|swing| swing.abs() > 0.1),
+    "turned, the cape swings {lagging:?} from where the torso holds it"
+  );
+  engine.step_frames(240).unwrap();
+  let settled = cape_swing(&engine, hero);
+  assert!(
+    settled.iter().all(|swing| swing.abs() < 0.03),
+    "turned, the cape settles: {settled:?}"
+  );
+}
+
+#[test]
+fn the_spring_setting_and_a_gust_change_the_cape_s_swing() {
+  let Some(mut engine) = engine_on(MESHES) else {
+    return;
+  };
+  engine.step_frames(10).unwrap();
+  let hero = one(&mut engine, HERO);
+  let on = most_swing(&mut engine, hero, 60);
+  assert!(on > 0.1, "with springs the cape swings {on}");
+
+  // Rows: the gait, the cape, the ripple's speed, the springs. Off, the
+  // cape hangs as the walk holds it, which keys it nowhere
+  meshes_row(&mut engine, 3, KeyCode::ArrowRight);
+  let off = most_swing(&mut engine, hero, 60);
+  assert!(off < 0.01, "without springs the cape swings {off}");
+
+  // On again, standing still, the cape settles; a gust (G) blows it out
+  // along the wind, to the right, and it falls back once the gust is over
+  engine.tap_key(KeyCode::ArrowLeft);
+  engine.step_frames(2).unwrap();
+  for _ in 0..3 {
+    engine.tap_key(KeyCode::ArrowUp);
+    engine.step_frames(2).unwrap();
+  }
+  engine.tap_key(KeyCode::ArrowLeft);
+  engine.step_frames(5).unwrap();
+  assert_eq!(playing(&engine, hero, 0).as_deref(), Some("idle"));
+  engine.step_frames(240).unwrap();
+  let blown = |engine: &mut HeadlessEngine| {
+    let collar = bone(engine, hero, "cape_upper").translation;
+    tip(engine, hero, "cape_lower").x - collar.x
+  };
+  let still = blown(&mut engine);
+  assert!(still.abs() < 5.0, "standing, the hem is {still} across");
+  engine.tap_key(KeyCode::KeyG);
+  let mut most = 0.0f32;
+  for _ in 0..90 {
+    engine.step().unwrap();
+    most = most.max(blown(&mut engine));
+  }
+  assert!(most > 30.0, "the gust blew the hem {most} across");
+  engine.step_frames(300).unwrap();
+  let after = blown(&mut engine);
+  assert!(
+    after.abs() < 5.0,
+    "after the gust the hem is {after} across"
+  );
 }
 
 #[test]
@@ -1603,11 +1809,13 @@ const PELVIS_KEYS: [(&str, &str); 3] = [
   ),
 ];
 
-/// The hero's file as it was: without its constraints, and with the
+/// The hero's file as it was: without its pelvis constraint, and with the
 /// pelvis keyed by hand in the run, the jump and the slash
 fn hand_keyed(file: &str) -> String {
-  let start = file.find("\n  constraints: [").expect("the constraints");
-  let end = start + file[start..].find("\n  ],").expect("their end") + "\n  ],".len();
+  let start = file
+    .find("\n    Transform(name: \"pelvis\"")
+    .expect("the pelvis constraint");
+  let end = start + 1 + file[start + 1..].find('\n').expect("its line's end");
   let mut text = format!("{}{}", &file[..start], &file[end..]);
   for (animation, keys) in PELVIS_KEYS {
     let at = text
@@ -1688,5 +1896,231 @@ fn the_hero_s_run_jump_and_slash_poses_are_what_the_hand_keys_gave() {
         );
       }
     }
+  }
+}
+
+/// The tail's chain, from its root to its sting
+const TAIL_CHAIN: [&str; 7] = [
+  "tail_1", "tail_2", "tail_3", "tail_4", "tail_5", "tail_6", "sting",
+];
+
+/// The turn at each joint of the tail's chain, from one part to the next,
+/// in radians: positive clockwise on screen
+fn tail_turns(engine: &HeadlessEngine, tail: Entity) -> Vec<f32> {
+  let axes: Vec<Vec2> = TAIL_CHAIN
+    .iter()
+    .map(|name| bone(engine, tail, name).matrix2.x_axis)
+    .collect();
+  axes
+    .windows(2)
+    .map(|pair| pair[0].angle_to(pair[1]))
+    .collect()
+}
+
+/// Walks the pointer round the tail's root at several distances, from
+/// inside its curl to beyond its length, a few steps at each place, handing
+/// each step's distance from the root to `each`
+fn sweep_round_the_tail(
+  engine: &mut HeadlessEngine,
+  tail: Entity,
+  mut each: impl FnMut(&mut HeadlessEngine, f32, Vec2),
+) {
+  let root = bone(engine, tail, "tail_1").translation;
+  for distance in [40.0, 100.0, 160.0, 220.0, 320.0] {
+    for step in 0..=16 {
+      let angle = (-170.0 + 10.0 * step as f32).to_radians();
+      let target = root + Vec2::new(angle.cos(), angle.sin()) * distance;
+      engine.mouse_move(target.x, target.y);
+      for _ in 0..3 {
+        engine.step().unwrap();
+        each(engine, distance, target);
+      }
+    }
+  }
+}
+
+#[test]
+fn the_tail_sways_reaches_for_the_pointer_and_never_changes_sides() {
+  let Some(mut engine) = engine_on(CONSTRAINTS) else {
+    return;
+  };
+  engine.step_frames(10).unwrap();
+  let tail = one(&mut engine, TAIL);
+  assert_eq!(playing(&engine, tail, 0).as_deref(), Some("sway"));
+  {
+    // The sway keys the chain through straight and as an S, and a chain IK
+    // keeps it to the positive side
+    let data = engine.world().get::<Skeleton>(tail).unwrap().data().clone();
+    let assets = engine.assets();
+    let data = assets.get(&data).unwrap();
+    let chain: Vec<BoneId> = TAIL_CHAIN
+      .iter()
+      .map(|name| data.bone(name).unwrap())
+      .collect();
+    let ik = data
+      .constraints()
+      .iter()
+      .find_map(|constraint| match constraint {
+        SkeletonConstraint::Ik(ik) if &*ik.name == "tail" => Some(ik),
+        _ => None,
+      })
+      .expect("the tail's IK");
+    assert_eq!(ik.bones, chain);
+    assert_eq!(ik.setup.bend, Some(IkBend::Positive));
+    let sway = data.animation("sway").unwrap();
+    let keyed: Vec<&Vec<(f32, f32, SkeletonCurve)>> = sway
+      .timelines
+      .iter()
+      .filter_map(|timeline| match timeline {
+        SkeletonTimeline::Rotate { bone, frames } if chain.contains(bone) => Some(frames),
+        _ => None,
+      })
+      .collect();
+    assert!(
+      keyed.len() >= 4,
+      "the sway keys {} of the chain",
+      keyed.len()
+    );
+    let at = |time: f32| -> Vec<f32> {
+      keyed
+        .iter()
+        .filter_map(|frames| frames.iter().find(|key| key.0 == time).map(|key| key.1))
+        .collect()
+    };
+    let times: Vec<f32> = keyed[0].iter().map(|key| key.0).collect();
+    let straight = times
+      .iter()
+      .any(|&time| at(time).iter().all(|turn| *turn == 0.0));
+    let s_shape = times.iter().any(|&time| {
+      let turns = at(time);
+      turns.iter().any(|turn| *turn > 0.0) && turns.iter().any(|turn| *turn < 0.0)
+    });
+    assert!(straight && s_shape, "the sway's keys at {times:?}");
+  }
+
+  // However the sway stands and wherever the pointer is, every joint turns
+  // the positive way, and in reach the sting's tip is on the pointer
+  let mut on_target = 0;
+  sweep_round_the_tail(&mut engine, tail, |engine, distance, target| {
+    for turn in tail_turns(engine, tail) {
+      assert!(
+        turn > -1e-3,
+        "a joint turned {turn}, with the pointer {distance} away"
+      );
+    }
+    if (100.0..=220.0).contains(&distance) {
+      let sting = tip(engine, tail, "sting");
+      assert!(
+        sting.distance(target) < 2.0,
+        "the sting is at {sting}, the pointer at {target}"
+      );
+      on_target += 1;
+    }
+  });
+  assert!(on_target > 100);
+
+  // Rows: the bend, the softness, the stretch, the mix, the level hand, the
+  // speed, the tail's side. Set to Pose, the chain closes as its sway bends
+  // it, and the S and the swing through straight change its sides
+  for _ in 0..6 {
+    engine.tap_key(KeyCode::ArrowDown);
+    engine.step_frames(2).unwrap();
+  }
+  for _ in 0..2 {
+    engine.tap_key(KeyCode::ArrowRight);
+    engine.step_frames(2).unwrap();
+  }
+  let mut against = 0.0f32;
+  sweep_round_the_tail(&mut engine, tail, |engine, _, _| {
+    for turn in tail_turns(engine, tail) {
+      against = against.min(turn);
+    }
+  });
+  assert!(
+    against < -0.02,
+    "following its sway, the tail turned {against} the other way at most"
+  );
+}
+
+/// The reacher's and the walker's skins as they were, each part placed by
+/// its centre's offset from its bone
+const CENTRED: [(&str, &str); 2] = [
+  (
+    REACHER,
+    r#"  skins: {
+    "default": {
+      "post": { "post": Region(region: "post", y: -140) },
+      "upper": { "upper": Region(region: "upper", x: 65) },
+      "hub": { "hub": Region(region: "hub") },
+      "fore": { "fore": Region(region: "fore", x: 60) },
+      "elbow": { "elbow": Region(region: "elbow") },
+      "hand": { "hand": Region(region: "hand", y: -14) },
+    },
+  },"#,
+  ),
+  (
+    WALKER,
+    r#"  skins: {
+    "default": {
+      "thigh_far": { "thigh": Region(region: "thigh", x: 35) },
+      "shin_far": { "shin": Region(region: "shin", x: 30) },
+      "body": { "body": Region(region: "body", y: -26) },
+      "thigh_near": { "thigh": Region(region: "thigh", x: 35) },
+      "shin_near": { "shin": Region(region: "shin", x: 30) },
+      "knee_near": { "joint": Region(region: "joint") },
+      "hip_near": { "joint": Region(region: "joint") },
+    },
+  },"#,
+  ),
+];
+
+/// `file` with its skins block replaced by `skins`
+fn with_skins(file: &str, skins: &str) -> String {
+  let start = file.find("\n  skins: {").expect("the skins") + 1;
+  let end = start + file[start..].find("\n  },").expect("their end") + "\n  },".len();
+  format!("{}{}{}", &file[..start], skins, &file[end..])
+}
+
+#[test]
+fn the_reacher_and_walker_placed_by_pivots_draw_as_they_did_by_centres() {
+  let files = embedded();
+  let centred = embedded();
+  for (path, skins) in CENTRED {
+    let file = EMBEDDED
+      .iter()
+      .find(|(name, _)| *name == path)
+      .map(|(_, bytes)| std::str::from_utf8(bytes).unwrap())
+      .unwrap();
+    // Every region of the two is placed by its joint pixels
+    let regions = file.matches("Region(").count();
+    let pivoted = file.matches("pivot: (").count();
+    assert!(
+      regions > 0 && pivoted == regions,
+      "{path}: {pivoted} of {regions} regions placed by a pivot"
+    );
+    centred.insert(path, with_skins(file, skins).into_bytes());
+  }
+  let on = |files: MemorySource| {
+    HeadlessEngine::new_or_skip(
+      demo()
+        .start_page(CONSTRAINTS)
+        .engine_builder()
+        .asset_source(files),
+    )
+  };
+  let (Some(mut now), Some(mut then)) = (on(files), on(centred)) else {
+    return;
+  };
+  // The arm reaches round its shoulder and the walker crosses the page, the
+  // same in both: each frame draws the same pixels, to a rounding
+  for frame in 0..90 {
+    now.step().unwrap();
+    then.step().unwrap();
+    if frame % 15 != 14 {
+      continue;
+    }
+    let (a, b) = (shot(&now), shot(&then));
+    let off = a.differing(&b, a.all(), 2);
+    assert!(off <= 4, "frame {frame}: {off} pixels differ");
   }
 }

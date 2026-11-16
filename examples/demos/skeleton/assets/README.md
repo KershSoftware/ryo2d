@@ -2,7 +2,7 @@
 
 | File | What |
 |---|---|
-| `hero.skeleton.ron` | The hero: 17 bones, 28 slots, seven skins, seven animations, a footstep event and a transform constraint that turns its pelvis with its trunk. Written by hand; its comments say how it is put together |
+| `hero.skeleton.ron` | The hero: 17 bones, 28 slots, seven skins, seven animations, a footstep event, a transform constraint that turns its pelvis with its trunk and two springs that swing its cape. Written by hand; its comments say how it is put together |
 | `hero.png` | The hero's parts in one 1024 x 744 atlas: three bodies, three outfits, the faces' parts and a cap. The skeleton file names each part's rectangle |
 | `cape.png` | The cape the Meshes page puts on the hero, 280 x 292: the image of the mesh in the hero's `cape` skin |
 | `banner.skeleton.ron` | The Meshes page's banner: three bones, a pole and a flag. The flag is a mesh of 27 vertices, and the `ripple` animation's deform keys move them. Written by hand, but for the ripple's keys (below) |
@@ -12,7 +12,9 @@
 | `reacher.png` | The arm's parts in one 262 x 296 image: its upper arm, forearm, hand with a tray, shoulder pivot, elbow cap and stand |
 | `walker.skeleton.ron` | The Constraints page's walker: a body on two legs of two parts each, an IK constraint on each leg that puts its foot on a target bone. Written by hand |
 | `walker.png` | The walker's parts in one 214 x 102 image: its body, a thigh, a shin with its foot, and a joint cap |
-| `audio/footstep.sound.ron` | The sound the skeleton's footstep event names: one of four takes, heard from where it is played |
+| `tail.skeleton.ron` | The Constraints page's tail: six segments and a sting on a stone mound, a chain IK kept to one side that reaches the sting for a target bone, and a `sway` animation that bends it through straight, into an S and the other way. Written by hand |
+| `tail.png` | The tail's parts in one 172 x 104 image: a segment, the sting and the mound |
+| `audio/footstep.sound.ron` | The sound the skeleton's footstep event names, which the engine plays for every hero (its `SkeletonSounds`): one of four takes, heard from where the hero is |
 | `audio/step-1.wav` to `step-4.wav` | The four takes |
 
 The web build embeds every file here except this one (`src/embedded.rs`); a test checks the list matches the folder.
@@ -35,7 +37,7 @@ The hero's parts are from **Modular Characters** by Kenney (<https://kenney.nl/a
 
 The parts are assembled as the pack's `instruction.png` shows: hair and a face on a head, a neck, a shirt with a sleeve and a hand each side, the trousers' top under the shirt, a leg each side and a shoe under each. An arm and a leg are one piece each in the pack, so the rig has one bone for each, and one for each hand and shoe. The hero is turned a little to its right, so its two legs are the same piece and its two arms the same piece, the far ones drawn behind and a shade darker.
 
-The cap, the sword, the cape, the banner (its flag and its pole), the reaching arm and the walker are not from the pack: it has none of them. They were drawn for this demo with ImageMagick, as flat shapes with a little shading in the hero's colours (the cap's yellows, the red of the shirt, the brown of the shoes, the sword's steel and the pole's wood), and are under the repository's licence.
+The cap, the sword, the cape, the banner (its flag and its pole), the reaching arm, the walker and the tail are not from the pack: it has none of them. They were drawn for this demo with ImageMagick, as flat shapes with a little shading in the hero's colours (the cap's yellows, the red of the shirt, the brown of the shoes, the sword's steel and the pole's wood), and are under the repository's licence.
 
 ## Making the images
 
@@ -102,7 +104,7 @@ magick -size 656x220 xc:none \
   PNG32:banner.png
 ```
 
-The Constraints page's two figures are drawn the same way, each part at twice its size and halved, then packed with 8 pixels between parts. A limb's part is a bar with rounded ends whose joints are as far apart as its bone is long:
+The Constraints page's three figures are drawn the same way, each part at twice its size and halved, then packed with 8 pixels between parts. A limb's part is a bar with rounded ends whose joints are as far apart as its bone is long:
 
 ```sh
 # upper.png: the upper arm, joint to joint 130 apart, bolts at each joint
@@ -206,9 +208,48 @@ magick -size 214x102 xc:none \
   shin.png -geometry +112+40 -composite \
   joint.png -geometry +112+72 -composite \
   PNG32:walker.png
+
+# segment.png: a segment of the tail, red with a yellow band and a bolt
+# at its root joint (20, 20); its other joint, the middle of its far end,
+# is at (70, 20), 50 along
+magick -size 168x80 xc:none \
+  -fill '#e05848' -draw 'roundrectangle 0,0 167,79 40,40' \
+  \( -size 168x80 xc:none -fill '#bf493b' -draw 'rectangle 0,54 168,80' \
+     -fill '#f2b632' -draw 'rectangle 78,0 102,80' \
+     -fill '#e09f1f' -draw 'rectangle 78,54 102,80' \) \
+  -compose SrcAtop -composite -compose Over \
+  -fill '#8f9bab' -draw 'circle 40,40 40,26' \
+  -fill '#b8c3d1' -draw 'circle 40,40 40,33' \
+  -filter Lanczos -resize 50% PNG32:segment.png
+
+# sting.png: the tail's sting, its bolt at (16, 18) and its point at (63, 18)
+magick -size 128x72 xc:none \
+  -fill '#f2b632' -draw 'polygon 30,12 126,36 30,60' \
+  -fill '#e09f1f' -draw 'polygon 30,36 126,36 30,60' \
+  -fill '#c9861a' -draw 'circle 32,36 32,10' \
+  -fill '#8f9bab' -draw 'circle 32,36 32,22' \
+  -fill '#b8c3d1' -draw 'circle 32,36 32,29' \
+  -filter Lanczos -resize 50% PNG32:sting.png
+
+# mound.png: the stone mound the tail rises from, its foot's middle at
+# (60, 40) and the hole in its top 27 above it
+magick -size 240x80 xc:none \
+  -fill '#8f9bab' -draw 'ellipse 120,80 116,70 180,360' \
+  -fill '#a3aebd' -draw 'ellipse 120,80 92,52 180,360' \
+  -fill '#5c6573' -draw 'ellipse 120,26 34,12 0,360' \
+  -filter Lanczos -resize 50% PNG32:mound.png
+
+# tail.png: the tail's parts
+magick -size 172x104 xc:none \
+  segment.png -geometry +8+8 -composite \
+  sting.png -geometry +100+8 -composite \
+  mound.png -geometry +8+56 -composite \
+  PNG32:tail.png
 ```
 
-Each part sits on its bone as a limb of the hero does (Placing a part on its bone, below), with no turn: a bar's middle is half way between its joints, so the upper arm's `x` is 65 and the forearm's 60. The thigh's joints are 12 in from its ends (`x` 35); the shin's knee is 10 in from its end and the bottom of its foot 70 along from the knee, at the tip of its bone, so the IK puts the foot's edge on its target (`x` 30). The hand's palm is 14 below the image's middle (`y` -14), and the stand's image runs up from its foot (`y` -140).
+Each part is placed on its bone by its joint pixels (Placing a part on its bone, below). The upper arm's bolts are at (14, 14) and (144, 14), 130 apart as its bone is long, and the forearm's elbow and wrist at (12, 12) and (132, 12), 120 apart. The thigh's joints are 12 in from its ends, (12, 12) and (82, 12); the shin's knee is 10 in from its end, (10, 12), and the bottom of its foot 70 along from it, (80, 12), at the tip of its bone, so the IK puts the foot's edge on its target. The hand's wrist is the palm's middle, (42, 42); the stand's foot is the middle of its bottom edge, (30, 280); the body's hip is on its lower edge, (48, 62); and a cap's pivot is its middle.
+
+The tail's segments are one image drawn at six sizes: each at its bone's length over 50 (`width` and `height` in its region attachment), so its two joints fall on its bone's two ends at any size, and its parts taper from 50 long at the root to 28. The sting is drawn at 30 over 47, its point on the tip of the last bone, where the chain IK puts the target.
 
 `hero.png` is the pack's own PNGs, unscaled, each laid at its place on a transparent sheet with 8 pixels between neighbours, and the cap. `PACK` is the pack's `PNG` folder:
 
@@ -279,13 +320,16 @@ The `regions` of `hero.skeleton.ron` are those places, each with its part's size
 
 ## Placing a part on its bone
 
-A region attachment's `x` and `y` are where the image's centre is from its bone's origin, in the bone's own axes, and `rotation` turns the image. For a limb, whose bone runs from one joint to the next:
+A limb's bone runs from one joint to the next, so a part is placed on it by naming two of its pixels, counted from the image's top-left (x right, y down, as the image is drawn):
 
-- `rotation` lays the image's line between the two joints along the bone. The leg's hip is at (31, 18) in its image and its ankle at (64, 158), a line 76.7 degrees round from the image's x axis, so its `rotation` is -76.7.
-- `x`, `y` are the image's centre less the joint, turned by `rotation`: the leg's centre (46.5, 82) less its hip is (15.5, 64), which turned by -76.7 degrees is (65.8, -0.4).
-- An arm is also flipped across its bone (`scale_y: -1`), which turns its `rotation` and its `y` the other way, so that the arm's curve bends its elbow back.
+- `pivot` is the pixel that sits on the bone's origin: the joint the bone turns about.
+- `along` is the pixel of the next joint. The image is turned so the line from `pivot` to `along` lies along the bone; `rotation`, if written, turns it further, about the pivot.
 
-A sleeve or a trouser leg is placed by the same joint as the arm or leg under it.
+The leg's hip is at (31, 18) in its image and its ankle at (64, 158), so it is `Region(region: "light_leg", pivot: (31, 18), along: (64, 158))`. A part with no next joint (a hand, a body, a cap) takes a `pivot` alone, the pixel on its bone's origin, and keeps the image's own axes. A part drawn larger or smaller (`width`, `height`) keeps its pivot on the same pixel, and a mirroring scale (`scale_y: -1`) flips it across its bone about the pivot, with `along` still along the bone.
+
+Measure the two pixels in the image at the size the atlas holds it, as the commands above write them. The reacher, the walker and the tail are placed this way.
+
+The hero's file is older than pivots: its limbs carry the same placing worked out by hand, the image's centre from the joint (`x`, `y`) and the turn that lays the joints along the bone (`rotation`). The leg's line from hip to ankle is 76.7 degrees round from the image's x axis, so its `rotation` is -76.7, and its centre (46.5, 82) less its hip, (15.5, 64), turned by that, is its `x: 65.8, y: -0.4`. An arm is also flipped across its bone (`scale_y: -1`), which turns its `rotation` and its `y` the other way, so that the arm's curve bends its elbow back. A sleeve or a trouser leg is placed by the same joint as the arm or leg under it.
 
 ## The meshes
 
@@ -345,7 +389,20 @@ for key in range(KEYS + 1):
 
 A deform's keys must hold an x and a y for each of the mesh's vertices: change the flag's grid, and the keys change with it.
 
+## The cape's springs
+
+No animation keys the cape's two bones: a spring on each (in `hero.skeleton.ron`'s `constraints`) swings it as the hero moves, so the cloth trails a walk, streams out behind a run, lifts and swings through a jump's landing and swings on round a turn. The numbers were found by trying them in the contact sheet and on the Meshes page, as the hero's file explains. To see a change, draw the sheet (the cape is a skin, so name it):
+
+```sh
+cargo run -p ryo2d --bin ryo2d -- sheet examples/demos/skeleton/assets/hero.skeleton.ron \
+  --animations idle,walk,run,jump,slash --once jump,slash --skins cape
+```
+
+The sheet's hero stands where it is, so it shows what the body's own motion does to the cape (a jump, a lean); the swing behind a hero that walks across the ground shows on the Meshes page.
+
 ## The sounds
+
+Every hero carries `SkeletonSounds`, so the engine plays the sound each footstep event names as it fires, where the hero stands; the pages play no sound themselves.
 
 `step-1.wav` to `step-4.wav` are the footsteps of the audio demo, copied from `examples/demos/audio/assets/sounds/`. That demo's `src/bin/make-sounds.rs` writes them from code (a thump falling in pitch and a burst of seeded, filtered noise; mono, 16-bit, 44.1 kHz), so none carries a licence restriction. To change one, edit that program, run it, and copy the file again:
 

@@ -1,9 +1,9 @@
 //! Events: an animation's event keys reach the game as `SkeletonEvent`
-//! messages. Each footstep carries a sound's path, which the page plays
-//! where the foot landed, with a puff of dust
+//! messages. Each footstep carries a sound's path, which the engine plays
+//! where the hero is (the hero's `SkeletonSounds`), and the page puffs dust
+//! where the foot landed
 
 use std::collections::VecDeque;
-use std::sync::Arc;
 
 use demo_kit::prelude::*;
 
@@ -17,8 +17,6 @@ const LOG: usize = 6;
 pub struct EventsPage {
   hero: Option<Entity>,
   patrol: Patrol,
-  /// The sound each event of the skeleton names, by its path in the file
-  sounds: Vec<(Arc<str>, Handle<Sound>)>,
   /// The puff under a footstep, and under a hard landing
   dust: Option<Handle<ParticleEffect>>,
   thud: Option<Handle<ParticleEffect>>,
@@ -30,6 +28,8 @@ pub struct EventsPage {
   sound: bool,
   puffs: bool,
   playing_gait: usize,
+  /// Whether the hero has its `SkeletonSounds`, as last set
+  sounding: bool,
   /// The jump's entry, while it plays
   jump: Option<SkeletonTrackEntryId>,
 }
@@ -39,7 +39,6 @@ impl Default for EventsPage {
     Self {
       hero: None,
       patrol: Patrol::new(140.0, 660.0),
-      sounds: Vec::new(),
       dust: None,
       thud: None,
       log: VecDeque::new(),
@@ -48,14 +47,10 @@ impl Default for EventsPage {
       sound: true,
       puffs: true,
       playing_gait: 0,
+      sounding: true,
       jump: None,
     }
   }
-}
-
-/// A linear volume as the decibels a play adds
-fn decibels(volume: f32) -> f32 {
-  20.0 * volume.max(1e-3).log10()
 }
 
 impl EventsPage {
@@ -72,6 +67,20 @@ impl EventsPage {
     }
   }
 
+  /// Gives the hero its `SkeletonSounds`, or takes it away: without one
+  /// the engine plays no event's sound, and the events still arrive
+  fn hear(&mut self, ctx: &mut SceneContext, hero: Entity) {
+    if self.sounding == self.sound {
+      return;
+    }
+    if self.sound {
+      ctx.world.entity_mut(hero).insert(SkeletonSounds::new());
+    } else {
+      ctx.world.entity_mut(hero).remove::<SkeletonSounds>();
+    }
+    self.sounding = self.sound;
+  }
+
   fn on_event(&mut self, ctx: &mut SceneContext, event: &SkeletonEvent) {
     self.count += 1;
     self.log.push_back(format!(
@@ -84,21 +93,8 @@ impl EventsPage {
     let Some(at) = self.foot(ctx, &event.string) else {
       return;
     };
-    // The event's audio is data: its path, volume and balance. The game
-    // plays it, here from where the foot is
-    if self.sound
-      && let Some(audio) = &event.audio
-      && let Some((_, sound)) = self.sounds.iter().find(|(path, _)| *path == audio.path)
-    {
-      ctx.audio().play_with(
-        sound,
-        PlayOptions {
-          position: Some(at),
-          volume_db: decibels(audio.volume),
-          ..Default::default()
-        },
-      );
-    }
+    // The sound is the engine's to play: the event's audio is its path,
+    // volume and balance, and the hero's `SkeletonSounds` plays it
     if self.puffs {
       // The event's float says how hard the foot came down
       let puff = if event.float >= 2.0 {
@@ -140,7 +136,7 @@ impl DemoPage for EventsPage {
 
   fn description(&self) -> &str {
     "Each footstep is an event key in the walk: a SkeletonEvent message with the key's values and its sound's path.\n\
-     The page plays that sound where the foot is (a point attachment on the sole) and puffs dust there. The engine plays nothing itself."
+     The hero's SkeletonSounds has the engine play that sound where the hero is. The page puffs dust where the foot is (a point attachment on the sole)."
   }
 
   fn settings(&mut self, s: &mut Settings) {
@@ -158,24 +154,6 @@ impl DemoPage for EventsPage {
     let Some(data) = hero::load(ctx) else {
       return;
     };
-    // An event names its sound by path: load each one the skeleton names
-    // now, so a footstep never waits for a file
-    let paths: Vec<Arc<str>> = ctx
-      .assets()
-      .get(&data)
-      .map(|data| {
-        data
-          .events()
-          .iter()
-          .filter_map(|event| event.audio.as_ref().map(|audio| audio.path.clone()))
-          .collect()
-      })
-      .unwrap_or_default();
-    for path in paths {
-      if let Ok(sound) = ctx.assets().load_now::<Sound>(&path) {
-        self.sounds.push((path, sound));
-      }
-    }
     let mote = ctx
       .assets()
       .add(Image::solid_circle(16, 255, 255, 255, 255));
@@ -194,6 +172,7 @@ impl DemoPage for EventsPage {
     let Some(hero) = self.hero else {
       return;
     };
+    self.hear(ctx, hero);
     // What the skeleton's last step fired
     for event in ctx.messages::<SkeletonEvent>() {
       if event.entity == hero {
@@ -229,7 +208,7 @@ impl DemoPage for EventsPage {
       format!("{} events", self.count),
       // What the description's second line says, which the shell does not
       // show
-      "The page plays each sound from its event's path; the engine plays none itself".to_string(),
+      "SkeletonSounds: the engine plays each event's sound; the page puffs the dust".to_string(),
     ];
     lines.extend(self.log.iter().cloned());
     hero::readout(ui, &lines);
