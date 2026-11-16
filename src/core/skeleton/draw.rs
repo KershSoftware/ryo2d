@@ -901,34 +901,39 @@ mod tests {
     assert!(Vec2::new(centre.x, centre.y).abs_diff_eq(Vec2::new(65.8, -0.4), 0.05));
 
     // At its pixel size, drawn larger (evenly and not), mirrored across its
-    // bone, offset and turned on it, by both pixels and by the pivot alone
-    for (width, height) in [(93.0, 164.0), (186.0, 328.0), (139.5, 328.0)] {
-      for scale_y in [1.0, -1.0] {
-        for (x, y, rotation) in [(0.0, 0.0, 0.0), (5.0, -3.0, 0.2)] {
-          for along in [Some(ANKLE), None] {
-            let placed = RegionAttachment {
-              x,
-              y,
-              rotation,
-              scale_y,
-              pivot: Some(HIP),
-              along,
-              ..RegionAttachment::new(0, width, height)
-            };
-            let what = format!(
-              "{width} x {height}, scale_y {scale_y}, ({x}, {y}, {rotation}), along {along:?}"
-            );
-            let quad = placed.quad(&region);
-            let want = by_centre(&placed, &region).quad(&region);
-            for (got, want) in corners_of(quad).into_iter().zip(corners_of(want)) {
-              assert!(got.abs_diff_eq(want, 0.01), "{what}: {got} not {want}");
+    // bone, offset and turned on it, by both pixels and by the pivot alone,
+    // with the hip and with a pivot outside the image (a joint past its
+    // left edge, the art beside it)
+    let outside = Vec2::new(-3.0, 20.0);
+    for pivot in [HIP, outside] {
+      for (width, height) in [(93.0, 164.0), (186.0, 328.0), (139.5, 328.0)] {
+        for scale_y in [1.0, -1.0] {
+          for (x, y, rotation) in [(0.0, 0.0, 0.0), (5.0, -3.0, 0.2)] {
+            for along in [Some(ANKLE), None] {
+              let placed = RegionAttachment {
+                x,
+                y,
+                rotation,
+                scale_y,
+                pivot: Some(pivot),
+                along,
+                ..RegionAttachment::new(0, width, height)
+              };
+              let what = format!(
+                "pivot {pivot}, {width} x {height}, scale_y {scale_y}, ({x}, {y}, {rotation}), along {along:?}"
+              );
+              let quad = placed.quad(&region);
+              let want = by_centre(&placed, &region).quad(&region);
+              for (got, want) in corners_of(quad).into_iter().zip(corners_of(want)) {
+                assert!(got.abs_diff_eq(want, 0.01), "{what}: {got} not {want}");
+              }
+              // The pivot's pixel is at the offset
+              let at = pixel_at(quad, &region, pivot);
+              assert!(
+                at.abs_diff_eq(Vec2::new(x, y), 0.01),
+                "{what}: the pivot at {at}"
+              );
             }
-            // The pivot's pixel is at the offset
-            let hip = pixel_at(quad, &region, HIP);
-            assert!(
-              hip.abs_diff_eq(Vec2::new(x, y), 0.01),
-              "{what}: hip at {hip}"
-            );
           }
         }
       }

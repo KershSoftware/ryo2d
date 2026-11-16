@@ -2066,7 +2066,11 @@ mod tests {
       tip.distance(Vec2::new(0.6, 0.8) * rise) < 0.01 && rise < farthest - 1.0,
       "placed again beyond the reach: the tip at {tip}, the crests {crests:?}, the farthest {farthest}"
     );
-    assert!(knee(&world).distance(followed) > 1.0, "straightened");
+    assert!(
+      knee(&world).distance(followed) > 1.0,
+      "the knee moved from {followed} as the leg climbed to the crest it was near: {}",
+      knee(&world)
+    );
     assert_eq!(knees(&world), kept, "placing again wrote the knee");
     // So the next step follows from the knee the last step kept: the
     // branch past the dip, not the one a fall from the crest finds
