@@ -11,13 +11,23 @@ use super::pose::SlotDeform;
 use super::skin::Skin;
 use crate::core::graphics::image::CHECKER_SIDE;
 
+/// How far the bones that carry something reach, worked out once from the
+/// data: only those bones are visited when a pose finds its box
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct BoneReaches {
+  /// Each bone that carries something (an attachment in a slot of the
+  /// bone, or a mesh vertex weighted to it), by its index, in bone order
+  pub(crate) bones: Vec<(usize, BoneReach)>,
+  /// Some bone carries a mesh vertex: without one, no deform moves anything
+  pub(crate) meshed: bool,
+}
+
 /// How far what a bone carries can reach from its origin, in its own units,
 /// over every attachment of every skin
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub(crate) struct BoneReach {
-  /// Something is on it: an attachment in a slot of the bone, or a mesh
-  /// vertex weighted to it
-  pub(crate) holds: bool,
+  /// Something is on it
+  holds: bool,
   /// The furthest any of those points is from its origin: a region's
   /// corners (placed by its pivot), a mesh's vertices (a weighted vertex's
   /// place for this bone), a point, a bounding box's corners
@@ -26,19 +36,19 @@ pub(crate) struct BoneReach {
   pub(crate) meshed: bool,
   /// The most a region's corner on it moves for each texel an effect grows
   /// its quad by (an outline, a glow): the length of a texel's diagonal,
-  /// counted in the image's texels or in the checker's that stands in for
-  /// it, whichever are the larger
+  /// counted in the region's pixels or the checker's 16 (which stands in
+  /// for an image that is not loaded), whichever are fewer
   pub(crate) texel: f32,
 }
 
-/// Each bone's reach, by bone index, from the attachments `skins` put in
-/// `slots`
+/// The reach of each bone of `bones` that carries something, from the
+/// attachments `skins` put in `slots`
 pub(crate) fn bone_reaches(
   bones: usize,
   slots: &[SlotData],
   regions: &[Region],
   skins: &[Skin],
-) -> Vec<BoneReach> {
+) -> BoneReaches {
   let mut reaches = vec![BoneReach::default(); bones];
   // Bone `bone` carries a point at `at` in its space (a mesh's if `meshed`)
   let reach = |reaches: &mut [BoneReach], bone: usize, at: Vec2, meshed: bool| {
@@ -95,7 +105,14 @@ pub(crate) fn bone_reaches(
       }
     }
   }
-  reaches
+  BoneReaches {
+    meshed: reaches.iter().any(|reach| reach.meshed),
+    bones: reaches
+      .into_iter()
+      .enumerate()
+      .filter(|(_, reach)| reach.holds)
+      .collect(),
+  }
 }
 
 /// A box in a skeleton's own space that its parts stay inside, drawn at
@@ -131,49 +148,54 @@ impl Bounds {
 /// weighted mean, with weights of 0 or more, of points each inside its
 /// influence's bone's box, so it is inside the box too.
 ///
+/// It runs after every posing of every skeleton, so it visits only the
+/// bones that carry something, takes one square root a bone, and reads the
+/// deform offsets only where a mesh could be moved by them.
+///
 /// A bone at no number adds nothing: what it carries is drawn nowhere
 pub(crate) fn pose_bounds(
-  reaches: &[BoneReach],
+  reaches: &BoneReaches,
   now: &[Affine2],
   before: &[Affine2],
   deforms: &[SlotDeform],
 ) -> Bounds {
-  let lists = deforms
-    .iter()
-    .flat_map(|deform| [&deform.offsets[..], &deform.previous[..]]);
-  let moved = lists
-    .flat_map(|list| list.as_chunks::<2>().0)
-    .map(|&[x, y]| Vec2::new(x, y).length())
-    .fold(0.0, f32::max);
+  let moved = if reaches.meshed {
+    let lists = deforms
+      .iter()
+      .flat_map(|deform| [&deform.offsets[..], &deform.previous[..]]);
+    lists
+      .flat_map(|list| list.as_chunks::<2>().0)
+      .map(|&[x, y]| x * x + y * y)
+      .fold(0.0, f32::max)
+      .sqrt()
+  } else {
+    0.0
+  };
   let mut bounds = Bounds {
     min: Vec2::INFINITY,
     max: Vec2::NEG_INFINITY,
     texel: 0.0,
   };
-  for (bone, reach) in reaches.iter().enumerate() {
-    let Some(now) = now.get(bone).filter(|_| reach.holds) else {
+  for &(bone, reach) in &reaches.bones {
+    let Some(now) = now.get(bone) else {
       continue;
     };
     let before = before.get(bone).unwrap_or(now);
-    let longest = |a: Vec2, b: Vec2| a.length().max(b.length());
-    let (x, y) = (now.matrix2.x_axis, now.matrix2.y_axis);
-    let stretch = longest(x, before.matrix2.x_axis).hypot(longest(y, before.matrix2.y_axis));
+    let (a, b) = (now.matrix2, before.matrix2);
+    let x = a.x_axis.length_squared().max(b.x_axis.length_squared());
+    let y = a.y_axis.length_squared().max(b.y_axis.length_squared());
+    let stretch = (x + y).sqrt();
     let reach_by = if reach.meshed { moved } else { 0.0 };
     let distance = Vec2::splat((reach.reach + reach_by) * stretch);
     let (low, high) = (
       now.translation.min(before.translation) - distance,
       now.translation.max(before.translation) + distance,
     );
-    // A bone at no number would leave the box at none
-    if low.is_nan() || high.is_nan() {
-      continue;
-    }
+    // `min` and `max` pass over a number that is not one: a bone at none
+    // leaves the box as it was
     bounds.min = bounds.min.min(low);
     bounds.max = bounds.max.max(high);
-    let texel = reach.texel * stretch;
-    if !texel.is_nan() {
-      bounds.texel = bounds.texel.max(texel);
-    }
+    bounds.texel = bounds.texel.max(reach.texel * stretch);
   }
   bounds
 }

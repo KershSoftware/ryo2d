@@ -15,10 +15,10 @@ use crate::core::ecs::{
 use crate::core::graphics::sprite_gpu::effect_padding;
 use crate::core::graphics::{Camera2d, CameraView, Image, SpriteInstance};
 use crate::core::skeleton::{
-  Animation, Attachment, BoneId, BoneSetup, BoundingBoxAttachment, Carrier, Curve, Drawn,
-  Influence, MeshAttachment, MeshVertices, MixBlend, Part, Parts, PointAttachment, Region,
+  Animation, Attachment, BoneId, BoneOverride, BoneSetup, BoundingBoxAttachment, Carrier, Curve,
+  Drawn, Influence, MeshAttachment, MeshVertices, MixBlend, Part, Parts, PointAttachment, Region,
   RegionAttachment, Skeleton, SkeletonAnimation, SkeletonData, SkeletonDataBuilder, SlotId,
-  SlotSetup, Timeline, WeightedVertices,
+  SlotSetup, Space, Timeline, WeightedVertices,
 };
 use crate::core::ui::Color;
 use crate::testing::asset_world;
@@ -476,6 +476,30 @@ fn stilt(image: &Handle<Image>) -> SkeletonData {
     .expect("a valid skeleton")
 }
 
+/// A patch on a bone held at a place in the world, so each new stand moves
+/// it in the skeleton's space: posed again with no step, its box must move
+/// with it
+fn pinned(image: &Handle<Image>) -> SkeletonData {
+  one_bone(image)
+    .bone(
+      "pin",
+      Some("root"),
+      BoneSetup {
+        x: 10.0,
+        ..BoneSetup::default()
+      },
+    )
+    .slot("patch", "pin", shows("patch"))
+    .attachment(
+      SkeletonData::DEFAULT_SKIN,
+      "patch",
+      "patch",
+      dot(0.0, 0.0, 8.0, 8.0),
+    )
+    .build()
+    .expect("a valid skeleton")
+}
+
 /// Walks cameras past a skeleton of the rig `build` makes, playing
 /// `tracks` (an animation, how it blends and its speed, a track each) in
 /// steps of `dt` and swapping between `skins` as it goes: at many poses,
@@ -501,6 +525,15 @@ fn walk(
   let seen = (handle.id(), assets.version(&handle).expect("a version"));
 
   let mut skeleton = Skeleton::new(handle.clone());
+  // A bone it has called "pin" is held at a place in the world
+  let pin = BoneOverride {
+    translation: Some(Vec2::new(-30.0, 70.0)),
+    space: Space::World,
+    ..BoneOverride::default()
+  };
+  if data.bone("pin").is_some() {
+    skeleton.override_bone("pin", pin);
+  }
   let mut animation = SkeletonAnimation::new();
   skeleton.step_by_hand(
     (data, seen),
@@ -528,6 +561,12 @@ fn walk(
     global: was,
     skip: false,
   };
+  // Where it is carried to without a step
+  let moved = GlobalTransform::from_transform(
+    &Transform::from_xy(70.0, -40.0)
+      .with_rotation(-0.5)
+      .with_scale(Vec2::new(0.9, 1.2)),
+  );
   let deep = YSort::new().with_depth_scale(0.5, 1.6, 0.0, 10.0);
   let red = Color::rgb(255, 0, 0);
   let looks = [
@@ -566,7 +605,24 @@ fn walk(
   let (mut seen_parts, mut checked) = (0usize, 0usize);
   for step in 0..32 {
     let flip = (step % 5 == 3, step % 7 == 4);
-    skeleton.step_by_hand((data, seen), Some(&mut animation), dt, now.affine(), flip);
+    // Posed by a step where the entity stands; at every third step placed
+    // again where it was carried to (as a socket's child is) after its
+    // step; once posed outside a step (`appear`) there instead. A bone
+    // held at a place in the world moves in the skeleton's space with
+    // each new stand
+    let stand = if step % 3 == 1 || step == 16 {
+      &moved
+    } else {
+      &now
+    };
+    if step == 16 {
+      skeleton.appear_by_hand((data, seen), Some(&mut animation), stand.affine(), flip);
+    } else {
+      skeleton.step_by_hand((data, seen), Some(&mut animation), dt, now.affine(), flip);
+      if step % 3 == 1 {
+        skeleton.place_again_by_hand(data, stand.affine(), flip);
+      }
+    }
     // A skin put on shows at once, before the next step
     if let Some(skin) = skins.get(step % 3) {
       skeleton.set_skin(skin);
@@ -580,7 +636,7 @@ fn walk(
       (1.0, Some(&previous), Vec2::new(5.0, -12.0), Some(&deep)),
     ] {
       let carrier = Carrier {
-        global: &now,
+        global: stand,
         previous,
         lift,
         y_sort,
@@ -647,4 +703,5 @@ fn a_skeleton_showing_any_part_is_never_culled() {
   walk(flag, &[("wave", replace, 1.0)], &[], 0.037);
   walk(dash, &[("wave", replace, 1.0)], &[], 0.11);
   walk(stilt, &[], &[], 0.037);
+  walk(pinned, &[], &[], 0.037);
 }

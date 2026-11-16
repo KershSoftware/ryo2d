@@ -3170,69 +3170,6 @@ fn a_paused_clock_holds_a_swinging_spring_and_a_teleport_puts_it_at_rest() {
   close(heading(bone(&engine, body, "tail")), FRAC_PI_2);
 }
 
-#[test]
-fn a_culled_skeleton_is_still_stepped() {
-  let Some(mut engine) = engine() else {
-    return;
-  };
-  // The rig with a square drawn on its root and a spring on its arm, far
-  // out of every camera's view: its drawing is skipped, its step is not
-  let white = engine
-    .assets()
-    .add(Image::solid_rect(1, 1, 255, 255, 255, 255));
-  let swing = SpringSetup {
-    rotate: 1.0,
-    ..SpringSetup::default()
-  };
-  let square = SkeletonAttachment::Region(RegionAttachment::new(0, 16.0, 16.0));
-  let data = rig_builder()
-    .slot(
-      "square",
-      "root",
-      SlotSetup {
-        attachment: Some(Arc::from("square")),
-        ..SlotSetup::default()
-      },
-    )
-    .region(SkeletonRegion {
-      name: Arc::from("white"),
-      image: white,
-      x: 0,
-      y: 0,
-      width: 1,
-      height: 1,
-    })
-    .attachment(SkeletonData::DEFAULT_SKIN, "square", "square", square)
-    .spring("sway", "arm", swing)
-    .build()
-    .expect("a valid skeleton");
-  let data = engine.assets().add(data);
-  let mut events = Inbox::<SkeletonEvent>::new(&engine);
-  let body = spawn(&mut engine, &data, Transform::from_xy(5000.0, 5000.0));
-  engine
-    .world_mut()
-    .entity_mut(body)
-    .insert(Renderable::skeleton());
-  play(&mut engine, body, 0, "ticks", true);
-
-  // Carried across its arm, still out of view: its keys fire and its arm
-  // trails
-  let mut sent = Vec::new();
-  for _ in 0..15 {
-    let mut placed = engine
-      .world_mut()
-      .get_mut::<Transform>(body)
-      .expect("placed");
-    placed.translation.y += 3.0;
-    engine.step().expect("a frame");
-    sent.extend(events.take(&engine));
-  }
-  let seen: Vec<&str> = sent.iter().map(|event| &*event.name).collect();
-  assert_eq!(seen, ["step", "hit", "step", "hit", "step", "hit"]);
-  let arm = heading(bone(&engine, body, "arm"));
-  assert!(arm.abs() > 1e-3, "the spring swings it: {arm}");
-}
-
 // Event sounds the engine plays
 
 const TONE: &[u8] = include_bytes!("fixtures/audio/tone.wav");

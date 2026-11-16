@@ -2207,3 +2207,108 @@ fn a_skeleton_is_walked_for_the_cameras_on_its_layers_texture_cameras_too() {
     "the main camera sees its layer"
   );
 }
+
+#[test]
+fn a_culled_skeleton_is_still_stepped() {
+  use crate::core::skeleton::{Attachment, Region, RegionAttachment, SpringSetup};
+  use std::sync::Arc;
+  let scene = Fixture { setup: |_| {} };
+  let Some(mut engine) = engine(EngineBuilder::new().resolution(120, 90).start_scene(scene)) else {
+    return;
+  };
+  // A square on the root, an arm 10 along it that a spring sways, and an
+  // animation that fires an event every tenth of a second, far out of
+  // every camera's view
+  let world = engine.world_mut();
+  let white = world
+    .resource_mut::<Assets<Image>>()
+    .add(Image::solid_rect(1, 1, 255, 255, 255, 255));
+  let tick = SkeletonClip {
+    name: Arc::from("tick"),
+    duration: 0.1,
+    timelines: vec![SkeletonTimeline::Event {
+      frames: vec![(0.0, 0, SkeletonEventValues::default())],
+    }],
+  };
+  let shows = SlotSetup {
+    attachment: Some(Arc::from("square")),
+    ..SlotSetup::default()
+  };
+  let data = SkeletonData::builder()
+    .bone("root", None, BoneSetup::default())
+    .bone(
+      "arm",
+      Some("root"),
+      BoneSetup {
+        x: 10.0,
+        length: 20.0,
+        ..BoneSetup::default()
+      },
+    )
+    .slot("square", "root", shows)
+    .region(Region {
+      name: Arc::from("white"),
+      image: white,
+      x: 0,
+      y: 0,
+      width: 1,
+      height: 1,
+    })
+    .attachment(
+      SkeletonData::DEFAULT_SKIN,
+      "square",
+      "square",
+      Attachment::Region(RegionAttachment::new(0, 16.0, 16.0)),
+    )
+    .spring(
+      "sway",
+      "arm",
+      SpringSetup {
+        rotate: 1.0,
+        ..SpringSetup::default()
+      },
+    )
+    .event(SkeletonEventData::new("tick"))
+    .animation(tick)
+    .build()
+    .expect("a valid skeleton");
+  let data = world.resource_mut::<Assets<SkeletonData>>().add(data);
+  let mut animation = SkeletonAnimation::new();
+  animation.set_animation(0, "tick", true);
+  let body = world
+    .spawn((
+      Transform::from_xy(5000.0, 5000.0),
+      Skeleton::new(data),
+      animation,
+      Renderable::skeleton(),
+    ))
+    .id();
+  engine.step_frames(2).unwrap();
+  let mut events = engine
+    .world()
+    .resource::<Messages<SkeletonEvent>>()
+    .get_cursor();
+
+  // Carried across its arm, still out of view: never walked, yet its keys
+  // fire and its arm trails
+  let (mut walked, mut fired) = (0, 0);
+  for _ in 0..15 {
+    let world = engine.world_mut();
+    world.get_mut::<Transform>(body).unwrap().translation.y += 3.0;
+    walked += bones_walked(&mut engine, 1);
+    let messages = engine.world().resource::<Messages<SkeletonEvent>>();
+    fired += events.read(messages).count();
+  }
+  assert_eq!(walked, 0, "never walked");
+  assert_eq!(fired, 2, "its keys at a tenth and two tenths of a second");
+  let arm = engine
+    .world()
+    .get::<Skeleton>(body)
+    .unwrap()
+    .bone_world("arm")
+    .expect("the arm");
+  assert!(
+    arm.matrix2.x_axis.y.abs() > 1e-3,
+    "the spring swings it: {arm:?}"
+  );
+}

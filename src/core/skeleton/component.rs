@@ -1038,6 +1038,7 @@ impl Skeleton {
       None => self.pose.reset(data),
     }
     self.finish(data, animation, stand, carried, Some(dt));
+    self.find_bounds(data);
   }
 
   /// A pose outside a step, for a skeleton that has none for `data` as it
@@ -1064,6 +1065,7 @@ impl Skeleton {
     }
     self.finish(data, animation, stand, None, None);
     self.settle();
+    self.find_bounds(data);
   }
 
   /// The end of a step and of a pose outside one: what the game set is put
@@ -1122,7 +1124,6 @@ impl Skeleton {
         }
       }
     }
-    self.find_bounds(data);
   }
 
   /// Writes the game's constraint overrides over the constraints' values
@@ -1493,6 +1494,37 @@ impl Skeleton {
       flip: Flip { x, y },
     };
     self.step(data, seen, animation, dt, stand, &mut Fired::default());
+  }
+
+  /// A pose outside a step by hand ([`Skeleton::appear`]), standing at
+  /// `root` and flipped as `flip` says
+  pub(crate) fn appear_by_hand(
+    &mut self,
+    (data, seen): (&SkeletonData, DataVersion),
+    animation: Option<&mut SkeletonAnimation>,
+    root: Affine2,
+    (x, y): (bool, bool),
+  ) {
+    let stand = Stand {
+      root,
+      flip: Flip { x, y },
+    };
+    self.appear(data, seen, animation, stand);
+  }
+
+  /// Its bones placed again by hand ([`Skeleton::place_again`]), standing
+  /// at `root` and flipped as `flip` says
+  pub(crate) fn place_again_by_hand(
+    &mut self,
+    data: &SkeletonData,
+    root: Affine2,
+    (x, y): (bool, bool),
+  ) {
+    let stand = Stand {
+      root,
+      flip: Flip { x, y },
+    };
+    self.place_again(data, stand);
   }
 }
 

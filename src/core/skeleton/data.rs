@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::animation::Animation;
-use super::bounds::BoneReach;
+use super::bounds::BoneReaches;
 use super::builder::SkeletonDataBuilder;
 use super::constrain::ConstraintBones;
 use super::constraint::{Constraint, ConstraintId};
@@ -207,7 +207,7 @@ pub(crate) struct SkeletonIndex {
   pub(super) constraint_bones: ConstraintBones,
   /// How far each bone's attachments reach, by bone index, for the box a
   /// pose keeps
-  pub(super) reaches: Vec<BoneReach>,
+  pub(super) reaches: BoneReaches,
 }
 
 /// What an animation state needs to know of a skeleton's animations when a
