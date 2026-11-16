@@ -1675,9 +1675,9 @@ fn crowd_rig(image: Handle<Image>, extra: Extra) -> SkeletonData {
     // A gust through the first spring, and the leg's first bone stretched
     // across and back, keyed by the same animations
     if extra == Extra::Authored && deform.is_some() {
-      let gust = |wind: f32| SpringValues {
+      let gust = |wind: f32| SpringConstraintValues {
         wind,
-        ..SpringValues::of(&hair())
+        ..SpringConstraintValues::of(&hair())
       };
       timelines.push(SkeletonTimeline::Spring {
         constraint: SkeletonConstraintId(0),
@@ -1837,11 +1837,11 @@ fn crowd_rig(image: Handle<Image>, extra: Extra) -> SkeletonData {
       bend: Some(IkBend::Positive),
       ..IkSetup::default()
     };
-    let tip = SpringSetup {
+    let tip = SpringConstraintSetup {
       rotate: 0.8,
       scale_x: 0.3,
       gravity: 40.0,
-      ..SpringSetup::default()
+      ..SpringConstraintSetup::default()
     };
     builder = builder
       .spring("hair_a", "hair_1", hair())
@@ -1879,12 +1879,12 @@ fn crowd_rig(image: Handle<Image>, extra: Extra) -> SkeletonData {
 }
 
 /// The authored rig's first spring: its bone's place and turn sway
-fn hair() -> SpringSetup {
-  SpringSetup {
+fn hair() -> SpringConstraintSetup {
+  SpringConstraintSetup {
     x: 0.5,
     y: 0.5,
     rotate: 1.0,
-    ..SpringSetup::default()
+    ..SpringConstraintSetup::default()
   }
 }
 
@@ -2185,10 +2185,10 @@ fn steer_authored(skeleton: &mut Skeleton, at: Vec2, index: usize, frame: usize)
   }
   if (frame + index).is_multiple_of(30) {
     let odd = (frame + index) / 30 % 2 == 1;
-    let sway = SpringOverride {
+    let sway = SpringConstraintOverride {
       gravity: Some(if odd { 120.0 } else { 20.0 }),
       mix: Some(if odd { 0.6 } else { 1.0 }),
-      ..SpringOverride::default()
+      ..SpringConstraintOverride::default()
     };
     skeleton.override_constraint("hair_b", SkeletonConstraintOverride::Spring(sway));
   }
@@ -2351,9 +2351,9 @@ fn gust_and_override_act(crowd: &mut HeadlessEngine) {
     skeleton.clear_constraint_override("hair_b");
     let gravity = [Some(20.0), None, Some(400.0)][index];
     if gravity.is_some() {
-      let sway = SpringOverride {
+      let sway = SpringConstraintOverride {
         gravity,
-        ..SpringOverride::default()
+        ..SpringConstraintOverride::default()
       };
       skeleton.override_constraint("hair_b", SkeletonConstraintOverride::Spring(sway));
     }

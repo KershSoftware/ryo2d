@@ -3110,9 +3110,9 @@ fn tailed() -> SkeletonData {
     length: 40.0,
     ..BoneSetup::default()
   };
-  let swing = SpringSetup {
+  let swing = SpringConstraintSetup {
     rotate: 1.0,
-    ..SpringSetup::default()
+    ..SpringConstraintSetup::default()
   };
   SkeletonData::builder()
     .bone("root", None, BoneSetup::default())

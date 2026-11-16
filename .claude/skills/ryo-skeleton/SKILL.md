@@ -753,7 +753,7 @@ fn hero(parts: Handle<Image>) -> Option<SkeletonData> {
 let handle: Handle<SkeletonData> = ctx.assets().add(data);
 ```
 
-Other builder calls: `skin(name)` declares a skin, `mix(from, to, seconds)` sets a pair's mix, and `ik(name, bones, target, IkSetup)`, `transform_constraint(name, bones, target, TransformConstraintSetup)` and `spring(name, bone, SpringSetup)` add constraints in the order they apply (Constraints, below). The timelines are `Rotate`, `Translate`, `Scale`, `Shear` (`Vec2` keys), `TranslateX`, `TranslateY`, `ScaleX`, `ScaleY`, `ShearX`, `ShearY` (`f32` keys), `Attachment { slot, frames: Vec<(f32, Option<Arc<str>>)> }`, `Color { slot, frames }`, `Deform { slot, attachment: Arc<str>, frames: Vec<(f32, Vec<f32>, SkeletonCurve)> }` (Meshes, above), `DrawOrder { frames: Vec<(f32, Option<Vec<SlotId>>)> }`, `Event`, and a constraint's `Ik { constraint, frames }`, `TransformMix { constraint, frames }` and `Spring { constraint, frames }` (Constraints, Keys). A region attachment placed by its joint pixels is `RegionAttachment { pivot: Some(..), along: Some(..), ..RegionAttachment::new(region, width, height) }` (Placing a part on its bone). Meshes are `SkeletonAttachment::Mesh` (Meshes, above). Built data is immutable: `bones()`, `slots()`, `regions()`, `skins()`, `skin(name)`, `animations()`, `animation(name)`, `events()`, `bone(name)`, `slot(name)`, `constraints()`, `constraint(name)`, `mix(from, to)` and `default_mix()` read it.
+Other builder calls: `skin(name)` declares a skin, `mix(from, to, seconds)` sets a pair's mix, and `ik(name, bones, target, IkSetup)`, `transform_constraint(name, bones, target, TransformConstraintSetup)` and `spring(name, bone, SpringConstraintSetup)` add constraints in the order they apply (Constraints, below). The timelines are `Rotate`, `Translate`, `Scale`, `Shear` (`Vec2` keys), `TranslateX`, `TranslateY`, `ScaleX`, `ScaleY`, `ShearX`, `ShearY` (`f32` keys), `Attachment { slot, frames: Vec<(f32, Option<Arc<str>>)> }`, `Color { slot, frames }`, `Deform { slot, attachment: Arc<str>, frames: Vec<(f32, Vec<f32>, SkeletonCurve)> }` (Meshes, above), `DrawOrder { frames: Vec<(f32, Option<Vec<SlotId>>)> }`, `Event`, and a constraint's `Ik { constraint, frames }`, `TransformMix { constraint, frames }` and `Spring { constraint, frames }` (Constraints, Keys). A region attachment placed by its joint pixels is `RegionAttachment { pivot: Some(..), along: Some(..), ..RegionAttachment::new(region, width, height) }` (Placing a part on its bone). Meshes are `SkeletonAttachment::Mesh` (Meshes, above). Built data is immutable: `bones()`, `slots()`, `regions()`, `skins()`, `skin(name)`, `animations()`, `animation(name)`, `events()`, `bone(name)`, `slot(name)`, `constraints()`, `constraint(name)`, `mix(from, to)` and `default_mix()` read it.
 
 ## Playing animations
 
@@ -1463,7 +1463,7 @@ if let Some(mut skeleton) = ctx.world.get_mut::<Skeleton>(hero) {
   for spring in ["cape_upper", "cape_lower"] {
     skeleton.override_constraint(
       spring,
-      SkeletonConstraintOverride::Spring(SpringOverride { wind: Some(wind), ..Default::default() }),
+      SkeletonConstraintOverride::Spring(SpringConstraintOverride { wind: Some(wind), ..Default::default() }),
     );
   }
 }
@@ -1471,14 +1471,14 @@ if let Some(mut skeleton) = ctx.world.get_mut::<Skeleton>(hero) {
 
 A key's or an override's `mix` is held within 0 to 1; `wind` and `gravity` have no range.
 
-In code, `spring(name, bone, SpringSetup)` adds one, after the spring of any bone above it (`SpringSetup`'s amounts default to 0, so set the ones wanted):
+In code, `spring(name, bone, SpringConstraintSetup)` adds one, after the spring of any bone above it (`SpringConstraintSetup`'s amounts default to 0, so set the ones wanted):
 
 ```rust
 fn hair(builder: SkeletonDataBuilder) -> SkeletonDataBuilder {
-  let swing = SpringSetup { rotate: 1.0, strength: 120.0, damping: 12.0, ..Default::default() };
+  let swing = SpringConstraintSetup { rotate: 1.0, strength: 120.0, damping: 12.0, ..Default::default() };
   builder
     .spring("hair_1", "hair_1", swing)
-    .spring("hair_2", "hair_2", SpringSetup { strength: 90.0, damping: 9.0, ..swing })
+    .spring("hair_2", "hair_2", SpringConstraintSetup { strength: 90.0, damping: 9.0, ..swing })
 }
 ```
 
@@ -1543,7 +1543,7 @@ if let Some(mut skeleton) = ctx.world.get_mut::<Skeleton>(hero) {
 
 `override_constraint(name, SkeletonConstraintOverride)` sets the constraint every step until `clear_constraint_override(name)` gives it back to the animation, from the next step:
 
-- `SkeletonConstraintOverride::Ik(IkConstraintOverride { mix, softness, bend, compress, stretch, max_stretch })`, `SkeletonConstraintOverride::Transform(TransformConstraintOverride { rotate, x, y, scale_x, scale_y, shear_y })` and `SkeletonConstraintOverride::Spring(SpringOverride { mix, wind, gravity })`, every field an `Option` (`Default`: nothing set). Each value given replaces what the animations key, or the setup's where none does, a switch included; each left `None` is the animated one. Its kind must be the constraint's.
+- `SkeletonConstraintOverride::Ik(IkConstraintOverride { mix, softness, bend, compress, stretch, max_stretch })`, `SkeletonConstraintOverride::Transform(TransformConstraintOverride { rotate, x, y, scale_x, scale_y, shear_y })` and `SkeletonConstraintOverride::Spring(SpringConstraintOverride { mix, wind, gravity })`, every field an `Option` (`Default`: nothing set). Each value given replaces what the animations key, or the setup's where none does, a switch included; each left `None` is the animated one. Its kind must be the constraint's.
 - It shows from the skeleton's next step, as a bone override does. Setting a constraint again replaces its override.
 - An IK or spring `mix` is taken within 0 to 1 and a `softness` below 0 as 0; a transform mix outside 0 to 1 is kept. A value that is not finite, or a `max_stretch` below 1, is ignored, with one warning per skeleton. **An override cannot take a stretch limit off**: its `max_stretch: None` is the setup's, so give `Some(f32::MAX)` for no limit. A switch the constraint cannot have, which would fail to load in a file (`stretch` on a chain, `compress` on two bones or a chain, a `bend` of `Pose` on two bones or any `bend` but the default on one, a `softness` on other than two bones), is ignored without a warning.
 - A name the data lacks warns once per skeleton per name (`skeleton constraint "leg" is not in the skeleton's data; its override is ignored`), and so does a constraint of another kind (`skeleton constraint "leg" is not of its override's kind (IK, transform or spring); the override is ignored`); either does nothing. Before the data has loaded the override is kept by name, and it is kept by name through a reload.
@@ -1576,9 +1576,9 @@ An animation can key a constraint's values, and they blend through layers and cr
 - **An IK or spring mix is held within 0 to 1, and an IK softness at 0 or more, once every track has applied**, not after each, so an additive layer or a bezier's overshoot cannot carry them out of range. A transform constraint's mixes are not clamped.
 - The game's `override_constraint` is written over whatever the keys leave.
 
-In code, `SkeletonTimeline::Ik { constraint: SkeletonConstraintId, frames: Vec<(f32, IkValues, SkeletonCurve)> }`, `SkeletonTimeline::TransformMix { constraint, frames: Vec<(f32, TransformConstraintMix, SkeletonCurve)> }` and `SkeletonTimeline::Spring { constraint, frames: Vec<(f32, SpringValues, SkeletonCurve)> }`. A key gives every value: `IkValues { mix, softness, bend, compress, stretch, max_stretch }` and `SpringValues { mix, wind, gravity }`. `IkValues::of(&setup, bones)` is an IK setup's values for a constraint of that many bones: a `bend` the setup leaves out comes out as the build makes it, `Pose` for a chain and `Positive` for one bone or two, so a key built from it bends as the setup does (give a chain's key `bend: IkBend::Positive` and it is kept to that side). `SpringValues::of(&setup)` is a spring's. A constraint's id is its place in the order added, from 0:
+In code, `SkeletonTimeline::Ik { constraint: SkeletonConstraintId, frames: Vec<(f32, IkValues, SkeletonCurve)> }`, `SkeletonTimeline::TransformMix { constraint, frames: Vec<(f32, TransformConstraintMix, SkeletonCurve)> }` and `SkeletonTimeline::Spring { constraint, frames: Vec<(f32, SpringConstraintValues, SkeletonCurve)> }`. A key gives every value: `IkValues { mix, softness, bend, compress, stretch, max_stretch }` and `SpringConstraintValues { mix, wind, gravity }`. `IkValues::of(&setup, bones)` is an IK setup's values for a constraint of that many bones: a `bend` the setup leaves out comes out as the build makes it, `Pose` for a chain and `Positive` for one bone or two, so a key built from it bends as the setup does (give a chain's key `bend: IkBend::Positive` and it is kept to that side). `SpringConstraintValues::of(&setup)` is a spring's. A constraint's id is its place in the order added, from 0:
 
-<!-- given: setup: IkSetup, hair: SpringSetup -->
+<!-- given: setup: IkSetup, hair: SpringConstraintSetup -->
 ```rust
 // The leg (constraint 0, two bones) lets go
 let lift = SkeletonTimeline::Ik {
@@ -1592,9 +1592,9 @@ let lift = SkeletonTimeline::Ik {
 let breeze = SkeletonTimeline::Spring {
   constraint: SkeletonConstraintId(1),
   frames: vec![
-    (0.0, SpringValues::of(&hair), SkeletonCurve::Linear),
-    (0.5, SpringValues { wind: 300.0, ..SpringValues::of(&hair) }, SkeletonCurve::Linear),
-    (1.0, SpringValues::of(&hair), SkeletonCurve::Linear),
+    (0.0, SpringConstraintValues::of(&hair), SkeletonCurve::Linear),
+    (0.5, SpringConstraintValues { wind: 300.0, ..SpringConstraintValues::of(&hair) }, SkeletonCurve::Linear),
+    (1.0, SpringConstraintValues::of(&hair), SkeletonCurve::Linear),
   ],
 };
 ```

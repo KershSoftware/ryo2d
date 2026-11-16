@@ -168,7 +168,7 @@ impl MeshesPage {
     for spring in SPRINGS {
       skeleton.override_constraint(
         spring,
-        SkeletonConstraintOverride::Spring(SpringOverride {
+        SkeletonConstraintOverride::Spring(SpringConstraintOverride {
           mix: Some(wanted.0),
           wind: Some(wanted.1),
           ..Default::default()

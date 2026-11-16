@@ -321,9 +321,9 @@ fn a_tail_on_a_spring_swings_behind_a_moving_body_and_settles() {
   tail.bone.length = 30.0;
   let mut tip = part("tip", GREEN, (4, 4)).under("tail", 30.0, 0.0);
   tip.bone.inherit = BoneInherit::OnlyTranslation;
-  let swing = SpringSetup {
+  let swing = SpringConstraintSetup {
     rotate: 1.0,
-    ..SpringSetup::default()
+    ..SpringConstraintSetup::default()
   };
   let data = rig_with(world, &[tail, tip], Images::Each, |builder| {
     builder.spring("sway", "tail", swing)

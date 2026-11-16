@@ -266,9 +266,9 @@ fn tail_rig(world: &mut World, sprung: bool) -> Result<SkeletonData, SkeletonErr
   let builder = square(builder, world, "body", RED, 6);
   let mut builder = square(builder, world, "tip", GREEN, 4);
   if sprung {
-    let swing = SpringSetup {
+    let swing = SpringConstraintSetup {
       rotate: 1.0,
-      ..SpringSetup::default()
+      ..SpringConstraintSetup::default()
     };
     builder = builder.spring("sway", "tail", swing);
   }

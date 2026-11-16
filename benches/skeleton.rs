@@ -422,11 +422,11 @@ fn rig(images: &[Handle<Image>], mesh: bool, constraints: bool, springs: bool) -
     builder = builder.transform_constraint("copy", &["b26"], "b28", turn);
   }
   if springs {
-    let sway = SpringSetup {
+    let sway = SpringConstraintSetup {
       x: 0.5,
       y: 0.5,
       rotate: 1.0,
-      ..SpringSetup::default()
+      ..SpringConstraintSetup::default()
     };
     for (name, bone) in SPRUNG {
       builder = builder.spring(name, bone, sway);
