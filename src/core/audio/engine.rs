@@ -845,6 +845,9 @@ struct LiveVoice {
   gain_db: f32,
   /// Its sound's pitch in semitones, the same way
   pitch: f32,
+  /// Its play's balance (-1 left to 1 right), heard while it has no place
+  /// it is heard from by spatial settings, which pan it instead
+  balance: f32,
   /// The game's change to its gain in dB (`Voice::set_volume`), added to
   /// its sound's level
   game_db: f32,
@@ -963,9 +966,13 @@ impl LiveVoice {
     )
   }
 
-  /// Its pan, from its place (0 without one)
+  /// Its pan: from its place, if it is heard from one by spatial
+  /// settings, else its play's balance
   fn pan(&self) -> f32 {
-    self.spatial.as_ref().map_or(0.0, |spatial| spatial.pan)
+    self
+      .spatial
+      .as_ref()
+      .map_or(self.balance, |spatial| spatial.pan)
   }
 
   /// Its distance low-pass, if it has one
@@ -1184,6 +1191,8 @@ struct Request<'a> {
   position: Option<Vec2>,
   /// How it is heard from `position`
   spatial: Option<Spatial>,
+  /// Its balance while no spatial settings pan it (-1 to 1)
+  pan: f32,
   /// The entity it is played from
   emitter: Option<Entity>,
   /// The engine's, not the playing scene's
@@ -1226,6 +1235,7 @@ impl<'a> Request<'a> {
       fade_out: Duration::ZERO,
       position: options.position,
       spatial: None,
+      pan: balance(options.pan),
       emitter: None,
       persist: options.persist,
       ui: false,
@@ -1270,6 +1280,7 @@ impl<'a> Request<'a> {
       fade_out: sound.fade_out,
       position: options.position,
       spatial: sound.spatial,
+      pan: balance(options.pan),
       emitter: None,
       persist: options.persist,
       ui: false,
@@ -4199,6 +4210,7 @@ impl EngineState {
       fade_out: music.crossfade,
       position: None,
       spatial: None,
+      pan: 0.0,
       emitter: None,
       persist: true,
       ui: false,
@@ -4362,7 +4374,7 @@ impl EngineState {
       source: request.source,
       bus,
       gain_db: heard_db(played_db, heard.map_or(0.0, |(_, hearing)| hearing.gain_db)),
-      pan: heard.map_or(0.0, |(_, hearing)| hearing.pan),
+      pan: heard.map_or(request.pan, |(_, hearing)| hearing.pan),
       rate: rate_of(played_pitch) * scale,
     };
     let Some((samples, version)) = request.source.samples(world) else {
@@ -4583,6 +4595,7 @@ impl EngineState {
       bus,
       gain_db: level_db,
       pitch,
+      balance: request.pan,
       game_db: request.game_db,
       game_pitch: request.game_pitch,
       scale,
@@ -6394,6 +6407,16 @@ fn clamp_pitch(semitones: f32) -> f32 {
     0.0
   } else {
     semitones.clamp(-PITCH_RANGE, PITCH_RANGE)
+  }
+}
+
+/// A play's balance as a voice keeps it: -1 (left) to 1 (right), NaN and
+/// infinities none
+fn balance(pan: f32) -> f32 {
+  if pan.is_finite() {
+    pan.clamp(-1.0, 1.0)
+  } else {
+    0.0
   }
 }
 

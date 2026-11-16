@@ -52,6 +52,13 @@ pub struct PlayOptions {
   /// Added to the sound's pitch, in semitones (12 is an octave up, and
   /// twice as fast)
   pub pitch: f32,
+  /// Its balance, -1 (left) to 1 (right), 0 in the middle; values beyond
+  /// are taken as the side, and NaN and infinities as the middle. It pans
+  /// a play with no `position`, and one at a place whose sound has no
+  /// spatial settings (heard as if at the listener). A play heard from its
+  /// place by its sound's spatial settings takes its pan from there, and
+  /// this is ignored
+  pub pan: f32,
 }
 
 /// The audio engine seen from a scene: plays sounds and reports on the

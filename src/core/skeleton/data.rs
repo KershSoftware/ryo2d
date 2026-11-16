@@ -140,8 +140,9 @@ pub struct EventData {
   pub int: i32,
   pub float: f32,
   pub string: Arc<str>,
-  /// A sound for the game to play when the event fires; the engine does not
-  /// play it itself
+  /// A sound to play when the event fires: the engine plays it for a
+  /// skeleton with a [`SkeletonSounds`](super::SkeletonSounds), and a game
+  /// may play it itself from the `SkeletonEvent`
   pub audio: Option<EventAudio>,
 }
 

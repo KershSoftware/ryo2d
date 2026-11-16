@@ -30,7 +30,9 @@ pub struct SkeletonEvent {
   pub float: f32,
   pub string: Arc<str>,
   /// The sound the event names, with the key's volume and balance where it
-  /// gives them. The engine does not play it: the game does, if it wants it
+  /// gives them. The engine plays it for a skeleton with a
+  /// [`SkeletonSounds`](super::SkeletonSounds); otherwise the game does, if
+  /// it wants it
   pub audio: Option<EventAudio>,
   /// The key's time in its animation, in seconds
   pub time: f32,

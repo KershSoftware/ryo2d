@@ -576,7 +576,13 @@ fn register_engine_systems(schedules: &mut EngineSchedules) {
   );
   schedules.add_systems(
     Phase::FixedUpdate,
-    crate::core::skeleton::update_skeletons.in_set(FixedSet::Skeletons),
+    // A skeleton's event sounds play from the events its step just sent
+    (
+      crate::core::skeleton::update_skeletons,
+      crate::core::skeleton::play_skeleton_sounds,
+    )
+      .chain()
+      .in_set(FixedSet::Skeletons),
   );
   schedules.add_systems(
     Phase::FixedUpdate,

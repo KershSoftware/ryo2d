@@ -467,8 +467,8 @@ mod tests {
     AssetServer, Assets, AssetsView, AudioClipSettings, ClipMode, MemorySource,
   };
   use crate::core::audio::{
-    AudioClip, AudioEngine, AudioLogEntry, AudioLogKind, AudioView, LimitRule, Mixer, SoundClip,
-    Voice, VoiceLimit,
+    AudioClip, AudioEngine, AudioLogEntry, AudioLogKind, AudioView, LimitRule, Mixer, PlayOptions,
+    SoundClip, Voice, VoiceLimit,
   };
   use crate::core::ecs::{Entity, Pool, PoolConfig, PoolExhaustedPolicy, World};
   use crate::core::graphics::{Camera2d, MainCamera};
@@ -1387,6 +1387,82 @@ mod tests {
     assert_eq!(warnings(&captured, named), 1);
   }
 
+  /// The pan a play of `sound` started at, played with `options`
+  fn started_pan(world: &mut World, sound: &Handle<Sound>, options: PlayOptions) -> f32 {
+    let voice = AudioView::new(world).play_with(sound, options);
+    assert!(voice.is_playing(), "{voice:?}");
+    let pan = entries(world, voice.id(), AudioLogKind::Start)[0].pan;
+    audio_step(world, FRAME);
+    pan
+  }
+
+  /// A play with no place starts at its balance, values beyond a side
+  /// taken as the side and NaN as the middle, and keeps it as it plays
+  #[test]
+  fn a_flat_play_starts_at_its_pan() {
+    let mut world = audio_world();
+    world.spawn(AudioListener);
+    let clip = clip(&mut world, 2.0);
+    let flat = world.resource_mut::<Assets<Sound>>().add(Sound {
+      clips: vec![SoundClip::new(clip)],
+      ..Default::default()
+    });
+    for (pan, heard) in [
+      (0.0, 0.0),
+      (0.5, 0.5),
+      (-0.25, -0.25),
+      (3.0, 1.0),
+      (-3.0, -1.0),
+      (f32::NAN, 0.0),
+      (f32::INFINITY, 0.0),
+    ] {
+      let options = PlayOptions {
+        pan,
+        ..Default::default()
+      };
+      assert_eq!(started_pan(&mut world, &flat, options), heard, "{pan}");
+    }
+    // A spatial sound played with no place is flat too
+    let placed = placed(&mut world, settings(Falloff::Linear), false);
+    let options = PlayOptions {
+      pan: -0.5,
+      ..Default::default()
+    };
+    assert_eq!(started_pan(&mut world, &placed, options), -0.5);
+    // Nothing moves it afterwards: no pan change is sent
+    audio_step(&mut world, FRAME);
+    assert!(
+      log(&world)
+        .iter()
+        .all(|entry| entry.kind != AudioLogKind::Pan),
+      "{:#?}",
+      log(&world)
+    );
+  }
+
+  /// A play at a place whose sound has no spatial settings is heard as if
+  /// at the listener, at its balance; one heard from its place by spatial
+  /// settings takes its pan from there, its balance ignored
+  #[test]
+  fn a_spatial_play_takes_its_pan_from_its_place_and_a_flat_one_at_a_place_its_own() {
+    let mut world = audio_world();
+    world.spawn(AudioListener);
+    let clip = clip(&mut world, 2.0);
+    let flat = world.resource_mut::<Assets<Sound>>().add(Sound {
+      clips: vec![SoundClip::new(clip)],
+      ..Default::default()
+    });
+    let at_a_place = PlayOptions {
+      position: Some(Vec2::new(100.0, 0.0)),
+      pan: -0.75,
+      ..Default::default()
+    };
+    assert_eq!(started_pan(&mut world, &flat, at_a_place), -0.75);
+    // Half a pan width to the right
+    let placed = placed(&mut world, settings(Falloff::Linear), false);
+    assert_eq!(started_pan(&mut world, &placed, at_a_place), 0.5);
+  }
+
   /// A spatial voice holds with its bus while the game is paused, and its
   /// place still reaches it
   #[test]
@@ -1622,6 +1698,57 @@ mod tests {
       curve: Falloff::Linear,
       pan_width: 150.0,
       low_pass_at_max: None,
+    }
+  }
+
+  /// A play's balance is what kira renders, decoded and streamed, with no
+  /// place and at a place whose sound has no spatial settings: by kira's
+  /// constant-power law, `(R² - L²) / (R² + L²)` is the pan
+  #[test]
+  fn a_flat_play_renders_at_its_pan() {
+    for mode in [Mode::Decoded, Mode::Streamed] {
+      for (position, pan) in [(None, 0.5), (Some(Vec2::new(300.0, 0.0)), -0.5)] {
+        let files = MemorySource::new();
+        files.insert(
+          "clip.wav",
+          crate::core::testing::wav_samples(RATE, &steady()),
+        );
+        let (mut world, meter) = crate::core::testing::metered_audio_world_over(files);
+        world.spawn((AudioListener, Transform::IDENTITY));
+        let settings = AudioClipSettings {
+          mode: match mode {
+            Mode::Decoded => ClipMode::Decode,
+            Mode::Streamed => ClipMode::Stream,
+          },
+        };
+        let clip =
+          match AssetsView::new(&mut world).load_now_with::<AudioClip, _>("clip.wav", settings) {
+            Ok(clip) => clip,
+            Err(error) => panic!("{}", error.report()),
+          };
+        let sound = world.resource_mut::<Assets<Sound>>().add(Sound {
+          clips: vec![SoundClip::new(clip)],
+          looping: true,
+          ..Default::default()
+        });
+        let options = PlayOptions {
+          position,
+          pan,
+          ..Default::default()
+        };
+        AudioView::new(&mut world).play_with(&sound, options);
+        for _ in 0..10 {
+          audio_step(&mut world, FRAME);
+          if mode == Mode::Streamed {
+            std::thread::sleep(Duration::from_millis(2));
+          }
+        }
+        let heard = pan_of(&meter.rendered(400));
+        assert!(
+          (heard - pan).abs() < 0.01,
+          "{mode:?} at {position:?}: {heard}, not {pan}"
+        );
+      }
     }
   }
 

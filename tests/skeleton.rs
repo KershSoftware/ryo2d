@@ -9,6 +9,7 @@ use std::f32::consts::FRAC_PI_2;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+use ryo2d::core::audio::{AudioLogEntry, AudioLogKind};
 use ryo2d::prelude::*;
 use ryo2d::testing::{HeadlessEngine, capture_log, particle_positions, skeleton_mesh};
 
@@ -3230,4 +3231,485 @@ fn a_culled_skeleton_is_still_stepped() {
   assert_eq!(seen, ["step", "hit", "step", "hit", "step", "hit"]);
   let arm = heading(bone(&engine, body, "arm"));
   assert!(arm.abs() > 1e-3, "the spring swings it: {arm}");
+}
+
+// Event sounds the engine plays
+
+const TONE: &[u8] = include_bytes!("fixtures/audio/tone.wav");
+const LONG_TONE: &[u8] = include_bytes!("fixtures/audio/tone-3s.ogg");
+/// A sound definition over the tone, full volume within 100 of the
+/// listener and fully to one side 200 to it
+const NEAR: &str = r#"(clips: [(path: "audio/step.wav")], spatial: (min_distance: 100.0, max_distance: 500.0, pan_width: 200.0))"#;
+/// What the stepper's event plays at: its volume, as the audio system's
+/// dB, and its balance
+const HALF_DB: f32 = -6.0206;
+const BALANCE: f32 = -0.25;
+
+/// The sounds the tests play: the tone as a clip, a spatial definition of
+/// it, a quiet copy no skeleton with sounds names, and a 3 s tone
+fn sound_files() -> MemorySource {
+  let files = MemorySource::new();
+  files.insert("audio/step.wav", TONE);
+  files.insert("audio/quiet.wav", TONE);
+  files.insert("audio/near.sound.ron", NEAR);
+  files.insert("audio/long.ogg", LONG_TONE);
+  files
+}
+
+/// A root and a sole 60 along it, with the event "step" naming `path` at
+/// volume 0.5 and balance [`BALANCE`]: "stride" keys it once at 0.1 s,
+/// "stride right" once at full volume and balance 0.75, and "walk" every
+/// half second
+fn stepper(path: &str) -> SkeletonData {
+  let step = SkeletonEventData {
+    audio: Some(SkeletonEventAudio {
+      path: Arc::from(path),
+      volume: 0.5,
+      balance: BALANCE,
+    }),
+    ..SkeletonEventData::new("step")
+  };
+  let once = |values: SkeletonEventValues| SkeletonTimeline::Event {
+    frames: vec![(0.1, 0, values)],
+  };
+  let right = SkeletonEventValues {
+    volume: Some(1.0),
+    balance: Some(0.75),
+    ..SkeletonEventValues::default()
+  };
+  SkeletonData::builder()
+    .bone("root", None, BoneSetup::default())
+    .bone(
+      "sole",
+      Some("root"),
+      BoneSetup {
+        x: 60.0,
+        ..BoneSetup::default()
+      },
+    )
+    .event(step)
+    .animation(clip(
+      "stride",
+      1.0,
+      vec![once(SkeletonEventValues::default())],
+    ))
+    .animation(clip("stride right", 1.0, vec![once(right)]))
+    .animation(clip(
+      "walk",
+      0.5,
+      vec![SkeletonTimeline::Event {
+        frames: vec![(0.0, 0, SkeletonEventValues::default())],
+      }],
+    ))
+    .build()
+    .expect("a valid skeleton")
+}
+
+/// The tests' engine over `files`, heard by a listener at the origin
+fn sounding(builder: EngineBuilder, files: impl AssetSource) -> Option<HeadlessEngine> {
+  let mut engine = start(builder.asset_source(files))?;
+  engine
+    .world_mut()
+    .spawn((AudioListener, Transform::IDENTITY));
+  Some(engine)
+}
+
+/// The starts in the audio log of the sound or clip at `path`
+fn starts(engine: &HeadlessEngine, path: &str) -> Vec<AudioLogEntry> {
+  engine
+    .audio_log()
+    .into_iter()
+    .filter(|entry| {
+      entry.kind == AudioLogKind::Start && (entry.sound == path || entry.source == path)
+    })
+    .collect()
+}
+
+/// A skeleton of `data` at `at` with `sounds`
+fn spawn_sounding(
+  engine: &mut HeadlessEngine,
+  data: &Handle<SkeletonData>,
+  at: Vec2,
+  sounds: SkeletonSounds,
+) -> Entity {
+  let body = spawn(engine, data, Transform::from_translation(at));
+  engine.world_mut().entity_mut(body).insert(sounds);
+  body
+}
+
+fn preload(engine: &mut HeadlessEngine, path: &str) -> Handle<AudioClip> {
+  match engine.assets().load_now::<AudioClip>(path) {
+    Ok(clip) => clip,
+    Err(error) => panic!("{path}: {}", error.report()),
+  }
+}
+
+/// The gain and pan of the one start of `path` that playing `animation`
+/// on a fresh skeleton with `sounds` at `at` makes over half a second
+fn heard(
+  engine: &mut HeadlessEngine,
+  data: &Handle<SkeletonData>,
+  at: Vec2,
+  sounds: SkeletonSounds,
+  animation: &str,
+  path: &str,
+) -> (f32, f32) {
+  let before = starts(engine, path).len();
+  let body = spawn_sounding(engine, data, at, sounds.clone());
+  play(engine, body, 0, animation, false);
+  engine.step_frames(30).expect("frames");
+  engine.world_mut().despawn(body);
+  let started = starts(engine, path);
+  assert_eq!(started.len(), before + 1, "{sounds:?}: {started:#?}");
+  let start = &started[before];
+  (start.gain_db, start.pan)
+}
+
+fn close_pair(actual: (f32, f32), expected: (f32, f32)) {
+  assert!(
+    (actual.0 - expected.0).abs() < 1e-3 && (actual.1 - expected.1).abs() < 1e-3,
+    "{actual:?}, not {expected:?}"
+  );
+}
+
+#[test]
+fn a_footstep_event_plays_its_sound_once() {
+  let Some(mut engine) = sounding(builder(), sound_files()) else {
+    return;
+  };
+  let _tone = preload(&mut engine, "audio/step.wav");
+  let data = engine.assets().add(stepper("audio/step.wav"));
+  let mut events = Inbox::<SkeletonEvent>::new(&engine);
+  let body = spawn_sounding(
+    &mut engine,
+    &data,
+    Vec2::new(20.0, 0.0),
+    SkeletonSounds::new(),
+  );
+  play(&mut engine, body, 0, "stride", false);
+  let sent = events.steps(&mut engine, 30);
+  // The event is still sent, and its sound played once: a clip with no
+  // spatial settings is heard as at the listener, panned by the balance
+  assert_eq!(sent.len(), 1, "{sent:?}");
+  let started = starts(&engine, "audio/step.wav");
+  assert_eq!(started.len(), 1, "{started:#?}");
+  assert_eq!(started[0].bus, "sfx");
+  close_pair((started[0].gain_db, started[0].pan), (HALF_DB, BALANCE));
+  // A skeleton without sounds plays none
+  let quiet = spawn(&mut engine, &data, Transform::IDENTITY);
+  play(&mut engine, quiet, 0, "stride", false);
+  assert_eq!(events.steps(&mut engine, 30).len(), 1);
+  assert_eq!(starts(&engine, "audio/step.wav").len(), 1);
+}
+
+#[test]
+fn balance_pans_a_flat_play() {
+  let Some(mut engine) = sounding(builder(), sound_files()) else {
+    return;
+  };
+  let _tone = preload(&mut engine, "audio/step.wav");
+  let near = "audio/near.sound.ron";
+  let _near = match engine.assets().load_now::<Sound>(near) {
+    Ok(sound) => sound,
+    Err(error) => panic!("{}", error.report()),
+  };
+  let spatial = engine.assets().add(stepper(near));
+  let at = Vec2::new(20.0, 0.0);
+  // A spatial sound played flat takes the balance, the key's own where it
+  // gives one
+  for (animation, expected) in [
+    ("stride", (HALF_DB, BALANCE)),
+    ("stride right", (0.0, 0.75)),
+  ] {
+    let flat = heard(
+      &mut engine,
+      &spatial,
+      at,
+      SkeletonSounds::flat(),
+      animation,
+      near,
+    );
+    close_pair(flat, expected);
+  }
+  // As does a clip with no spatial settings played at a place
+  let clip = engine.assets().add(stepper("audio/step.wav"));
+  let placed = heard(
+    &mut engine,
+    &clip,
+    at,
+    SkeletonSounds::new(),
+    "stride right",
+    "audio/step.wav",
+  );
+  close_pair(placed, (0.0, 0.75));
+}
+
+#[test]
+fn skeleton_sounds_play_at_the_skeleton_flat_and_at_a_bone() {
+  let Some(mut engine) = sounding(builder(), sound_files()) else {
+    return;
+  };
+  let _tone = preload(&mut engine, "audio/step.wav");
+  let near = "audio/near.sound.ron";
+  let _near = match engine.assets().load_now::<Sound>(near) {
+    Ok(sound) => sound,
+    Err(error) => panic!("{}", error.report()),
+  };
+  let data = engine.assets().add(stepper(near));
+  let at = Vec2::new(20.0, 0.0);
+  // Within the near distance, so at full volume; panned by the place, 200
+  // to a side: the skeleton 20 to the right, its sole 80; the balance is
+  // ignored. A bone it lacks plays at the skeleton
+  let cases = [
+    (SkeletonSounds::new(), (HALF_DB, 0.1)),
+    (SkeletonSounds::default(), (HALF_DB, 0.1)),
+    (SkeletonSounds::flat(), (HALF_DB, BALANCE)),
+    (SkeletonSounds::at_bone("sole"), (HALF_DB, 0.4)),
+    (SkeletonSounds::at_bone("missing"), (HALF_DB, 0.1)),
+  ];
+  for (sounds, expected) in cases {
+    let played = heard(&mut engine, &data, at, sounds.clone(), "stride", near);
+    assert!(
+      (played.0 - expected.0).abs() < 1e-3 && (played.1 - expected.1).abs() < 1e-3,
+      "{sounds:?}: {played:?}, not {expected:?}"
+    );
+  }
+  // Turned a quarter, the sole is below the skeleton, straight ahead of
+  // the listener's right
+  let turned = Transform {
+    translation: at,
+    rotation: FRAC_PI_2,
+    ..Transform::default()
+  };
+  let before = starts(&engine, near).len();
+  let body = engine
+    .world_mut()
+    .spawn((
+      turned,
+      Skeleton::new(data.clone()),
+      SkeletonAnimation::new(),
+      SkeletonSounds::at_bone("sole"),
+    ))
+    .id();
+  play(&mut engine, body, 0, "stride", false);
+  engine.step_frames(30).expect("frames");
+  let started = starts(&engine, near);
+  assert_eq!(started.len(), before + 1);
+  close(started[before].pan, 0.1);
+}
+
+/// What the scenes of the sound test tell the test, and what it asks
+#[derive(Default)]
+struct Cues {
+  push: bool,
+  pop: bool,
+}
+
+/// A level whose skeleton walks, its footsteps flat
+struct WalkingLevel {
+  cues: Arc<Mutex<Cues>>,
+}
+
+impl Scene for WalkingLevel {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    let data = ctx.assets().add(stepper("audio/step.wav"));
+    let mut animation = SkeletonAnimation::new();
+    animation.set_animation(0, "walk", true);
+    ctx.world.spawn((
+      Transform::IDENTITY,
+      Skeleton::new(data),
+      animation,
+      SkeletonSounds::flat(),
+    ));
+  }
+
+  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    if std::mem::take(&mut self.cues.lock().expect("the cues").push) {
+      return SceneAction::Push(Box::new(LoudMenu {
+        cues: self.cues.clone(),
+      }));
+    }
+    SceneAction::Continue
+  }
+}
+
+/// A menu over the level, which stops it updating, whose own skeleton
+/// plays the 3 s tone once
+struct LoudMenu {
+  cues: Arc<Mutex<Cues>>,
+}
+
+impl Scene for LoudMenu {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    let data = ctx.assets().add(stepper("audio/long.ogg"));
+    let mut animation = SkeletonAnimation::new();
+    animation.set_animation(0, "stride", false);
+    ctx.world.spawn((
+      Transform::IDENTITY,
+      Skeleton::new(data),
+      animation,
+      SkeletonSounds::flat(),
+    ));
+  }
+
+  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    if std::mem::take(&mut self.cues.lock().expect("the cues").pop) {
+      SceneAction::Pop
+    } else {
+      SceneAction::Continue
+    }
+  }
+}
+
+/// A skeleton file whose event "step" names `path` at volume 0.5, keyed
+/// every half second by "walk"
+fn sounding_file(path: &str) -> String {
+  format!(
+    r#"(
+      bones: [(name: "root")],
+      events: {{ "step": (audio: Some((path: "{path}", volume: 0.5))) }},
+      animations: {{ "walk": (duration: 0.5, events: [(0.0, "step")]) }},
+    )"#
+  )
+}
+
+#[test]
+fn skeleton_sounds_follow_their_scene_and_a_reload() {
+  let cues = Arc::new(Mutex::new(Cues::default()));
+  let level = WalkingLevel { cues: cues.clone() };
+  let Some(mut engine) = sounding(builder_in(level), sound_files()) else {
+    return;
+  };
+  let _tone = preload(&mut engine, "audio/step.wav");
+  let _long = preload(&mut engine, "audio/long.ogg");
+  engine.step_frames(40).expect("frames");
+  assert!(!starts(&engine, "audio/step.wav").is_empty());
+
+  // The menu goes over the level, which is held: its skeleton fires no
+  // events, so plays nothing
+  cues.lock().expect("the cues").push = true;
+  engine.step_frames(2).expect("frames");
+  let walked = starts(&engine, "audio/step.wav").len();
+  engine.step_frames(40).expect("frames");
+  assert_eq!(starts(&engine, "audio/step.wav").len(), walked);
+  // The menu's own skeleton played its long tone, a voice of the menu's:
+  // as the menu exits with more than 2 s of it left, it stops with its
+  // fade
+  let long = starts(&engine, "audio/long.ogg");
+  assert_eq!(long.len(), 1, "{long:#?}");
+  let voice = long[0].voice;
+  cues.lock().expect("the cues").pop = true;
+  engine.step_frames(10).expect("frames");
+  let stopped = engine
+    .audio_log()
+    .iter()
+    .any(|entry| entry.kind == AudioLogKind::Stop && entry.voice == voice);
+  assert!(stopped, "{:#?}", engine.audio_log());
+  // The level walks on, and its footsteps play again
+  engine.step_frames(40).expect("frames");
+  assert!(starts(&engine, "audio/step.wav").len() > walked);
+
+  // A reload that names another sound plays it in place of the first,
+  // once it has loaded
+  let files = sound_files();
+  files.insert(PATH, sounding_file("audio/step.wav"));
+  let Some(mut engine) = sounding(builder(), files.clone()) else {
+    return;
+  };
+  let data = engine.assets().load::<SkeletonData>(PATH);
+  frames_until(&mut engine, |engine| version(engine, &data).is_some());
+  let body = spawn_sounding(&mut engine, &data, Vec2::ZERO, SkeletonSounds::flat());
+  play(&mut engine, body, 0, "walk", true);
+  frames_until(&mut engine, |engine| {
+    starts(engine, "audio/step.wav").len() >= 2
+  });
+  save(&mut engine, &files, &data, sounding_file("audio/quiet.wav"));
+  let first = starts(&engine, "audio/step.wav").len();
+  frames_until(&mut engine, |engine| {
+    !starts(engine, "audio/quiet.wav").is_empty()
+  });
+  engine.step_frames(40).expect("frames");
+  assert_eq!(starts(&engine, "audio/step.wav").len(), first);
+  assert!(starts(&engine, "audio/quiet.wav").len() >= 2);
+}
+
+/// A source over `files` that counts the reads of each path
+#[derive(Clone, Default)]
+struct Counted {
+  files: MemorySource,
+  reads: Arc<Mutex<Vec<String>>>,
+}
+
+impl Counted {
+  fn reads(&self, path: &str) -> usize {
+    let reads = self.reads.lock().expect("the reads");
+    reads.iter().filter(|read| *read == path).count()
+  }
+}
+
+impl AssetSource for Counted {
+  fn read(&self, path: &AssetPath) -> Result<Vec<u8>, AssetError> {
+    self
+      .reads
+      .lock()
+      .expect("the reads")
+      .push(path.as_str().to_string());
+    self.files.read(path)
+  }
+
+  fn exists(&self, path: &AssetPath) -> bool {
+    self.files.exists(path)
+  }
+
+  fn watch(&self, changes: AssetChanges) -> Result<(), AssetError> {
+    self.files.watch(changes)
+  }
+}
+
+#[test]
+fn the_sounds_are_loaded_once() {
+  let source = Counted {
+    files: sound_files(),
+    ..Counted::default()
+  };
+  let Some(mut engine) = sounding(builder(), source.clone()) else {
+    return;
+  };
+  let sounds_before = engine.world().resource::<Assets<Sound>>().len();
+  let near = "audio/near.sound.ron";
+  let data = engine.assets().add(stepper(near));
+  let unheard = engine.assets().add(stepper("audio/quiet.wav"));
+  // Two skeletons with sounds share their data; one without names another
+  let bodies = [
+    spawn_sounding(&mut engine, &data, Vec2::ZERO, SkeletonSounds::new()),
+    spawn_sounding(&mut engine, &data, Vec2::ZERO, SkeletonSounds::flat()),
+    spawn(&mut engine, &unheard, Transform::IDENTITY),
+  ];
+  for body in bodies {
+    play(&mut engine, body, 0, "walk", true);
+  }
+  // A sound starts once a frame however many play it then
+  frames_until(&mut engine, |engine| starts(engine, near).len() >= 3);
+  // A change to the data in code keeps its paths: nothing is read again
+  {
+    let mut store = engine.world_mut().resource_mut::<Assets<SkeletonData>>();
+    let changed = store.get_mut(&data).is_some();
+    assert!(changed);
+  }
+  engine.step_frames(40).expect("frames");
+  assert!(starts(&engine, near).len() >= 4);
+  assert_eq!(source.reads(near), 1);
+  assert_eq!(source.reads("audio/step.wav"), 1);
+  // A skeleton without sounds loads none
+  assert_eq!(source.reads("audio/quiet.wav"), 0);
+  assert!(starts(&engine, "audio/quiet.wav").is_empty());
+
+  // With the data gone, its sounds go too
+  for body in bodies {
+    engine.world_mut().despawn(body);
+  }
+  drop((data, unheard));
+  frames_until(&mut engine, |engine| {
+    engine.world().resource::<Assets<Sound>>().len() == sounds_before
+  });
 }

@@ -12,7 +12,8 @@
 //! giving them secondary motion with springs that lag and swing back;
 //! a [`BoneSocket`] on a child
 //! entity rides one of its bones; and [`SkeletonEvent`] and
-//! [`SkeletonTrackEvent`] messages tell the game what its animations did.
+//! [`SkeletonTrackEvent`] messages tell the game what its animations did,
+//! and a [`SkeletonSounds`] has the engine play the sounds its events name.
 //! An entity with a `Renderable::skeleton()` draws its skeleton, its
 //! regions and its meshes skinned to their bones and shaped by its
 //! animations' deform keys, sorted, lit and shadowed as a sprite is, and
@@ -39,6 +40,7 @@ mod pose;
 mod scope;
 mod skin;
 mod socket;
+mod sounds;
 mod spring;
 mod state;
 mod system;
@@ -76,6 +78,8 @@ pub(crate) use scope::{SkeletonStore, hold_scenes, in_scene, release_scene};
 pub use skin::Skin;
 pub use socket::BoneSocket;
 pub(crate) use socket::skip_sockets;
+pub use sounds::SkeletonSounds;
+pub(crate) use sounds::play_skeleton_sounds;
 pub use state::{SkeletonAnimation, TrackEntry, TrackEntryId, TrackEventKind};
 pub(crate) use system::{pose_new_skeletons, update_skeletons};
 pub use validate::SkeletonError;
