@@ -2027,10 +2027,45 @@ mod tests {
       "placed again: {} not {followed}",
       knee(&world)
     );
-    // Placed again toward a target beyond the reach, the limb straightens
-    // from that knee; the knee kept is not written
+    // Placed again toward a target beyond the reach, the limb climbs from
+    // that knee to the crest it was near, the top of the rise after the
+    // dip, and lies there pointing at the target: the tip is on the line
+    // to the target at that crest's distance, short of the side's farthest
+    // reach (a target that leaves the reach in one step from the branch
+    // past the dip holds the lower crest). The crests are sampled here
+    // from the thigh's own values, the shin bent through the positive
+    // side's half turn from straight to folded. The knee kept is not
+    // written
+    let reaches: Vec<f32> = {
+      let (thigh, shin) = (&rig.bones()[0], &rig.bones()[1]);
+      let x_axis = Vec2::from_angle(thigh.shear_x) * thigh.scale_x;
+      let y_axis = Vec2::from_angle(thigh.shear_y).perp() * thigh.scale_y;
+      let place = Vec2::new(shin.x, shin.y);
+      let heading = place.to_angle();
+      (0..=20_000)
+        .map(|step| {
+          let bend = heading + std::f32::consts::PI * step as f32 / 20_000.0;
+          let local = place + Vec2::from_angle(bend) * shin.length;
+          (x_axis * local.x + y_axis * local.y).length()
+        })
+        .collect()
+    };
+    let farthest = reaches.iter().copied().fold(0.0, f32::max);
+    let crests: Vec<f32> = reaches
+      .windows(3)
+      .filter(|three| three[1] > three[0] && three[1] >= three[2])
+      .map(|three| three[1])
+      .collect();
     aim_leg(&mut world, body, 80.0);
     place_again(&mut world);
+    let tip = bone(&world, body, "shin").transform_point2(Vec2::new(rig.bones()[1].length, 0.0));
+    let Some(&rise) = crests.last() else {
+      panic!("the leg's reach has no crest: {crests:?}");
+    };
+    assert!(
+      tip.distance(Vec2::new(0.6, 0.8) * rise) < 0.01 && rise < farthest - 1.0,
+      "placed again beyond the reach: the tip at {tip}, the crests {crests:?}, the farthest {farthest}"
+    );
     assert!(knee(&world).distance(followed) > 1.0, "straightened");
     assert_eq!(knees(&world), kept, "placing again wrote the knee");
     // So the next step follows from the knee the last step kept: the

@@ -3893,6 +3893,162 @@ mod tests {
     assert_near(tip(&a, &b, 40.0), target, "arrived");
   }
 
+  #[test]
+  fn a_knee_swing_turns_the_first_bone_at_most_two_swings_a_step() {
+    // The rig whose reach dips and rises, toward 5.11 rad, its knee
+    // followed with the target at 0.95 of the farthest reach, and the
+    // target then moved to 0.05 of it and held. The branch is lost and the
+    // knee swings toward folded, where the tip comes close to the first
+    // bone's origin and a swing of bend turns the tip's direction far. The
+    // swing step is halved while the first bone would turn more than two
+    // swings (`FIRST_BONE_SWINGS`, `SWING_HALVINGS`): with the target held,
+    // the first bone turns at most that in each step of the swing, and the
+    // knee it carries moves at most that turn times part one's length.
+    // Here it turns at most 0.185 rad and the knee moves at most 0.082 of
+    // the farthest reach; without the halving the first bone turned 0.47
+    // rad in one step and the knee moved 0.21 of the farthest reach
+    let (first, second, length) = dipping();
+    let (farthest, _) = side_reaches(&first, &second, length, true);
+    let part_one = (first.linear_turned(0.0) * Vec2::new(second.x, second.y)).length();
+    let values = values();
+    let toward = Vec2::from_angle(0.4 + 6.0 * 0.785);
+    let mut last = None;
+    for _ in 0..6 {
+      followed(
+        (first, second),
+        length,
+        ORIGIN + toward * 0.95 * farthest,
+        values,
+        &mut last,
+      );
+    }
+    let mut held = followed(
+      (first, second),
+      length,
+      ORIGIN + toward * 0.95 * farthest,
+      values,
+      &mut last,
+    );
+    let target = ORIGIN + toward * 0.05 * farthest;
+    let (mut swung, mut most) = (0, 0.0_f32);
+    for step in 0..80 {
+      let before = last;
+      let (a, b) = followed((first, second), length, target, values, &mut last);
+      let swinging = last.is_some_and(|knee| knee.swinging_from.is_some())
+        || before.is_some_and(|knee| knee.swinging_from.is_some());
+      if swinging {
+        swung += 1;
+        let turn = ((a.rotation - held.0.rotation + PI).rem_euclid(TAU) - PI).abs();
+        let travel = joint(&a, &b).distance(joint(&held.0, &held.1));
+        most = most.max(turn);
+        let bound = (FIRST_BONE_SWINGS * SWING) as f32;
+        assert!(
+          turn <= bound + 1e-4,
+          "step {step}: the first bone turns {turn}, above {bound}"
+        );
+        assert!(
+          travel <= bound * part_one + 0.01,
+          "step {step}: the knee moves {travel}, above {}",
+          bound * part_one
+        );
+      }
+      held = (a, b);
+    }
+    assert!(swung > 5, "{swung} swing steps");
+    assert!(most > 0.15, "the bound never acts: at most {most}");
+  }
+
+  #[test]
+  fn rising_from_a_trough_goes_back_up_toward_straight() {
+    // A first bone scaled (1.2, 1), the second bone at (40, -6), length
+    // 50, the positive side: the side's nearest is a trough short of
+    // folded. Solved afresh with its target at 0.6 of that nearest, the
+    // knee lies at the bend of least distance the fresh walk found, which
+    // can be a little past the trough. The target is then walked out to
+    // 1.05 of the farthest reach over 60 steps. The walk rising from a
+    // trough goes toward straight, back up the branch a fresh solve takes,
+    // so in every step the knee is where a fresh solve puts it and nothing
+    // swings. Rising the way the slope there pointed, toward folded, the
+    // knee took the branch between the trough and folded, lost it where
+    // that branch ends and swung for 10 steps, up to 28 from the fresh
+    // knee
+    let first = uneven(1.2, 1.0, 0.0);
+    let second = bone(40.0, -6.0, 0.9);
+    let length = 50.0;
+    let values = values();
+    let (farthest, nearest) = side_reaches(&first, &second, length, true);
+    for quarter in 0..4 {
+      let toward = Vec2::from_angle(0.4 + quarter as f32 * FRAC_PI_2);
+      let mut last = None;
+      let start = 0.6 * nearest;
+      followed(
+        (first, second),
+        length,
+        ORIGIN + toward * start,
+        values,
+        &mut last,
+      );
+      for step in 1..=60 {
+        let distance = start + (1.05 * farthest - start) * step as f32 / 60.0;
+        let target = ORIGIN + toward * distance;
+        let (a, b) = followed((first, second), length, target, values, &mut last);
+        let what = format!("toward {toward}, step {step}, {distance} away");
+        assert_eq!(last.and_then(|knee| knee.swinging_from), None, "{what}");
+        let fresh = solved((first, second), length, target, values, false);
+        assert_near(joint(&a, &b), joint(&fresh.0, &fresh.1), &what);
+      }
+    }
+  }
+
+  #[test]
+  fn a_knee_at_the_side_s_nearest_is_held_there() {
+    // A first bone scaled (1.2, 1), the second bone at (40, 0), length 50,
+    // on both sides and in four directions, its target walked in from 1.1
+    // of the farthest reach to 0.02 of it over 120 steps (1 s at 60 a
+    // second) and out again. Inside the nearest reach the knee's walk
+    // falls into the trough that is the side's nearest, a little off the
+    // bend of least distance the fresh walk finds; within a millionth of
+    // the square of the distance (`NEAREST_TIE`) it is taken for it and
+    // held, so nothing swings. Taken only at an exact tie, the branch was
+    // lost there and the knee swung for 3 steps in each walk
+    let first = uneven(1.2, 1.0, 0.0);
+    let second = bone(40.0, 0.0, 0.9);
+    let length = 50.0;
+    for positive in [true, false] {
+      let values = IkValues {
+        bend: bent(positive),
+        ..values()
+      };
+      let (farthest, _) = side_reaches(&first, &second, length, positive);
+      for quarter in 0..4 {
+        let toward = Vec2::from_angle(0.4 + quarter as f32 * FRAC_PI_2);
+        let mut last = None;
+        let mut swings = Swings::default();
+        for index in 0..=240 {
+          let along = if index <= 120 {
+            index as f32 / 120.0
+          } else {
+            (240 - index) as f32 / 120.0
+          };
+          let distance = farthest * (1.1 - 1.08 * along);
+          let before = last;
+          followed(
+            (first, second),
+            length,
+            ORIGIN + toward * distance,
+            values,
+            &mut last,
+          );
+          swings.step(before, last);
+        }
+        assert_eq!(
+          swings.swings, 0,
+          "bend positive: {positive}, toward {toward}: {swings:?}"
+        );
+      }
+    }
+  }
+
   /// What `animated_pops` found
   #[derive(Default, Debug)]
   struct Pops {
