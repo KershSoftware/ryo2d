@@ -206,9 +206,12 @@ pub(crate) fn one_bone(
 /// turns, and the bend is found in `first`'s own space instead, where both
 /// parts are rigid (`uneven_rotations`): from the side's farthest bend,
 /// walked toward folded to the first bend whose distance is the target's.
-/// A target beyond that farthest reach leaves the limb at that bend, and
-/// one nearer than the walk reaches before the distance stops falling
-/// leaves it at that nearest bend, pointing at the target either way.
+/// The crossing taken is the first at which the distance comes down to the
+/// target's, having never been below it, so the walk goes on past a dip
+/// and the rise after it. A target beyond that farthest reach leaves the
+/// limb at that bend, and one nearer than the least distance on the way to
+/// folded leaves it at that nearest bend, pointing at the target either
+/// way.
 /// Softness measures from the farthest reach; stretch does not apply.
 ///
 /// Only the bones' rotations and `first`'s scale are written. Nothing is,
@@ -364,9 +367,10 @@ const BEND_HALVINGS: usize = 30;
 /// its origin follows the bend alone (`Bent`). The side's farthest bend is
 /// found, and softness measures its reach from there. A target beyond that
 /// reach leaves the limb at that bend; a nearer one is met at the first
-/// bend, walking from there toward folded, whose distance is the target's,
-/// or left at the bend where the distance stops falling, if that comes
-/// first. `first` is then turned so that the tip points at the target
+/// bend, walking from there toward folded, at which the distance comes
+/// down to the target's, or left at the bend of least distance on that
+/// walk when it never does. `first` is then turned so that the tip points
+/// at the target
 fn uneven_rotations(
   first: &BonePose,
   second: &BonePose,
@@ -514,40 +518,43 @@ impl Bent {
     (far, most, steps)
   }
 
-  /// The first bend past `far` (the farthest) toward folded at which the
-  /// square of the tip's distance is `squared`, below the farthest's, and
-  /// the steps walked. Each step goes only as far as the distance is sure
-  /// to fall, and never more than `BEND_STEP`, so that the crossing found
-  /// is the first and halving its step finds it. Where the distance is not
-  /// sure to fall for `BEND_SETTLED`, it is at a turn: past the top of one
-  /// (the farthest bend, found to within such a step) the walk steps over
-  /// it; at the bottom of one the distance has stopped falling, and that
-  /// nearest bend is given. Folded is the nearest when the distance falls
-  /// all the way. After `BEND_WALK` steps the walk stops where it is, short
-  /// of the crossing
+  /// The bend past `far` (the farthest) toward folded at which the square
+  /// of the tip's distance first comes down to `squared`, having never been
+  /// below it on the way, and the steps walked. Each step goes only as far
+  /// as the distance is sure to keep falling or keep rising, and never more
+  /// than `BEND_STEP`: a rising step cannot hold that crossing, and a
+  /// falling one holds it only once, so halving the step that ends at or
+  /// below `squared` finds it. Where neither is sure for `BEND_SETTLED`, at
+  /// a turn, the walk steps that far over it, and it goes on past a dip
+  /// and the rise after it. When the distance never comes down to
+  /// `squared` before folded, the bend walked with the least distance (the
+  /// side's nearest) is given. After `BEND_WALK` steps the walk stops, and
+  /// gives the least it has seen
   fn fall(&self, far: f64, squared: f64) -> (f64, usize) {
     let (mut held, mut here) = (far, self.at(far));
+    let (mut least_at, mut least) = (far, here.0);
     for steps in 0..BEND_WALK {
       if held >= PI_WIDE {
-        return (PI_WIDE, steps);
+        return (least_at, steps);
       }
       let (_, slope, rate) = here;
-      let sure = sure_falling(slope, rate, self.bound);
-      let step = if sure >= BEND_SETTLED {
-        sure.min(BEND_STEP)
-      } else if rate < 0.0 {
+      let sure = sure_falling(slope, rate, self.bound).max(sure_falling(-slope, -rate, self.bound));
+      let step = if sure < BEND_SETTLED {
         BEND_SETTLED
       } else {
-        return (held, steps);
+        sure.min(BEND_STEP)
       };
       let next = (held + step).min(PI_WIDE);
       let there = self.at(next);
       if there.0 <= squared {
         return (self.halved(held, next, squared), steps + 1);
       }
+      if there.0 < least {
+        (least_at, least) = (next, there.0);
+      }
       (held, here) = (next, there);
     }
-    (held, BEND_WALK)
+    (least_at, BEND_WALK)
   }
 
   /// The bend between `held`, where the square of the tip's distance is
@@ -2733,8 +2740,8 @@ mod tests {
   /// A limb's reaches on one bend side, found by sampling and not by the
   /// solve: the second bone is bent through `SAMPLED` steps of the half
   /// turn on that side, from straight to folded. Gives the farthest its tip
-  /// gets from the first bone's origin, and the nearest it comes going on
-  /// from that bend toward folded while its distance falls
+  /// gets from the first bone's origin, and the nearest it comes at any
+  /// bend from that one to folded
   fn side_reaches(first: &BonePose, second: &BonePose, length: f32, positive: bool) -> (f32, f32) {
     let wanted = if positive { 1.0 } else { -1.0 };
     let way = if bend(first, &bent_by(second, FRAC_PI_2), length) * wanted > 0.0 {
@@ -2753,14 +2760,7 @@ mod tests {
         (far_at, farthest) = (step, distance);
       }
     }
-    let mut nearest = farthest;
-    for step in far_at + 1..=SAMPLED {
-      let distance = at(step);
-      if distance >= nearest {
-        break;
-      }
-      nearest = distance;
-    }
+    let nearest = (far_at..=SAMPLED).map(at).fold(farthest, f64::min);
     (farthest as f32, nearest as f32)
   }
 
@@ -2827,6 +2827,225 @@ mod tests {
       }
     }
     assert!(solves > 6_000, "{solves} solves");
+  }
+
+  #[test]
+  fn a_squashed_and_sheared_thigh_reaches_past_a_dip() {
+    // A first bone squashed along its length, or stretched across it, with
+    // a small shear: from the farthest bend toward folded the tip's
+    // distance dips a little, rises a little, and then falls almost to the
+    // first bone's origin. The walk goes on past the dip, so targets far
+    // nearer than it are met: at 0.3 and 0.5 of the farthest reach, in four
+    // directions, on both sides, the tip is on the target to 0.01. Stopping
+    // at the dip missed the first rig's target at 0.3 of the reach by 32.8
+    // on the positive side. The least distance is found by sampling the
+    // bend densely, not by the solve
+    let rigs = [
+      (
+        "a scale of (0.6, 1), an x shear of -0.1",
+        uneven(0.6, 1.0, -0.1),
+      ),
+      (
+        "a scale of (1, 1.8), an x shear of -0.2",
+        uneven(1.0, 1.8, -0.2),
+      ),
+    ];
+    let second = bone(40.0, 0.0, 0.9);
+    for (what, first) in rigs {
+      for positive in [true, false] {
+        let (farthest, nearest) = side_reaches(&first, &second, 40.0, positive);
+        let values = IkValues {
+          bend: bent(positive),
+          ..values()
+        };
+        for share in [0.3, 0.5] {
+          let distance = farthest * share;
+          assert!(distance > nearest, "{what}: {distance} is inside {nearest}");
+          for quarter in 0..4 {
+            let toward = Vec2::from_angle(0.4 + quarter as f32 * FRAC_PI_2);
+            let target = ORIGIN + toward * distance;
+            let (a, b) = solved((first, second), 40.0, target, values, false);
+            let what = format!("{what}, bend positive: {positive}, target {target}");
+            assert_near(tip(&a, &b, 40.0), target, &what);
+            let turn = bend(&a, &b, 40.0) * if positive { 1.0 } else { -1.0 };
+            assert!(turn > -1.0, "{what}: a cross of {turn}");
+          }
+        }
+      }
+    }
+  }
+
+  #[test]
+  fn an_animated_squash_jumps_at_most_once_and_stays_on_target() {
+    // A thigh squashed along its length from a scale of 1 to 0.5 over
+    // 5,000 steps, sheared by -0.1, parts of 40 and 40, reaching on both
+    // sides for targets held 20, 30, 40 and 50 away. As the squash grows a
+    // dip opens in the tip's distance on the way from the farthest bend to
+    // folded. The walk takes the first bend at which the distance comes
+    // down to the target's, so the knee can jump once, across the dip's
+    // rise, in the step in which the dip's level passes the target. Every
+    // step puts the tip on the target (or, once the squash has drawn the
+    // farthest reach in past 50, on the line at that reach), and the knee moves more than 1% of
+    // the limb's farthest reach in at most one step of each squash, by at
+    // most 0.6 of that reach. Here the targets the limb reaches never see
+    // the dip pass them; the one jump is the target 50 away on the
+    // positive side, beyond the farthest reach, where the farthest bend
+    // passes from one crest of the distance to another: 18.4 of a reach
+    // of 46.8
+    let second = bone(40.0, 0.0, 0.9);
+    for distance in [20.0, 30.0, 40.0, 50.0] {
+      let target = ORIGIN + Vec2::from_angle(0.4) * distance;
+      for positive in [true, false] {
+        let values = IkValues {
+          bend: bent(positive),
+          ..values()
+        };
+        let (mut last, mut jumps) = (None::<Vec2>, 0);
+        for step in 0..=5_000 {
+          let first = uneven(1.0 - 0.5 * step as f32 / 5_000.0, 1.0, -0.1);
+          let (a, b) = solved((first, second), 40.0, target, values, false);
+          let what = format!("{distance} away, bend positive: {positive}, step {step}");
+          if tip(&a, &b, 40.0).distance(target) > 0.005 {
+            // Beyond the farthest reach, the tip is on the line at it
+            let (farthest, nearest) = side_reaches(&first, &second, 40.0, positive);
+            let expected = ORIGIN + Vec2::from_angle(0.4) * distance.clamp(nearest, farthest);
+            assert_near(tip(&a, &b, 40.0), expected, &what);
+          }
+          let knee = joint(&a, &b);
+          if let Some(last) = last {
+            let moved = knee.distance(last);
+            // The farthest reach is above 40 throughout, so most steps need
+            // not sample it
+            if moved > 0.4 {
+              let (farthest, _) = side_reaches(&first, &second, 40.0, positive);
+              if moved > 0.01 * farthest {
+                jumps += 1;
+                assert!(moved < 0.6 * farthest, "{what}: the knee jumps {moved}");
+              }
+            }
+          }
+          last = Some(knee);
+        }
+        assert!(
+          jumps <= 1,
+          "{distance} away, bend positive: {positive}: {jumps} jumps"
+        );
+      }
+    }
+  }
+
+  /// The level of the first dip in the tip's distance on the way from the
+  /// side's farthest bend to folded, found by sampling as `side_reaches`
+  /// does: the distance where it first stops falling. `None` when it falls
+  /// all the way, or its least is that first stop
+  fn side_dip(first: &BonePose, second: &BonePose, length: f32, positive: bool) -> Option<f32> {
+    let wanted = if positive { 1.0 } else { -1.0 };
+    let way = if bend(first, &bent_by(second, FRAC_PI_2), length) * wanted > 0.0 {
+      1.0
+    } else {
+      -1.0
+    };
+    let at = |step: usize| {
+      let bend = way * PI * step as f32 / SAMPLED as f32;
+      tip_distance(first, &bent_by(second, bend), length)
+    };
+    let far_at = (0..=SAMPLED).fold(
+      0,
+      |best, step| if at(step) > at(best) { step } else { best },
+    );
+    let mut step = far_at;
+    while step < SAMPLED && at(step + 1) < at(step) {
+      step += 1;
+    }
+    let least = (step..=SAMPLED).map(at).fold(f64::MAX, f64::min);
+    (least < at(step) - 1e-6).then_some(at(step) as f32)
+  }
+
+  #[test]
+  fn the_knee_jumps_once_where_the_reach_dips_and_rises() {
+    // The recorded limit. Under a squashed or sheared first bone the tip's
+    // distance can dip, rise and fall again on the way from the farthest
+    // bend to folded. Every distance the side reaches is reached, the walk
+    // taking the first bend at which the distance comes down to the
+    // target's; so as a target comes in past the dip's level the knee
+    // jumps once, across the rise, and no rule that keeps to one side and
+    // reaches every distance can avoid that jump. On the worst of 3,000
+    // random limbs (first bone 40 along and up to 5 across, scales up to
+    // 1.5 to one, shears up to 0.3, part two 15 to 80): a first bone
+    // scaled (0.7104, 1.4077), sheared -0.2831, the second bone at
+    // (40, -4.4175), length 50.851, the positive side. Its target walked in
+    // from beyond its farthest reach to inside its nearest, by the jump
+    // test's halving rule, the knee jumps once, 0.43 of the farthest reach,
+    // at the dip's level, and the tip is on the target throughout
+    let first = BonePose {
+      scale_x: 0.710_378_3,
+      scale_y: 1.407_700_7,
+      shear_x: -0.283_114_4,
+      ..bone(ORIGIN.x, ORIGIN.y, 0.3)
+    };
+    let second = bone(40.0, -4.417_513, 0.0);
+    let length = 50.851_017;
+    let (farthest, nearest) = side_reaches(&first, &second, length, true);
+    let Some(dip) = side_dip(&first, &second, length, true) else {
+      panic!("the rig has no dip");
+    };
+    let values = IkValues {
+      bend: IkBend::Positive,
+      ..values()
+    };
+    let toward = Vec2::new(0.6, 0.8);
+    let (from, to) = (1.05, 0.9 * nearest / farthest);
+    let steps = ((from - to) / 0.001_f32).ceil() as usize;
+    let knee = |along: f32| {
+      let target = ORIGIN + toward * (from + (to - from) * along) * farthest;
+      let (a, b) = solved((first, second), length, target, values, false);
+      let reachable = (nearest..=farthest).contains(&target.distance(ORIGIN));
+      if reachable {
+        assert_near(tip(&a, &b, length), target, &format!("{along} of the way"));
+      }
+      joint(&a, &b)
+    };
+    let mut jumps = Vec::new();
+    let mut before = knee(0.0);
+    for index in 1..=steps {
+      let (mut start, mut end) = (
+        (index - 1) as f32 / steps as f32,
+        index as f32 / steps as f32,
+      );
+      let here = knee(end);
+      if before.distance(here) > 0.01 * farthest {
+        let (mut from_knee, mut to_knee) = (before, here);
+        for _ in 0..16 {
+          let half = 0.5 * (start + end);
+          let middle = knee(half);
+          if from_knee.distance(middle) >= middle.distance(to_knee) {
+            (end, to_knee) = (half, middle);
+          } else {
+            (start, from_knee) = (half, middle);
+          }
+        }
+        let jump = from_knee.distance(to_knee) / farthest;
+        if jump > 0.01 {
+          let at = (from + (to - from) * start) * farthest;
+          jumps.push((jump, at));
+        }
+      }
+      before = here;
+    }
+    assert_eq!(
+      jumps.len(),
+      1,
+      "jumps (share of the reach, distance): {jumps:?}"
+    );
+    let (jump, at) = jumps[0];
+    assert!(
+      jump > 0.3 && jump < 0.45,
+      "the knee jumps {jump} of the reach"
+    );
+    assert!(
+      (at - dip).abs() < 0.002 * farthest,
+      "it jumps {at} away, the dip is {dip}"
+    );
   }
 
   #[test]
@@ -3233,16 +3452,14 @@ mod tests {
   fn an_uneven_first_bone_walks_a_bounded_number_of_steps() {
     // Each of the two walks takes at most `BEND_WALK` (96) steps, and
     // neither needs a third of them here: from straight to folded the
-    // farthest walk takes 27 steps at most and the walk to a target 23,
+    // farthest walk takes 27 steps at most and the walk to a target 27,
     // under first bones scaled up to ten to one either way and sheared by
     // up to 1.4 rad either way, with parts of 40 and 30 on the first's axis
     // and off it, 50 and 100, and 10.4 and 60, started three ways, on both
     // sides, toward targets at every two-hundredth of the way between the
     // reaches. Neither stops short: the farthest reach the walk finds and
     // the nearest it gives are within a millionth of the farthest of the
-    // reaches found by sampling the bend. (Over 60,000 random limbs, first
-    // bones scaled up to 200 to one and sheared up to 1.57 rad, the most
-    // was 58 steps, and none stopped short.)
+    // reaches found by sampling the bend.
     let mut firsts = Vec::new();
     for ratio in [1.2_f32, 1.5, 2.0, 3.0, 4.0, 5.0, 8.0, 10.0] {
       firsts.push(uneven(ratio, 1.0, 0.0));
