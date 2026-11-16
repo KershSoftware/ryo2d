@@ -2,7 +2,7 @@
 name: ryo-messages
 description: Messages - typed, buffered notifications between scenes and systems; the engine's message types and how to define, write and read your own.
 metadata:
-  version: 2.11.0
+  version: 2.12.0
 ---
 
 # Ryo2D Messages
@@ -153,7 +153,7 @@ All are in the prelude and registered at engine build; `AssetEvent<T>` is regist
 | `AssetEvent<T>` (one type per asset type: `AssetEvent<Image>`, `AssetEvent<Font>`, ...) | `Added { id }`, `Modified { id }`, `Removed { id }`, `Failed { id, error }`, `ReloadFailed { id, error }` (`id: AssetId<T>`, `error: Arc<AssetError>`) | an asset landed in its store (or was added in code), changed (reloaded, a dependency reloaded, or `get_mut`), was freed (its last handle dropped, if it had landed), did not load (it loads again when its file changes), or failed to reload and kept its last good value. An asset's events come in the order its changes happened (see `ryo-assets`) |
 | `ParticleCollision` | `emitter_entity`, `collider_entity`, `position_x/y`, `normal_x/y`, `velocity_x/y` | a particle hits a collider, in the particle step (see `ryo-particles`) |
 | `EmitterFinished` | `entity` | an emitter is not playing (stopped, or its one cycle over) and its last particle died, once per finish, in the step it finishes; `despawn_when_finished` despawns the entity in the next step, and an unscaled emitter can do both within one frame (see `ryo-particles`) |
-| `SkeletonEvent` | `entity` (the skeleton), `track`, `animation`, `name` (the event's), `int`, `float`, `string`, `audio: Option<SkeletonEventAudio { path, volume, balance }>`, `time` (the key's, in its animation) | a skeleton's animation crossed an event key, once each time it is crossed, a step's events in the order they happened; the values are the key's where it gives them, else the event's; the engine plays no sound for it (see `ryo-skeleton`, Events) |
+| `SkeletonEvent` | `entity` (the skeleton), `track`, `animation`, `name` (the event's), `int`, `float`, `string`, `audio: Option<SkeletonEventAudio { path, volume, balance }>`, `time` (the key's, in its animation) | a skeleton's animation crossed an event key, once each time it is crossed, a step's events in the order they happened; the values are the key's where it gives them, else the event's; the engine plays its audio for a skeleton with `SkeletonSounds`, and otherwise it is the game's to play (see `ryo-skeleton`, Event sounds) |
 | `SkeletonTrackEvent` | `entity`, `track`, `entry: SkeletonTrackEntryId`, `animation`, `kind: SkeletonTrackEventKind` (`Start`, `Interrupt`, `End`, `Complete`, `Dispose`) | something happened to one of a skeleton's track entries (`entry` is unique within that skeleton only: match `entity` as well); what a call such as `set_animation` causes is sent with the skeleton's next step. `Complete` comes each loop of a looping entry and once otherwise, never from an entry mixing out; the empty animation's entries carry `SkeletonAnimation::EMPTY` and never complete (see `ryo-skeleton`, Track events) |
 | `MapEvent` | `Spawned { map }`, `Reloaded { map }`, `Failed { map, error: Arc<AssetError> }` | a tile map landed whole (its layers, objects, colliders and shadows arrived this frame), followed a saved file, or did not load or land (once per failure; see `ryo-tilemap`) |
 | `FloorChanged` | `entity`, `from: Floor`, `to: Floor` | a `Climber` changed storey halfway along a tile map's stairs (onto the upper storey halfway up, back down halfway down), once per change; that step's physics already has it on `to` (see `ryo-tilemap`, Stairs) |
