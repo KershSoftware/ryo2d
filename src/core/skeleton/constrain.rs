@@ -227,6 +227,12 @@ impl Constrained {
     &self.springs
   }
 
+  /// Each constraint's knee as last solved, in the data's order
+  #[cfg(test)]
+  pub(super) fn knees(&self) -> &[Option<Knee>] {
+    &self.knees
+  }
+
   /// Mirrors every spring across its entity's axes, as the entity's flip
   /// changed along those `axes` (-1 for an axis now mirrored the other way,
   /// 1 for one not): `root` is the entity's transform the last points

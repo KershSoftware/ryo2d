@@ -1952,6 +1952,133 @@ mod tests {
     near(knee(&world), fresh, "after a disabled step");
   }
 
+  /// The leg whose reach dips, spawned and aimed by an override of its
+  /// `aim` bone; the aim takes a distance from the hip along (0.6, 0.8)
+  fn dipping_leg(world: &mut World) -> (Entity, Handle<SkeletonData>) {
+    let data = world
+      .resource_mut::<Assets<SkeletonData>>()
+      .add(dipping_leg_data());
+    let body = world
+      .spawn((Transform::IDENTITY, Skeleton::new(data.clone())))
+      .id();
+    (body, data)
+  }
+
+  fn aim_leg(world: &mut World, body: Entity, distance: f32) {
+    use crate::core::skeleton::{BoneOverride, Space};
+    let aim = BoneOverride {
+      translation: Some(Vec2::new(0.6, 0.8) * distance),
+      space: Space::World,
+      ..BoneOverride::default()
+    };
+    world
+      .get_mut::<Skeleton>(body)
+      .expect("a skeleton")
+      .override_bone("aim", aim);
+  }
+
+  /// The dipping leg brought in to 30, past its dip, and out to 61.3,
+  /// between the dip and the top of the rise, where two bends meet the
+  /// target: the knee follows the branch past the dip there. Gives the
+  /// knee's place
+  fn leg_onto_the_far_branch(world: &mut World, step: &mut Schedule, body: Entity) -> Vec2 {
+    aim_leg(world, body, 30.0);
+    for _ in 0..30 {
+      carried(world, step, body, 0.0);
+    }
+    aim_leg(world, body, 61.3);
+    carried(world, step, body, 0.0);
+    bone(world, body, "shin").translation
+  }
+
+  #[test]
+  fn placing_again_uses_the_knee_without_writing_it() {
+    let (mut world, mut step, _) = world();
+    let (body, data) = dipping_leg(&mut world);
+    let rig = world
+      .resource::<Assets<SkeletonData>>()
+      .get(&data)
+      .cloned()
+      .expect("the data");
+    let knee = |world: &World| bone(world, body, "shin").translation;
+    let knees = |world: &World| {
+      world
+        .get::<Skeleton>(body)
+        .expect("a skeleton")
+        .constrained
+        .knees()
+        .to_vec()
+    };
+    let place_again = |world: &mut World| {
+      world
+        .get_mut::<Skeleton>(body)
+        .expect("a skeleton")
+        .place_again(&rig, Affine2::IDENTITY.into());
+    };
+    let followed = leg_onto_the_far_branch(&mut world, &mut step, body);
+    let kept = knees(&world);
+    assert!(kept.iter().any(Option::is_some), "a knee is kept");
+    // Placed again with the target where it was, the knee is on the
+    // branch it follows (a fresh solve puts it before the dip, 5 or more
+    // away)
+    place_again(&mut world);
+    assert!(
+      knee(&world).distance(followed) < 0.01,
+      "placed again: {} not {followed}",
+      knee(&world)
+    );
+    // Placed again toward a target beyond the reach, the limb straightens
+    // from that knee; the knee kept is not written
+    aim_leg(&mut world, body, 80.0);
+    place_again(&mut world);
+    assert!(knee(&world).distance(followed) > 1.0, "straightened");
+    assert_eq!(knees(&world), kept, "placing again wrote the knee");
+    // So the next step follows from the knee the last step kept: the
+    // branch past the dip, not the one a fall from the crest finds
+    aim_leg(&mut world, body, 61.3);
+    carried(&mut world, &mut step, body, 0.0);
+    assert!(
+      knee(&world).distance(followed) < 0.01,
+      "stepped: {} not {followed}",
+      knee(&world)
+    );
+  }
+
+  #[test]
+  fn a_knee_is_kept_through_steps_at_a_mix_of_0() {
+    use crate::core::skeleton::{ConstraintOverride, IkOverride};
+    let (mut world, mut step, _) = world();
+    let (body, _) = dipping_leg(&mut world);
+    let knee = |world: &World| bone(world, body, "shin").translation;
+    let followed = leg_onto_the_far_branch(&mut world, &mut step, body);
+    // Turned off for a few steps, the leg hangs as animated; the knee
+    // kept is neither used nor forgotten
+    let off = IkOverride {
+      mix: Some(0.0),
+      ..IkOverride::default()
+    };
+    world
+      .get_mut::<Skeleton>(body)
+      .expect("a skeleton")
+      .override_constraint("leg", ConstraintOverride::Ik(off));
+    for _ in 0..3 {
+      carried(&mut world, &mut step, body, 0.0);
+    }
+    assert!(knee(&world).distance(followed) > 1.0, "turned off");
+    // Turned on again, it resumes from that knee: on the branch past the
+    // dip, where a fresh solve would put it before the dip
+    world
+      .get_mut::<Skeleton>(body)
+      .expect("a skeleton")
+      .clear_constraint_override("leg");
+    carried(&mut world, &mut step, body, 0.0);
+    assert!(
+      knee(&world).distance(followed) < 0.01,
+      "resumed: {} not {followed}",
+      knee(&world)
+    );
+  }
+
   #[test]
   fn a_held_skeleton_s_springs_go_on_where_they_were() {
     let (mut world, mut step, _) = world();
