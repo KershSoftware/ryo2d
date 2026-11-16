@@ -51,6 +51,9 @@ thread_local! {
   static TRACING: Cell<bool> = const { Cell::new(false) };
   static IN_TRACE: Cell<bool> = const { Cell::new(false) };
   static TRACES: RefCell<Vec<Backtrace>> = const { RefCell::new(Vec::new()) };
+  /// Whether this thread's test counts the audio engine's allocations
+  /// apart ([`Frame::audio`]): only a test that plays sounds does
+  static AUDIO_APART: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Counts an allocation, and keeps its stack while tracing (taking a stack
@@ -475,7 +478,9 @@ struct Frame {
   gpu: BTreeMap<String, usize>,
   /// Those made inside the audio engine (a function of `audio::` on the
   /// stack): a sound's play makes its voice and its log entry. Counted
-  /// apart from the rest, so they are in none of the other kinds
+  /// apart from the rest, so they are in none of the other kinds, only in
+  /// a test that plays sounds ([`AUDIO_APART`]); every other test counts
+  /// them as any other
   audio: usize,
 }
 
@@ -527,9 +532,10 @@ fn traced_after(engine: &mut HeadlessEngine, calls: impl FnOnce(&mut HeadlessEng
     let text = trace.to_string();
     let frames = functions(&text);
     let ours = frames.iter().position(|f| f.contains("ryo2d::"));
-    if frames
-      .iter()
-      .any(|f| f.starts_with("ryo2d::core::audio::") || f.starts_with("<ryo2d::core::audio::"))
+    if AUDIO_APART.with(Cell::get)
+      && frames
+        .iter()
+        .any(|f| f.starts_with("ryo2d::core::audio::") || f.starts_with("<ryo2d::core::audio::"))
     {
       audio += 1;
       continue;
@@ -1854,6 +1860,14 @@ fn crowd_rig(image: Handle<Image>, extra: Extra) -> SkeletonData {
       balance: 0.0,
     });
   }
+  if extra == Extra::Authored {
+    // "idle" with no gust, against which the gust is told
+    let mut still = clip("still", 12, 0.2, &[0.0, 0.2, 0.4], Some(1.0));
+    still
+      .timelines
+      .retain(|timeline| !matches!(timeline, SkeletonTimeline::Spring { .. }));
+    builder = builder.animation(still);
+  }
   builder
     .event(step)
     .animation(clip("idle", 12, 0.2, &[0.0, 0.2, 0.4], Some(1.0)))
@@ -2180,6 +2194,32 @@ fn steer_authored(skeleton: &mut Skeleton, at: Vec2, index: usize, frame: usize)
   }
 }
 
+/// The most allocations the audio engine may make for one play of the step
+/// sound, started or refused: measured at most 6 (a voice started makes
+/// its handle, its shared state and its log entry's strings; a refusal its
+/// log entry's), with room for a voice's stop logged in the same frame
+const AUDIO_PER_PLAY: usize = 10;
+
+/// How many plays of the step sound, started or refused, the crowd's audio
+/// log took since it held `logged` entries. The log keeps its latest 4096,
+/// so it must still be short of them
+fn step_plays(crowd: &HeadlessEngine, logged: usize) -> usize {
+  let log = crowd.audio_log();
+  assert!(
+    log.len() < 4096,
+    "the audio log is full, so a frame's entries cannot be told by its length"
+  );
+  log
+    .get(logged..)
+    .unwrap_or_default()
+    .iter()
+    .filter(|entry| {
+      matches!(entry.kind, AudioLogKind::Start | AudioLogKind::Refused)
+        && entry.source == STEP_SOUND
+    })
+    .count()
+}
+
 /// The latest voice of the step sound the crowd's audio log holds: 0 for
 /// none, and higher as more start
 fn step_voices(crowd: &HeadlessEngine) -> u32 {
@@ -2291,6 +2331,72 @@ fn authored_act(crowd: &mut HeadlessEngine, frame: usize, when: &str) -> [usize;
   legs
 }
 
+/// Asserts that the gust key and a spring override act, on three of the
+/// authored crowd's skeletons taken out of the game's mixes and overrides:
+/// the first plays "idle", the second "still" (the same with no gust) and
+/// the third "idle", the first and third with the second spring's gravity
+/// overridden to two values. Five seconds on, the springs have forgotten
+/// how they came, so over the next loop the first spring's bone turns
+/// otherwise than the second skeleton's only by the gust, and the second
+/// spring's bone otherwise than the third's only by the override
+fn gust_and_override_act(crowd: &mut HeadlessEngine) {
+  let world = crowd.world_mut();
+  let mut skeletons = world.query::<(Entity, &mut Skeleton, &mut SkeletonAnimation)>();
+  let mut chosen = Vec::new();
+  for (index, (entity, mut skeleton, mut animation)) in
+    skeletons.iter_mut(world).take(3).enumerate()
+  {
+    animation.set_animation(0, ["idle", "still", "idle"][index], true);
+    animation.set_empty(1, 0.0);
+    skeleton.clear_constraint_override("hair_b");
+    let gravity = [Some(20.0), None, Some(400.0)][index];
+    if gravity.is_some() {
+      let sway = SpringOverride {
+        gravity,
+        ..SpringOverride::default()
+      };
+      skeleton.override_constraint("hair_b", SkeletonConstraintOverride::Spring(sway));
+    }
+    chosen.push(entity);
+  }
+  crowd.step_frames(300).expect("frames");
+  let turn = |crowd: &HeadlessEngine, at: usize, parent: &str, child: &str| {
+    let skeleton = crowd
+      .world()
+      .get::<Skeleton>(chosen[at])
+      .expect("a chosen skeleton");
+    match (skeleton.bone_world(parent), skeleton.bone_world(child)) {
+      (Some(parent), Some(child)) => (parent.inverse() * child).matrix2.x_axis.to_angle(),
+      _ => panic!("a chosen skeleton has no {parent} or {child}"),
+    }
+  };
+  let (mut gust, mut overridden) = (0.0_f32, 0.0_f32);
+  for _ in 0..30 {
+    crowd.step().expect("a frame");
+    gust = gust.max((turn(crowd, 0, "b11", "hair_1") - turn(crowd, 1, "b11", "hair_1")).abs());
+    overridden = overridden
+      .max((turn(crowd, 0, "hair_1", "hair_2") - turn(crowd, 2, "hair_1", "hair_2")).abs());
+  }
+  println!(
+    "over a loop the gust turned the first spring's bone by up to {gust} rad, the override the second's by up to {overridden} rad"
+  );
+  assert!(
+    gust > GUST_TURN,
+    "the gust turned the first spring's bone by at most {gust} rad over a loop"
+  );
+  assert!(
+    overridden > OVERRIDE_TURN,
+    "the second spring's gravity overridden to 20 and to 400 turned its bone apart by at most \
+     {overridden} rad over a loop"
+  );
+}
+
+/// The least the gust and the override must turn their springs' bones by:
+/// about a third of what each measured (0.67 and 0.52 rad; with the
+/// gust's keys or the override's values dropped, 0.00004 and 0.0001)
+const GUST_TURN: f32 = 0.2;
+const OVERRIDE_TURN: f32 = 0.15;
+
 /// How far the vertices of the skeleton's [`ribbon`] are from where its
 /// bones alone put them (the setup shape, skinned), at most: what its
 /// deform moves it by. None for a skeleton that shows no mesh
@@ -2329,6 +2435,7 @@ fn counted(names: &[String]) -> BTreeMap<&str, usize> {
 fn skeletons_allocate_nothing(extra: Extra) {
   let (mesh, constrained) = (extra == Extra::Mesh, extra == Extra::Constraints);
   let authored = extra == Extra::Authored;
+  AUDIO_APART.with(|apart| apart.set(authored));
   let start = |skeletons| {
     let files = MemorySource::new();
     files.insert(STEP_SOUND, TONE);
@@ -2405,8 +2512,11 @@ fn skeletons_allocate_nothing(extra: Extra) {
   if authored {
     assert!(voices_before > 0, "no step sound played in the warm-up");
   }
+  let mut most_per_play = 0.0_f32;
   for frame in warm..warm + 12 {
+    let logged = crowd.audio_log().len();
     let drawn = traced_after(&mut crowd, |engine| steady(engine, frame));
+    let plays = step_plays(&crowd, logged);
     let nothing = traced(&mut empty);
     let own = |frame: &Frame| frame.own.values().sum::<usize>();
     // Inside the GPU API: all of them, and those the encoder's finish made
@@ -2433,6 +2543,19 @@ fn skeletons_allocate_nothing(extra: Extra) {
       drawn.skeleton_gpu.len(),
       drawn.audio,
     );
+    // The audio engine's are its plays' alone, a few for each
+    if authored {
+      println!("frame {frame}: {plays} plays of the step sound (started or refused)");
+      assert!(
+        drawn.audio <= AUDIO_PER_PLAY * plays,
+        "frame {frame}: the audio engine made {} allocations for {plays} plays of the step sound, \
+         over {AUDIO_PER_PLAY} a play",
+        drawn.audio
+      );
+      if plays > 0 {
+        most_per_play = most_per_play.max(drawn.audio as f32 / plays as f32);
+      }
+    }
     // All four are told together, so a failure names the site, the
     // function of the skeletons' path nearest it, and the GPU's share
     let (more, more_gpu) = (
@@ -2476,6 +2599,8 @@ fn skeletons_allocate_nothing(extra: Extra) {
       "the traced frames started no voice of {STEP_SOUND}: the latest was {voices_before} before \
        them and {voices} after"
     );
+    println!("the audio engine made at most {most_per_play:.1} allocations a play");
+    gust_and_override_act(&mut crowd);
   }
   if mesh {
     // And it was so to the end: the frames traced drew a deforming mesh

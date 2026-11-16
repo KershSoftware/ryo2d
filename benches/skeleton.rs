@@ -587,23 +587,27 @@ fn drift(mut entities: Query<(&mut Transform, &mut Drift)>) {
   }
 }
 
-/// How many skeletons of the springs case have the spine's last bone off
-/// the place its parent gives it (4 along, which no animation moves): those
-/// whose spring is swaying it, as the last step left them
-fn swayed(engine: &mut HeadlessEngine) -> usize {
+/// How many skeletons of the springs case have each sprung bone of
+/// [`SPRUNG`] off the place its parent gives it (4 along, which no
+/// animation moves): those whose spring is swaying it, as the last step
+/// left them
+fn swayed(engine: &mut HeadlessEngine) -> [usize; 2] {
   let world = engine.world_mut();
   let mut skeletons = world.query::<&Skeleton>();
-  skeletons
-    .iter(world)
-    .filter(|skeleton| {
-      let (Some(parent), Some(bone)) = (skeleton.bone_world("b8"), skeleton.bone_world("b9"))
+  let mut swayed = [0; 2];
+  for skeleton in skeletons.iter(world) {
+    for (count, (parent, bone)) in swayed.iter_mut().zip([("b8", "b9"), ("b9", "b18")]) {
+      let (Some(parent), Some(bone)) = (skeleton.bone_world(parent), skeleton.bone_world(bone))
       else {
-        return false;
+        continue;
       };
       let own = parent.inverse() * bone;
-      own.translation.distance(Vec2::new(BONE_LENGTH, 0.0)) > 0.001
-    })
-    .count()
+      if own.translation.distance(Vec2::new(BONE_LENGTH, 0.0)) > 0.001 {
+        *count += 1;
+      }
+    }
+  }
+  swayed
 }
 
 /// The length of every bone of the rig: how far its tip is along its x axis
@@ -780,9 +784,9 @@ struct Figures {
   reached: Reached,
   /// The fixed steps measured
   steps: usize,
-  /// The skeletons whose spring sways the spine's last bone, after the last
-  /// step
-  swayed: usize,
+  /// The skeletons whose springs sway each bone of [`SPRUNG`], after the
+  /// last step
+  swayed: [usize; 2],
 }
 
 impl Figures {
@@ -1112,17 +1116,15 @@ fn main() {
   }) {
     println!("skeletons_update_springs: {:.1} µs", figures.update);
     held("skeletons_update_springs", figures.update, UPDATE_MAX);
-    // The springs act: they sway the bone that no animation moves off its
-    // place in three skeletons in four at the least
+    // The springs act: each sways its bone, which no animation moves, off
+    // its place in three skeletons in four at the least
     let skeletons = Case::crowd().skeletons;
-    println!(
-      "skeletons_springs_swayed: {} of {skeletons} skeletons",
-      figures.swayed
-    );
-    if figures.swayed * 4 < skeletons * 3 {
+    let [spine, tip] = figures.swayed;
+    println!("skeletons_springs_swayed: b9 in {spine} and b18 in {tip} of {skeletons} skeletons");
+    if spine.min(tip) * 4 < skeletons * 3 {
       guards::miss(format!(
-        "skeletons_update_springs: the springs swayed {} of {skeletons} skeletons",
-        figures.swayed
+        "skeletons_update_springs: the springs swayed b9 in {spine} and b18 in {tip} of {skeletons} \
+         skeletons"
       ));
     }
   }
