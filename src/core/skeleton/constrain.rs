@@ -236,9 +236,10 @@ impl Constrained {
   /// Mirrors every spring across its entity's axes, as the entity's flip
   /// changed along those `axes` (-1 for an axis now mirrored the other way,
   /// 1 for one not): `root` is the entity's transform the last points
-  /// were recorded under, whose origin and axes the mirror is about. Offsets and speeds are mirrored, and the
-  /// last points about the entity's origin, so a turning character's cape
-  /// swings on round. An entity whose axes are flat forgets them instead
+  /// were recorded under, whose origin and axes the mirror is about.
+  /// Offsets and speeds are mirrored, and the last points about the
+  /// entity's origin, so a turning character's cape swings on round. An
+  /// entity whose axes are flat forgets them instead
   pub(super) fn mirror_springs(&mut self, root: Affine2, axes: Vec2) {
     if self.springs.is_empty() {
       return;

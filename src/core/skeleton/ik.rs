@@ -3980,9 +3980,11 @@ mod tests {
     // swings (`FIRST_BONE_SWINGS`, `SWING_HALVINGS`): with the target held,
     // the first bone turns at most that in each step of the swing, and the
     // knee it carries moves at most that turn times part one's length.
-    // Here it turns at most 0.185 rad and the knee moves at most 0.082 of
-    // the farthest reach; without the halving the first bone turned 0.47
-    // rad in one step and the knee moved 0.21 of the farthest reach
+    // The test asserts those bounds: two swings (0.2 rad) for the turn, and
+    // two swings times part one's length, plus 0.01, for the knee. Measured
+    // here, the turn reaches 0.185 rad and the knee moves 0.082 of the
+    // farthest reach; without the halving the first bone turned 0.47 rad in
+    // one step and the knee moved 0.21 of the farthest reach
     let (first, second, length) = dipping();
     let (farthest, _) = side_reaches(&first, &second, length, true);
     let part_one = (first.linear_turned(0.0) * Vec2::new(second.x, second.y)).length();
