@@ -3833,7 +3833,7 @@ fn a_missing_bone_is_warned_once_a_name_and_its_sounds_play_at_the_skeleton() {
 }
 
 #[test]
-fn a_looping_sound_named_by_an_event_is_warned_once_and_stacks() {
+fn a_looping_sound_named_by_an_event_is_warned_once_for_its_data_and_stacks() {
   let log = capture_log();
   let files = sound_files();
   let hum = "audio/hum.sound.ron";
@@ -3864,4 +3864,22 @@ fn a_looping_sound_named_by_an_event_is_warned_once_and_stacks() {
     .count();
   assert_eq!(playing, voices.len());
   assert_eq!(warnings_of(&log, hum), 1, "{:#?}", log.warnings());
+
+  // Unloaded with its skeleton, and loaded again, the data warns again:
+  // the warning is freed with the data it was given for
+  engine.world_mut().despawn(body);
+  let gone = data.id();
+  drop(data);
+  engine.step_frames(3).expect("frames");
+  let unloaded = engine
+    .world()
+    .resource::<Assets<SkeletonData>>()
+    .get(gone)
+    .is_none();
+  assert!(unloaded, "the data is unloaded");
+  let data = engine.assets().add(stepper(hum));
+  let body = spawn_sounding(&mut engine, &data, Vec2::ZERO, SkeletonSounds::flat());
+  play(&mut engine, body, 0, "walk", true);
+  engine.step_frames(70).expect("frames");
+  assert_eq!(warnings_of(&log, hum), 2, "{:#?}", log.warnings());
 }

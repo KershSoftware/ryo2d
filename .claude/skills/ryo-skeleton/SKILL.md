@@ -975,7 +975,7 @@ ctx.world.entity_mut(hero).insert(SkeletonSounds::flat());
 - They play from the fixed step, so up to a step late, as every skeleton event is.
 - A voice is not tied to its skeleton: despawning the skeleton does not stop a sound already playing. A sound played at a place stays where it started; it does not follow the skeleton or the bone, so a long sound on a running character is left behind (play it `flat()`).
 - In a crowd sharing one sound, the sound's `per_frame` limit (one start a frame by default) keeps the first skeleton in entity order whose event fired that frame, not the one nearest the listener.
-- A looping sound named by an event starts another loop each time the event fires, and only its scene's exit stops them (warned once per sound): give events one-shots.
+- A looping sound named by an event starts another loop each time the event fires, and only its scene's exit stops them (warned once per sound for each skeleton data that names it): give events one-shots.
 
 **To play them yourself** (a footstep chosen by the ground under the foot, say), leave `SkeletonSounds` off and read each `SkeletonEvent`: its `audio` holds the path, the linear volume and the balance, which a play takes as `PlayOptions { volume_db: 20.0 * audio.volume.max(1e-3).log10(), pan: audio.balance, position, .. }` with a handle the game loaded for the path.
 

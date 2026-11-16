@@ -13,7 +13,7 @@ use crate::core::ecs::kernel::EcsSystemState;
 use crate::core::ecs::{
   Component, Entity, GlobalTransform, Local, MessageReader, Mut, Query, Res, World,
 };
-use crate::core::hash::{FastMap, FastSet};
+use crate::core::hash::FastMap;
 
 /// Where a skeleton's event sounds play
 #[derive(Debug, Clone, PartialEq)]
@@ -146,6 +146,9 @@ struct DataSounds {
   /// The `at_bone` names its skeletons asked for that it lacks, each
   /// warned about once
   told: Vec<Arc<str>>,
+  /// The looping sounds its events played, each warned about once while
+  /// this data is held (freed with it, so a reload warns again)
+  loops: Vec<AssetId<Sound>>,
 }
 
 /// One play the step found, made once the world is free
@@ -183,8 +186,6 @@ pub(crate) struct SoundsState {
   params: Option<EcsSystemState<Params>>,
   store: FastMap<AssetId<SkeletonData>, DataSounds>,
   plays: Vec<Play>,
-  /// The looping sounds an event played, each warned about once
-  loops: FastSet<AssetId<Sound>>,
 }
 
 /// After the skeletons' step (`FixedSet::Skeletons`): the sounds of every
@@ -197,7 +198,6 @@ pub(crate) fn play_skeleton_sounds(world: &mut World, mut state: Local<SoundsSta
     params,
     store,
     plays,
-    loops,
   } = &mut *state;
   let params = params.get_or_insert_with(|| EcsSystemState::new(world));
   {
@@ -247,6 +247,7 @@ pub(crate) fn play_skeleton_sounds(world: &mut World, mut state: Local<SoundsSta
           version,
           sounds: loaded,
           told: Vec::new(),
+          loops: Vec::new(),
         },
       );
     }
@@ -258,7 +259,10 @@ pub(crate) fn play_skeleton_sounds(world: &mut World, mut state: Local<SoundsSta
         continue;
       };
       let Some(DataSounds {
-        sounds: held, told, ..
+        sounds: held,
+        told,
+        loops,
+        ..
       }) = store.get_mut(&skeleton.data().id())
       else {
         continue;
@@ -279,10 +283,11 @@ pub(crate) fn play_skeleton_sounds(world: &mut World, mut state: Local<SoundsSta
           .as_deref()
           .and_then(|sounds| sounds.get(handle))
           .is_some_and(|definition| definition.looping)
-        && loops.insert(handle.id())
+        && !loops.contains(&handle.id())
       {
+        loops.push(handle.id());
         log::warn!(
-          "{}: a skeleton event plays this looping sound, so each firing starts another loop that only its scene's exit stops (warned once)",
+          "{}: a skeleton event plays this looping sound, so each firing starts another loop that only its scene's exit stops (warned once while this skeleton data is loaded)",
           audio.path
         );
       }
