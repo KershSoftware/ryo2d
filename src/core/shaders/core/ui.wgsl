@@ -277,20 +277,19 @@ fn sprite_texel(
 fn fs_ui(in: UiOut) -> @location(0) vec4<f32> {
     // Every derivative first, where control flow is uniform, each as its
     // world entry takes it: the uv's (sprites, and the glyphs' sampling),
-    // the MSDF body's fwidth(uv) and the rect's fwidth(p)
+    // and the MSDF body's fwidth(uv)
     let uv_ddx = dpdx(in.uv);
     let uv_ddy = dpdy(in.uv);
     let uv_width = fwidth(in.uv);
     let rect_size = max(in.params.zw, vec2<f32>(1e-4));
     let rect_p = (in.uv - vec2<f32>(0.5)) * rect_size;
-    let rect_width = fwidth(rect_p);
     let nearest = (in.flags & FLAG_NEAREST) != 0u;
 
     var color = vec4<f32>(0.0);
     switch in.kind {
         // fs_ui_rect
         case KIND_RECT: {
-            color = ui_rect(rect_p, rect_size, rect_width, in.tint, in.params, in.extra);
+            color = ui_rect(rect_p, rect_size, 1.0 / globals.px_per_unit, in.tint, in.params, in.extra);
         }
         // fs_text_mask
         case KIND_MASK: {

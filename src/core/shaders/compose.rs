@@ -291,6 +291,37 @@ mod tests {
   }
 
   #[test]
+  fn no_line_or_rect_coverage_uses_a_derivative() {
+    // Only the uv's derivatives that pick a texture's mip level or size a glyph's
+    // MSDF body are allowed; a line's or a rect's coverage comes from its distances
+    let sources = [
+      ("line.wgsl", include_str!("core/line.wgsl")),
+      ("line_style.wgsl", include_str!("include/line_style.wgsl")),
+      ("line_pieces.wgsl", include_str!("include/line_pieces.wgsl")),
+      ("line_cover.wgsl", include_str!("include/line_cover.wgsl")),
+      ("ui_rect.wgsl", include_str!("include/ui_rect.wgsl")),
+      ("ui.wgsl", include_str!("core/ui.wgsl")),
+    ];
+    let allowed = [
+      "let ddx = dpdx(in.uv);",
+      "let ddy = dpdy(in.uv);",
+      "let uv_ddx = dpdx(in.uv);",
+      "let uv_ddy = dpdy(in.uv);",
+      "let uv_width = fwidth(in.uv);",
+    ];
+    for (name, source) in sources {
+      for line in source.lines() {
+        let code = line.split("//").next().unwrap_or("").trim();
+        let derivative = ["fwidth", "dpdx", "dpdy"].iter().any(|d| code.contains(d));
+        assert!(
+          !derivative || allowed.contains(&code),
+          "{name} takes a derivative: {code}"
+        );
+      }
+    }
+  }
+
+  #[test]
   fn sprites_and_the_ui_place_quads_with_one_function() {
     let bodies = [
       ("sprite", include_str!("core/sprite.wgsl")),

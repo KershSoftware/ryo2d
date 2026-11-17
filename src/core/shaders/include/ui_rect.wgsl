@@ -1,13 +1,13 @@
 // The UI rectangle fragment body: anti-aliased rounded corners and an
-// optional border. p is measured from the rect's centre and p_width is its
-// fwidth; size is in UI units.
+// optional border. p is measured from the rect's centre; size and p_size (one
+// pixel's width) are in UI units, p_size from the UI's scale.
 // params: x = corner radius, y = border width, zw = size (UI units).
 // extra = border colour. Returns premultiplied colour, before the stage's
 // output encoding.
 fn ui_rect(
     p: vec2<f32>,
     size: vec2<f32>,
-    p_width: vec2<f32>,
+    p_size: f32,
     tint: vec4<f32>,
     params: vec4<f32>,
     extra: vec4<f32>,
@@ -15,7 +15,7 @@ fn ui_rect(
     let r = clamp(params.x, 0.0, 0.5 * min(size.x, size.y));
     let q = abs(p) - 0.5 * size + vec2<f32>(r);
     let d = length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0) - r;
-    let aa = max(length(p_width) * 0.70710678, 1e-4);
+    let aa = max(p_size, 1e-4);
     let outer = clamp(0.5 - d / aa, 0.0, 1.0);
     let fill_rgb = srgb_to_linear(tint.rgb);
     let border = params.y;
