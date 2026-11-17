@@ -86,3 +86,17 @@ These replace anything above that says otherwise.
 - **Speed:** a new line bench (a thousand lines and trails of mixed joins, extract and draw) and the UI bench within 5% of main; no allocation added.
 - **Visual review:** before-and-after captures of the text demo's page 5, the trails demo's pages, the UI demo's checkbox and dropdown pages, a debug overlay and a pixel-art page, at 1x and 2x, side by side, for the owner's hand-play. The tour changes only on pages with lines, each looked at.
 - **Docs:** the render, trail, shaders and UI notes, `ryo-renderer`, the line and trail sections of the skills, `ryo-ui`'s lines, and the backlog notes that pointed here.
+
+## Building on the GPU (owner, 2026-11-16)
+
+Measured after packing (48-byte vertex, a per-line table): the upload is 4% under main, but building lines on the CPU costs +73% and a lines-only frame +40%, over the owner's 15%. The cost is the builder's per-vertex work (about 31% more vertices, each with its edge distances and pushes worked out). The owner chose to move that work to the GPU, the direction modern renderers take for strokes.
+
+- **What the CPU sends.** Per line, its entry in the line table (style, effect, atlas slot, emission, join, cap, edge, miter limit) and its points: position, half width, colour (sRGB bytes) and the distance along, one record a point, in a storage buffer. Lines are appended per frame as today, by copying points; nothing is tessellated on the CPU.
+- **Pieces.** A line is drawn as instances of fixed vertex templates, one instance a piece: a segment (its quad and fringe), a join (miter, bevel or round), a cap (butt, square or round). The CPU writes one small piece record per piece (the piece kind, the line, the point it starts at), which tells the vertex shader where to read; the template's vertex count is fixed per kind (a round piece uses enough steps for a fraction of a pixel at the largest width the engine allows, unused steps collapse to nothing, or its radius is exact by the offset's length anyway, so a fixed small step count serves).
+- **The vertex shader** reads the piece's points (and, at a join, the neighbouring segments), and computes what Task 2's builder computes today: the corner position, the distances across and to a second edge, the round offset, the push direction and limit, and the blend factor k; then pushes the fringe by a pixel, as already designed. The rules are those of the CPU builder, which stays as the reference the GPU's output is tested against.
+- **Watertightness.** Neighbouring pieces compute their shared corners from the same inputs with the same arithmetic in the same function, so they agree bit for bit; a test draws translucent lines over the CPU builder's coverage and finds no pixel covered twice or missed.
+- **The UI** draws its lines through the same WGSL functions (an include both the batch and the UI pipeline use), from the same piece records, so world and UI lines stay equal.
+- **Debug shapes** keep their per-camera snapping by adjusting their points before they are sent.
+- **Culling and effects** work as already designed: the box per line on the CPU from its points; displacement in the vertex shader.
+- **The web** already needs WebGPU (storage buffers in the vertex stage).
+- **Speed target:** the owner's ~15% on the lines-only bench, expected to land at or under main, since the CPU only copies points.
