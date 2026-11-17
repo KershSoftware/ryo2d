@@ -103,7 +103,7 @@ pub(crate) struct UiGpu {
   held_slots: Vec<SlotUniform>,
   slots_at: Option<u64>,
   pipeline: wgpu::RenderPipeline,
-  /// The unit quad every instance is drawn from (a line triangle reads only
+  /// The unit quad every instance is drawn from (a line instance reads only
   /// the vertex index)
   quad: wgpu::Buffer,
   /// What a slot no instance of a run samples holds

@@ -1,11 +1,14 @@
 //! One UI draw item on the GPU: a quad (rect, glyph, sprite) with today's
-//! sprite-instance lanes, or one triangle of a line with explicit corners
+//! sprite-instance lanes, or two triangles of a line's piece with the
+//! points they are built from
 
 use bytemuck::{Pod, Zeroable};
 use glam::Vec2;
 
 use crate::core::graphics::SpriteInstance;
 use crate::core::render::PixelRect;
+use crate::core::render::batch::PieceKind;
+use crate::core::ui::Color;
 
 /// What an instance draws, and which fragment body draws it (`ui.wgsl`'s
 /// `KIND_` constants)
@@ -87,8 +90,39 @@ impl ClipRect {
   }
 }
 
+/// Where a line instance's piece kind and pair sit in its bits word, above
+/// the window's present and seam bits (`ui.wgsl`'s line path)
+const LINE_KIND_SHIFT: u32 = 12;
+const LINE_PAIR_SHIFT: u32 = 14;
+
+/// The points a line instance carries: the six about its piece's point
+/// (slot 2 the point itself, slot k the point k - 2 along the line from
+/// it), each its position before the line's offset and its `u`, and which slots hold a point (bit k) and
+/// which is a closed line's first point, its seam (bit k)
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct UiLineWindow {
+  pub(crate) points: [(Vec2, f32); 6],
+  pub(crate) present: u32,
+  pub(crate) seam: u32,
+}
+
+/// What every piece of a UI line shares: the offset its points are moved
+/// by (the GPU adds it, with a scroll slot's), one half width and one
+/// colour (sRGB, straight alpha), the half length between a two-point
+/// line's caps, its params and its miter limit
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct UiLine {
+  pub(crate) at: Vec2,
+  pub(crate) half_width: f32,
+  pub(crate) along_half: f32,
+  pub(crate) color: Color,
+  pub(crate) params: [f32; 4],
+  pub(crate) miter_limit: f32,
+}
+
 /// A UI draw item: eight vec4 lanes (a quad's are a `SpriteInstance`'s, in
-/// order; a line triangle's are its corners), then the clip, kind and flags.
+/// order; a line's are two triangles of one of its pieces with the points
+/// they are built from), then the clip, kind and flags.
 ///
 /// In a scroll slot (`slot()` above 0) its positions are relative to the
 /// slot: the shader adds the slot's offset, and its clip is the slot's
@@ -123,24 +157,45 @@ impl UiInstance {
     }
   }
 
-  /// One triangle of a line: each corner's position, uv and linear straight
-  /// colour, as the line builder made them
-  pub(crate) fn triangle(
-    corners: [(Vec2, Vec2, [f32; 4]); 3],
-    params: [f32; 4],
+  /// Two triangles of a line's piece (`pair` 0 the first two, 1 the next
+  /// two), with the points the GPU builds them from (`line_pieces.wgsl`'s
+  /// `line_piece_vertex`, as for a world line). Lanes: the window's six
+  /// positions (a0-a2), their `u` (a3, a4.xy), the half width and a
+  /// two-point line's half length between its caps (a4.zw), the line's
+  /// params (a5), then its sRGB colour as two exact 16-bit halves, the miter
+  /// limit and the window's bits (a6), and the offset added to every point
+  /// (a7.xy)
+  pub(crate) fn line_piece(
+    window: &UiLineWindow,
+    piece: PieceKind,
+    pair: u32,
+    line: &UiLine,
     clip: ClipRect,
   ) -> UiInstance {
-    let [a, b, c] = corners;
+    let [p0, p1, p2, p3, p4, p5] = window.points;
+    let kind = match piece {
+      PieceKind::Segment => 0,
+      PieceKind::Join => 1,
+      PieceKind::StartCap => 2,
+      PieceKind::EndCap => 3,
+    };
+    let bits = (window.present & 0x3F)
+      | (window.seam & 0x3F) << 6
+      | kind << LINE_KIND_SHIFT
+      | (pair & 0xF) << LINE_PAIR_SHIFT;
+    let Color { r, g, b, a } = line.color;
+    let half = |low: u8, high: u8| f32::from(u16::from(low) | u16::from(high) << 8);
     UiInstance {
       data: [
-        [a.0.x, a.0.y, a.1.x, a.1.y],
-        [b.0.x, b.0.y, b.1.x, b.1.y],
-        [c.0.x, c.0.y, c.1.x, c.1.y],
-        a.2,
-        b.2,
-        c.2,
-        params,
-        [0.0; 4],
+        [p0.0.x, p0.0.y, p1.0.x, p1.0.y],
+        [p2.0.x, p2.0.y, p3.0.x, p3.0.y],
+        [p4.0.x, p4.0.y, p5.0.x, p5.0.y],
+        [p0.1, p1.1, p2.1, p3.1],
+        [p4.1, p5.1, line.half_width, line.along_half],
+        line.params,
+        // Below 2^24, so exact as f32
+        [half(r, g), half(b, a), line.miter_limit, bits as f32],
+        [line.at.x, line.at.y, 0.0, 0.0],
       ],
       meta: Self::meta(clip, UiKind::LINE, 0, 0),
     }

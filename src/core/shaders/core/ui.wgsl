@@ -1,5 +1,5 @@
 // The UI's one pipeline: every UI instance (rects, glyphs, sprites, line
-// triangles) through one vertex and one fragment entry. The fragment bodies
+// pieces) through one vertex and one fragment entry. The fragment bodies
 // are the world shaders' (include files); the clip is tested last, so it
 // passes exactly the pixels a scissor would. An instance in a scroll slot
 // is moved by the slot's offset and drawn under its clip.
@@ -45,9 +45,13 @@ struct QuadVertex {
 }
 
 // A quad's lanes are a sprite instance's: transform rows (a0-a2, emission - 1
-// in a0.w), uv rect, tint, effect params, effect extra and uv bounds. A line
-// triangle's are its corners' position and uv (a0-a2), their colours (a3-a5)
-// and the line's params (a6).
+// in a0.w), uv rect, tint, effect params, effect extra and uv bounds. A
+// line's (`UiInstance::line_piece`) are two triangles of one of its pieces
+// and the points they are built from: the window's six positions (a0-a2),
+// their `u` (a3, a4.xy), the half width and a two-point line's half length
+// between its caps (a4.zw), the line's params (a5), its sRGB colour as two
+// exact 16-bit halves, the miter limit and the window's bits (a6), and the
+// offset every point is moved by (a7.xy).
 struct UiInstanceIn {
     @location(2) a0: vec4<f32>,
     @location(3) a1: vec4<f32>,
@@ -63,7 +67,9 @@ struct UiInstanceIn {
 }
 
 struct UiOut {
-    @builtin(position) position: vec4<f32>,
+    // Invariant, so copies of a line's place in its pieces' instances land
+    // on the same spot, as the world's do
+    @builtin(position) @invariant position: vec4<f32>,
     @location(0) uv: vec2<f32>,
     // A line's colour, interpolated across its triangle (linear, straight)
     @location(1) color: vec4<f32>,
@@ -76,6 +82,9 @@ struct UiOut {
     @location(7) @interpolate(flat) clip: vec4<u32>,
     @location(8) @interpolate(flat) kind: u32,
     @location(9) @interpolate(flat) flags: u32,
+    // A line's measures (`LineFringe`); its `k`, half length between caps
+    // and vertex flags ride in `extra`
+    @location(10) measure: vec3<f32>,
 }
 
 // The clip an instance draws under: its own in slot 0; in a slot the
@@ -102,6 +111,93 @@ fn outside_clip(lo: vec2<f32>, hi: vec2<f32>, clip: vec4<u32>) -> bool {
     return hi.x <= c.x || lo.x >= c.z || hi.y <= c.y || lo.y >= c.w || c.z <= c.x || c.w <= c.y;
 }
 
+// A line instance's window bits: bits 0-5 the slots holding a point, 6-11
+// those holding a closed line's first point (its seam), then the piece's
+// kind and which pair of its triangles
+const LINE_KIND_SHIFT: u32 = 12u;
+const LINE_PAIR_SHIFT: u32 = 14u;
+
+// A line instance's points about its piece's point, from slot `first` (the
+// window about a vertex's own point starts where `line_piece_corner` says),
+// each moved by `offset`
+fn ui_line_window(instance: UiInstanceIn, first: i32, offset: vec2<f32>) -> LineWindow {
+    var xy = array<vec2<f32>, 6>(
+        instance.a0.xy, instance.a0.zw, instance.a1.xy, instance.a1.zw, instance.a2.xy, instance.a2.zw,
+    );
+    var us = array<f32, 6>(instance.a3.x, instance.a3.y, instance.a3.z, instance.a3.w, instance.a4.x, instance.a4.y);
+    let bits = u32(instance.a6.w);
+    let colour = unpack4x8unorm(u32(instance.a6.x) | (u32(instance.a6.y) << 16u));
+    var w: LineWindow;
+    w.present = 0u;
+    w.seam = 0u;
+    for (var slot = 0; slot < 5; slot++) {
+        let at = first + slot;
+        w.p[slot] = LinePt(xy[at] + offset, instance.a4.z, us[at], colour);
+        w.present |= ((bits >> u32(at)) & 1u) << u32(slot);
+        w.seam |= ((bits >> u32(6 + at)) & 1u) << u32(slot);
+    }
+    return w;
+}
+
+// A line instance's vertex: two triangles of its piece, built by the
+// world's piece functions from its points, each moved by the line's offset
+// and its slot's (`at + by`, as the CPU moves a line placed absolute, so
+// both build from the same points), pushed a pixel of the UI image out and
+// measured as the world's are (`line_pieces.wgsl`, `line_cover.wgsl`: no
+// displacement, no snap). An instance wholly outside its clip, its points'
+// box grown by how far a vertex reaches from them (`ui_line_reach` on the
+// CPU), is collapsed
+fn ui_line(instance: UiInstanceIn, index: u32, by: vec2<f32>, clip: vec4<u32>, base: UiOut) -> UiOut {
+    var out = base;
+    let bits = u32(instance.a6.w);
+    let kind = (bits >> LINE_KIND_SHIFT) & 3u;
+    let pair = (bits >> LINE_PAIR_SHIFT) & 0xFu;
+    let ppu = globals.px_per_unit;
+    let half_width = instance.a4.z;
+    let miter_limit = instance.a6.z;
+    let offset = instance.a7.xy + by;
+
+    // The box of the points its vertices lie about: a segment's ends and
+    // their neighbours (slots 1 to 4), a join's point and its neighbours
+    var xy = array<vec2<f32>, 6>(
+        instance.a0.xy, instance.a0.zw, instance.a1.xy, instance.a1.zw, instance.a2.xy, instance.a2.zw,
+    );
+    let last = select(3, 4, kind == PIECE_SEGMENT);
+    var lo = xy[2];
+    var hi = xy[2];
+    for (var slot = 1; slot <= last; slot++) {
+        if ((bits >> u32(slot)) & 1u) == 1u {
+            lo = min(lo, xy[slot]);
+            hi = max(hi, xy[slot]);
+        }
+    }
+    var pixel = 0.0;
+    if ppu > 0.0 {
+        pixel = 1.0 / ppu;
+    }
+    let reach = vec2<f32>(miter_limit * (max(half_width, 0.0) + pixel));
+    let p0 = pixel_of(globals.view_proj * vec4<f32>(lo + offset - reach, 0.0, 1.0));
+    let p1 = pixel_of(globals.view_proj * vec4<f32>(hi + offset + reach, 0.0, 1.0));
+    if outside_clip(min(p0, p1), max(p0, p1), clip) {
+        out.position = COLLAPSED;
+        return out;
+    }
+
+    let tri = pair * 2u + (index % 6u) / 3u;
+    let corner = index % 3u;
+    let w = ui_line_window(instance, line_piece_corner(kind, tri, corner), offset);
+    let look = LineLook(JOIN_MITER, CAP_BUTT, miter_limit);
+    let vertex = line_piece_vertex(w, look, kind, tri, corner);
+    let fringe = line_fringe(vertex, vertex.position, ppu);
+    out.position = globals.view_proj * vec4<f32>(fringe.pos, 0.0, 1.0);
+    out.color = vec4<f32>(srgb_to_linear(vertex.color.rgb), vertex.color.a);
+    out.uv = fringe.uv;
+    out.params = instance.a5;
+    out.measure = fringe.measure;
+    out.extra = vec4<f32>(vertex.k, instance.a4.w, f32(vertex.flags), 0.0);
+    return out;
+}
+
 @vertex
 fn vs_ui(vertex: QuadVertex, instance: UiInstanceIn, @builtin(vertex_index) index: u32) -> UiOut {
     var out: UiOut;
@@ -121,32 +217,7 @@ fn vs_ui(vertex: QuadVertex, instance: UiInstanceIn, @builtin(vertex_index) inde
     let clip = clip_in_slot(own, slot, flags);
     out.clip = clip;
     if kind == KIND_LINE {
-        // Corners 0, 1, 2 make the triangle; the quad's other three
-        // vertices repeat corner 2, so its second triangle has no area
-        let corner = min(index % 6u, 2u);
-        var at = instance.a2;
-        var color = instance.a5;
-        if corner == 0u {
-            at = instance.a0;
-            color = instance.a3;
-        } else if corner == 1u {
-            at = instance.a1;
-            color = instance.a4;
-        }
-        // A triangle wholly outside its clip is collapsed
-        let p0 = pixel_of(globals.view_proj * vec4<f32>(instance.a0.xy + by, 0.0, 1.0));
-        let p1 = pixel_of(globals.view_proj * vec4<f32>(instance.a1.xy + by, 0.0, 1.0));
-        let p2 = pixel_of(globals.view_proj * vec4<f32>(instance.a2.xy + by, 0.0, 1.0));
-        if outside_clip(min(min(p0, p1), p2), max(max(p0, p1), p2), clip) {
-            out.position = COLLAPSED;
-            return out;
-        }
-        // As line.wgsl's vs_main for a solid UI line: no displacement, no snap
-        out.position = globals.view_proj * vec4<f32>(at.xy + by, 0.0, 1.0);
-        out.uv = at.zw;
-        out.color = color;
-        out.params = instance.a6;
-        return out;
+        return ui_line(instance, index, by, clip, out);
     }
     // Quads: where sprite.wgsl's vs_main puts them (quad.wgsl), moved by
     // the slot's offset before the camera and the pixel-art snap; one wholly
@@ -206,15 +277,13 @@ fn sprite_texel(
 fn fs_ui(in: UiOut) -> @location(0) vec4<f32> {
     // Every derivative first, where control flow is uniform, each as its
     // world entry takes it: the uv's (sprites, and the glyphs' sampling),
-    // the MSDF body's fwidth(uv), the rect's fwidth(p) and the line's
-    // across-width rate
+    // the MSDF body's fwidth(uv) and the rect's fwidth(p)
     let uv_ddx = dpdx(in.uv);
     let uv_ddy = dpdy(in.uv);
     let uv_width = fwidth(in.uv);
     let rect_size = max(in.params.zw, vec2<f32>(1e-4));
     let rect_p = (in.uv - vec2<f32>(0.5)) * rect_size;
     let rect_width = fwidth(rect_p);
-    let line_aa = fwidth(abs(in.uv.y - 0.5) * 2.0);
     let nearest = (in.flags & FLAG_NEAREST) != 0u;
 
     var color = vec4<f32>(0.0);
@@ -249,15 +318,11 @@ fn fs_ui(in: UiOut) -> @location(0) vec4<f32> {
             let texel = sprite_texel(in.uv, in.bounds, uv_ddx, uv_ddy, nearest);
             color = finish_linear(texel, in.tint, in.emission);
         }
-        // The line style, its edge ramped by the derivative until UI lines
-        // are built by the world's pieces
+        // line.wgsl's fs_main: covered by its distances in pixels
         case KIND_LINE: {
-            // Ramping over the pixel its edge crosses (`line_aa` is the
-            // distance from the centre per pixel)
-            let edge_dist = abs(in.uv.y - 0.5) * 2.0;
-            let to_edge = (1.0 - edge_dist) / max(line_aa, 1e-4);
-            let shape = style_shape_at(line_style(in.params), edge_dist);
-            color = styled(in.color, shape, in.params, clamp(to_edge + 0.5, 0.0, 1.0));
+            let m = LineMeasure(in.measure, u32(in.extra.z), in.extra.x, in.extra.y);
+            let pixel = line_pixel(m, in.params, globals.px_per_unit);
+            color = styled(in.color, pixel.shape, in.params, pixel.cover);
         }
         default: {}
     }

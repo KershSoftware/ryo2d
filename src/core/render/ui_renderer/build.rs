@@ -1,7 +1,8 @@
 //! The frame's UI commands as UI instances, in painter's order. What would
 //! draw no pixel is culled before it is built, texts go through the text
 //! cache (a reused text is one copy of its instances), and a line becomes
-//! its builder's triangles. A draw in a scroll slot is built relative to
+//! its pieces, two triangles an instance, carrying the points the GPU
+//! builds them from. A draw in a scroll slot is built relative to
 //! the slot, which the shader moves and clips. A fragment's run is one copy
 //! of its kept instances while it is the same (`UiRunCache`), left as it is
 //! where the last frame put it (`InPlace`); in a slot it is built unculled,
@@ -14,22 +15,25 @@ use std::ops::Range;
 use glam::Vec2;
 
 use super::gpu::{SLOTS, SlotUniform};
-use super::instance::{ClipRect, UiInstance, UiKind};
+use super::instance::{ClipRect, UiInstance, UiKind, UiLine, UiLineWindow};
 use super::runs::TexNeed;
 use crate::core::asset::Assets;
 use crate::core::graphics::{
   CameraView, GlyphPage, Image, Presentation, SpriteGpuRenderer, SpriteInstance, TextureId,
   place_in_slot,
 };
-use crate::core::render::batch::{Filter, PageKind, PolyPoint, Sampling, Triangles, push_polyline};
+use crate::core::render::batch::{
+  Filter, MITER_LIMIT, PageKind, Piece, PieceKind, PolyPoint, Sampling, along_half, filter_points,
+  piece_list, piece_triangles,
+};
 use crate::core::render::text::{TextPlacement, TextSources, TextTargets};
 use crate::core::render::ui::{
-  line_of, rect_instance, scissor_of, sprite_instance, text_of, ui_view, ui_z,
+  rect_instance, scissor_of, sprite_instance, text_of, ui_line_points, ui_view, ui_z,
 };
 use crate::core::render::ui_retain::{
   KeptRun, StampSources, TextSink, UiRenderEnv, UiRunCache, UiTextCache, stamp_of,
 };
-use crate::core::render::{DrawGlyph, DrawList, DrawPayload, PixelRect, UiSpace, reach};
+use crate::core::render::{DrawGlyph, DrawPayload, PixelRect, UiSpace, reach};
 use crate::core::text::GlyphFormat;
 use crate::core::ui::immediate::{FragmentRun, ScrollSlot, UiCommand, UiCommands, UiDraw, shifted};
 use crate::core::ui::{Color, Rect};
@@ -199,9 +203,10 @@ pub(crate) struct UiBuild {
   shown_current: bool,
   /// The commands' painter's order, when they arrive out of it
   order: Vec<u32>,
-  /// A line's points and triangles
+  /// A line's points, filtered, and its pieces
   points: Vec<PolyPoint>,
-  triangles: Triangles,
+  filtered: Vec<PolyPoint>,
+  pieces: Vec<Piece>,
   /// The frame's slots as their draws are placed (`SlotAt`)
   slot_at: Vec<SlotAt>,
 }
@@ -762,7 +767,7 @@ fn paint_key(draw: &UiDraw) -> (i32, bool) {
 /// the UI camera's view where it is drawn, or with an empty clip) builds
 /// nothing; in a slot a text is not culled glyph by glyph (see
 /// `TextInstances`). Texts go through `texts`; without `sources` they are
-/// skipped. `targets.list` is scratch, cleared for each text and line.
+/// skipped. `targets.list` is scratch, cleared for each text.
 ///
 /// When the commands arrive in the painter's order, a fragment's run is
 /// copied from `runs` while it is the same, or built whole and kept there
@@ -1220,7 +1225,7 @@ fn build_command(
         build.push_sprite(&instance, texture, *filter, placed.clip, placed.mark);
       }
     }
-    UiCommand::Line { .. } => build_line(build, &frame.seen, targets.list, z, &placed),
+    UiCommand::Line { .. } => build_line(build, &frame.seen, &placed),
     UiCommand::Text { .. } => {
       let Some(sources) = frame.sources else {
         return absolute;
@@ -1285,59 +1290,145 @@ pub(crate) fn rect_built(
   frame.rect(&placed, placed.at(rect), fill, radius, border)
 }
 
-/// A line command as its builder's triangles, one instance each, in index
-/// order. The line is culled by its box as the batch culls it; then a
-/// triangle wholly outside the clip is left out (lines are never snapped).
-/// Both are tested where `placed`'s slot draws them, unless nothing of it
-/// is culled.
-fn build_line(build: &mut UiBuild, seen: &Seen, list: &mut DrawList, z: i32, placed: &Placed<'_>) {
+/// A line draw's instances as `build_ui` builds them, culled or, in one of
+/// the shader's slots, not (tests)
+#[cfg(test)]
+pub(crate) fn line_built(
+  draw: &UiDraw,
+  slots: &[ScrollSlot],
+  env: &UiRenderEnv,
+  cull: bool,
+) -> Vec<UiInstance> {
+  let at: Vec<SlotAt> = slots
+    .iter()
+    .map(|slot| SlotAt::of(slot, &env.space))
+    .collect();
+  let frame = Frame {
+    env,
+    slots,
+    at: &at,
+    seen: Seen::of(env),
+    sources: None,
+    images: crate::core::graphics::no_images(),
+    real_time: 0.0,
+  };
+  let mut build = UiBuild::default();
+  if let Some(placed) = frame.place(draw, cull).placed {
+    build_line(&mut build, &frame.seen, &placed);
+  }
+  build.instances.to_vec()
+}
+
+/// A line command as its pieces (segments and joins: UI lines are mitered
+/// and butt capped), two triangles an instance, each carrying the points
+/// its piece is built from on the GPU, as a world line's (`line_pieces.wgsl`;
+/// `ui_lines_draw_as_world_lines_at_every_ui_scale`). An instance is culled
+/// by the box of the points its triangles lie about, grown by how far a
+/// vertex reaches from them (a miter's tip and the fringe's pixel, each up
+/// to `MITER_LIMIT` times: `ui_line_reach`), where `placed`'s slot draws it,
+/// unless nothing of it is culled
+/// (`a_line_whose_fringe_or_miter_tip_reaches_in_is_kept`).
+fn build_line(build: &mut UiBuild, seen: &Seen, placed: &Placed<'_>) {
   let UiBuild {
     instances,
     needs,
     points,
-    triangles,
+    filtered,
+    pieces,
     ..
   } = build;
-  let Some((style, look)) = line_of(placed.command, z, points, placed.moved) else {
+  let Some((style, at)) = ui_line_points(placed.command, points, placed.moved) else {
     return;
   };
-  list.clear();
-  triangles.clear();
-  push_polyline(list, triangles, points, &style, look);
-  let Some(line) = list.triangles(0) else {
-    return;
-  };
-  if placed.cull.is_some()
-    && !seen
-      .view
-      .is_visible(line.min + placed.by, line.max + placed.by)
-  {
+  // The filter drops points that are not finite; an offset that is not
+  // draws nothing either, so the shader is given no infinity or NaN
+  if !at.is_finite() {
     return;
   }
-  let range = line.indices.start as usize..line.indices.end as usize;
-  let indices = triangles.indices.get(range).unwrap_or(&[]);
-  for triangle in indices.as_chunks::<3>().0 {
-    let (Some((a, params)), Some((b, _)), Some((c, _))) = (
-      triangles.corner(triangle[0]),
-      triangles.corner(triangle[1]),
-      triangles.corner(triangle[2]),
-    ) else {
-      continue;
-    };
-    // A triangle a line piece leaves unused has no area and draws nothing
-    if (b.0 - a.0).perp_dot(c.0 - a.0) == 0.0 {
+  let Some(closed) = filter_points(points, style.closed, filtered) else {
+    return;
+  };
+  let Some(first) = filtered.first() else {
+    return;
+  };
+  let line = UiLine {
+    at,
+    half_width: first.half_width,
+    along_half: along_half(filtered, closed, style.cap),
+    color: first.color,
+    params: style.params,
+    miter_limit: MITER_LIMIT,
+  };
+  let reach = Vec2::splat(ui_line_reach(&line, seen.scale.x));
+  piece_list(filtered.len(), closed, style.cap, pieces);
+  for piece in pieces.iter() {
+    let window = line_window(filtered, closed, piece);
+    let (min, max) = window_box(&window, piece.kind);
+    if !placed.sees(seen, min + at - reach, max + at + reach) {
       continue;
     }
-    let (min, max) = (a.0.min(b.0).min(c.0), a.0.max(b.0).max(c.0));
-    let shown = placed
-      .cull
-      .is_none_or(|cull| seen.meets(min + placed.by, max + placed.by, cull));
-    if shown {
-      let triangle = UiInstance::triangle([a, b, c], params, placed.clip);
-      instances.push(placed.mark.on(triangle));
+    let pairs = piece_triangles(piece.kind, style.join, style.cap).div_ceil(2);
+    for pair in 0..pairs {
+      let instance = UiInstance::line_piece(&window, piece.kind, pair, &line, placed.clip);
+      instances.push(placed.mark.on(instance));
       needs.push(TexNeed::None);
     }
   }
+}
+
+/// How far a UI line's vertices reach from the points they lie about, in UI
+/// units at `px_scale` image pixels per unit: a mitered tip's miter times
+/// the half width, and its fringe the miter times a pixel (`ui.wgsl`
+/// collapses by the same reach)
+fn ui_line_reach(line: &UiLine, px_scale: f32) -> f32 {
+  let pixel = if px_scale.is_finite() && px_scale > 0.0 {
+    1.0 / px_scale
+  } else {
+    0.0
+  };
+  line.miter_limit * (line.half_width.max(0.0) + pixel)
+}
+
+/// The six points about `piece`'s point, wrapping round a closed line; a
+/// join reads only the five about its own (slot 5 left empty)
+fn line_window(points: &[PolyPoint], closed: bool, piece: &Piece) -> UiLineWindow {
+  let mut window = UiLineWindow::default();
+  let n = points.len() as i64;
+  let slots = if piece.kind == PieceKind::Segment {
+    6
+  } else {
+    5
+  };
+  for slot in 0..slots {
+    let mut at = i64::from(piece.point) + slot as i64 - 2;
+    if closed {
+      at = at.rem_euclid(n);
+    }
+    let Some(point) = usize::try_from(at).ok().and_then(|at| points.get(at)) else {
+      continue;
+    };
+    window.points[slot] = (point.pos, point.u);
+    window.present |= 1 << slot;
+    if closed && at == 0 {
+      window.seam |= 1 << slot;
+    }
+  }
+  window
+}
+
+/// The box of the points a piece's vertices lie about: a segment's ends and
+/// their neighbours (slots 1 to 4), a join's point and its neighbours (1 to
+/// 3); each vertex is within the reach of one of them
+fn window_box(window: &UiLineWindow, kind: PieceKind) -> (Vec2, Vec2) {
+  let last = if kind == PieceKind::Segment { 4 } else { 3 };
+  let (mut min, mut max) = (window.points[2].0, window.points[2].0);
+  for slot in 1..=last {
+    if window.present & (1 << slot) != 0 {
+      min = min.min(window.points[slot].0);
+      max = max.max(window.points[slot].0);
+    }
+  }
+  (min, max)
 }
 
 /// A text's glyphs, bitmap cells and icons, taken from the scratch draw

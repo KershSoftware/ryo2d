@@ -41,8 +41,10 @@ use std::ops::Range;
 
 use glam::Vec2;
 
+#[cfg(test)]
+use super::polyline::Triangles;
 use super::polyline::{
-  LineInfo, MAX_LINES, MITER_LIMIT, Piece, PieceKind, PolyPoint, PolyStyle, Triangles, along_half,
+  LineInfo, MAX_LINES, MITER_LIMIT, Piece, PieceKind, PolyPoint, PolyStyle, along_half,
   filter_points, piece_list, piece_triangles,
 };
 use super::{BlendMode, Filter};
@@ -300,7 +302,7 @@ impl LineStream {
 }
 
 /// Where a line's triangles go: the GPU's stream (world lines) or the CPU
-/// builder (the UI's lines, and the reference).
+/// builder (the reference, tests).
 pub(crate) trait LineSink {
   /// The line table entry the next line takes
   fn next_line(&self) -> u32;
@@ -319,6 +321,7 @@ impl LineSink for LineStream {
   }
 }
 
+#[cfg(test)]
 impl LineSink for Triangles {
   fn next_line(&self) -> u32 {
     self.lines.len() as u32

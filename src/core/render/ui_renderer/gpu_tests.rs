@@ -1,6 +1,7 @@
 use bytemuck::Zeroable;
 use glam::Vec2;
 
+use super::build::line_built;
 use super::*;
 use crate::core::asset::Handle;
 use crate::core::ecs::Entity;
@@ -10,17 +11,16 @@ use crate::core::graphics::{
   Camera2d, CameraView, Image, Presentation, RenderLayers, SpriteGpuRenderer, SpriteInstance,
   place_in_slot,
 };
-use crate::core::render::batch::{
-  Batch2D, BlendMode, Bound, Filter, LineLook, PolyPoint, PolyStyle, Sampling, Triangles,
-  push_polyline,
-};
+use crate::core::render::batch::{Batch2D, BlendMode, Bound, Filter, Sampling, push_polyline};
+use crate::core::render::ui_retain::UiRenderEnv;
 use crate::core::render::{
-  DrawKind, DrawList, PixelRect, SCENE_FORMAT, SpriteLook, SpriteShading, UI_FORMAT, plan_cameras,
+  DrawKind, DrawList, PixelRect, SCENE_FORMAT, SpriteLook, SpriteShading, UI_FORMAT, UiSpace,
+  plan_cameras,
 };
 use crate::core::shaders::compose::UI;
 use crate::core::text::{FontId, GlyphFormat, GlyphImage, GlyphKey};
-use crate::core::trail::{LineCap, LineJoin};
-use crate::core::ui::Color;
+use crate::core::ui::immediate::{ScrollSlot, UiCommand, UiDraw};
+use crate::core::ui::{Color, Rect};
 
 #[test]
 fn the_ui_module_validates_under_webgpu_rules() {
@@ -240,6 +240,75 @@ fn camera_bound(
 /// the UI pipeline, all but one rect clipped by one clip in each instance,
 /// in one run: each draws, and no pixel outside the clip changes but the
 /// unclipped rect's
+/// A line command's instances as the UI builds them (culled), on a UI image
+/// of `image` pixels at `px_scale` image pixels per UI unit
+fn line_instances(command: UiCommand, px_scale: f32, image: (u32, u32)) -> Vec<UiInstance> {
+  let env = UiRenderEnv {
+    space: UiSpace {
+      size: Vec2::new(image.0 as f32, image.1 as f32) / px_scale,
+      px_scale,
+      image,
+      mouse_scale: 1.0,
+    },
+    on_target: false,
+    text: true,
+    fonts: 1,
+    bitmaps: 0,
+  };
+  let draw = UiDraw {
+    order: 0,
+    slot: 0,
+    command,
+  };
+  line_built(&draw, &[ScrollSlot::NONE], &env, true)
+}
+
+/// A line whose offset is not finite builds nothing, culled or not (in a
+/// slot whose runs are kept nothing is culled), so the shader is given no
+/// infinity or NaN; nor does one whose points are not finite
+#[test]
+fn a_line_whose_offset_or_points_are_not_finite_builds_nothing() {
+  let env = UiRenderEnv {
+    space: UiSpace {
+      size: Vec2::new(320.0, 240.0),
+      px_scale: 1.0,
+      image: (320, 240),
+      mouse_scale: 1.0,
+    },
+    on_target: false,
+    text: true,
+    fonts: 1,
+    bitmaps: 0,
+  };
+  let slots = [ScrollSlot::NONE, ScrollSlot::NONE];
+  let line = |points: &[Vec2], at: Vec2| UiCommand::Line {
+    points: points.into(),
+    at,
+    width: 2.0,
+    color: Color::WHITE,
+    closed: false,
+    clip: None,
+    layer: 0,
+  };
+  let points = [Vec2::new(10.0, 10.0), Vec2::new(60.0, 30.0)];
+  for slot in [0, 1] {
+    let built = |command| {
+      let draw = UiDraw {
+        order: 0,
+        slot,
+        command,
+      };
+      line_built(&draw, &slots, &env, false)
+    };
+    assert!(!built(line(&points, Vec2::ZERO)).is_empty(), "slot {slot}");
+    for at in [Vec2::new(f32::NAN, 0.0), Vec2::new(0.0, f32::INFINITY)] {
+      assert!(built(line(&points, at)).is_empty(), "slot {slot}, at {at}");
+    }
+    let lost = [Vec2::new(f32::NAN, 10.0), Vec2::new(60.0, f32::INFINITY)];
+    assert!(built(line(&lost, Vec2::ZERO)).is_empty(), "slot {slot}");
+  }
+}
+
 #[test]
 fn every_kind_draws_inside_its_clip() {
   let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
@@ -284,66 +353,26 @@ fn every_kind_draws_inside_its_clip() {
   // The unclipped rect is drawn last
   let unclipped = (instances.pop(), needs.pop());
 
-  // A slanted, mitred line over the first rect, one instance per triangle
-  let points: Vec<PolyPoint> = [(3.0, 27.5), (16.2, 9.4), (29.0, 22.0)]
-    .iter()
-    .enumerate()
-    .map(|(i, &(x, y))| PolyPoint {
-      pos: Vec2::new(x, y),
-      half_width: 1.6,
-      color: Color::new(250, 240, 90, 200),
-      u: i as f32 / 2.0,
-    })
-    .collect();
-  let style = PolyStyle {
-    join: LineJoin::Miter,
-    cap: LineCap::Butt,
+  // A slanted, mitred line over the first rect, as the UI builds it
+  let line = UiCommand::Line {
+    points: [
+      Vec2::new(3.0, 27.5),
+      Vec2::new(16.2, 9.4),
+      Vec2::new(29.0, 22.0),
+    ][..]
+      .into(),
+    at: Vec2::ZERO,
+    width: 3.2,
+    color: Color::new(250, 240, 90, 200),
     closed: false,
-    params: [0.0; 4],
-    emission: 1.0,
+    clip: Some(Rect::new(7.0, 5.0, 34.0, 38.0)),
+    layer: 0,
   };
-  let look = LineLook {
-    lit: false,
-    z: 1,
-    texture: None,
-    blend: BlendMode::Alpha,
-    filter: Filter::Default,
-    layers: RenderLayers::all(),
-    only_camera: Some(entity),
-  };
-  let mut triangles = Triangles::default();
-  push_polyline(
-    &mut DrawList::default(),
-    &mut triangles,
-    &points,
-    &style,
-    look,
-  );
-  assert!(!triangles.indices.is_empty());
-  for triangle in triangles.indices.as_chunks::<3>().0 {
-    let corner = |i: u32| {
-      triangles
-        .corner(i)
-        .map(|(corner, _)| corner)
-        .unwrap_or_default()
-    };
-    let params = |i: u32| {
-      triangles
-        .corner(i)
-        .map(|(_, params)| params)
-        .unwrap_or_default()
-    };
-    instances.push(UiInstance::triangle(
-      [
-        corner(triangle[0]),
-        corner(triangle[1]),
-        corner(triangle[2]),
-      ],
-      params(triangle[0]),
-      clip,
-    ));
-    needs.push(TexNeed::None);
-  }
+  let pieces = line_instances(line, 1.0, (SIDE, SIDE));
+  assert!(!pieces.is_empty());
+  assert!(pieces.iter().all(|piece| piece.clip() == clip));
+  needs.extend(pieces.iter().map(|_| TexNeed::None));
+  instances.extend(pieces);
 
   // A raster, a colour and an MSDF glyph (a disc's distances, outlined),
   // each magnified so filtering shows
@@ -767,26 +796,29 @@ fn the_ui_pipeline_gamma_encodes_its_output() {
 }
 
 /// UI lines through the batch's line pipeline (the world's lines, drawn into
-/// the UI format) and through the UI pipeline: pixel for pixel the same once
-/// the batch shares no vertex between triangles
+/// the UI format through the UI camera) and through the UI pipeline: built
+/// by the same piece functions, pushed and covered alike, pixel for pixel
+/// the same at every UI scale
 mod lines {
   use glam::Vec2;
 
   use super::*;
-  use crate::core::render::ui::{UI_CAMERA, line_of};
-  use crate::core::ui::immediate::UiCommand;
+  use crate::core::render::ui::{UI_CAMERA, line_of, ui_view};
 
   /// The line images' size
   const IMAGE: (u32, u32) = (200, 150);
 
-  /// The line test's lines, moved by `shift`: straight ones thin and thick at
-  /// several slants, a gentle arc (10 degree turns), closed outlines (a
-  /// rectangle, a hexagon, a triangle) and zigzags with long miters
-  fn test_lines(shift: Vec2) -> Vec<(Vec<Vec2>, f32)> {
+  /// The line test's lines at `px_scale`, moved by `shift` (image pixels):
+  /// straight ones thin and thick at several slants, a gentle arc (10
+  /// degree turns), outlines (a rectangle, a closed hexagon and triangle)
+  /// and zigzags with long miters, laid in image pixels and put in UI units;
+  /// then a sharp V whose miter tip alone reaches into the image from above
+  /// it, and a line whose points lie just left of the image
+  fn test_lines(shift: Vec2, px_scale: f32) -> Vec<UiCommand> {
     let at = |points: &[(f32, f32)]| -> Vec<Vec2> {
       points
         .iter()
-        .map(|&(x, y)| Vec2::new(x, y) + shift)
+        .map(|&(x, y)| (Vec2::new(x, y) + shift) / px_scale)
         .collect()
     };
     let around = |centre: (f32, f32), radius: f32, from: f32, step: f32, n: usize| {
@@ -804,14 +836,18 @@ mod lines {
         .collect();
       at(&points)
     };
-    let mut lines = vec![
-      (at(&[(6.3, 6.3), (90.6, 11.4)]), 1.0),
-      (at(&[(6.5, 16.2), (90.1, 30.7)]), 1.5),
-      (at(&[(100.4, 5.2), (104.9, 60.7)]), 2.0),
-      (at(&[(112.2, 6.1), (150.6, 58.3)]), 3.0),
-      (at(&[(160.7, 8.8), (192.0, 20.5)]), 6.0),
-      (around((60.0, 70.0), 30.0, 200.0, 10.0, 14), 2.0),
-      (around((140.0, 75.0), 28.0, 200.0, 10.0, 14), 5.0),
+    let mut hexagon = around((88.0, 112.0), 16.3, 7.0, 60.0, 6);
+    hexagon.pop();
+    let mut triangle = around((128.0, 114.0), 14.7, -90.0, 120.0, 3);
+    triangle.pop();
+    let lines = [
+      (at(&[(6.3, 6.3), (90.6, 11.4)]), 1.0, false),
+      (at(&[(6.5, 16.2), (90.1, 30.7)]), 1.5, false),
+      (at(&[(100.4, 5.2), (104.9, 60.7)]), 2.0, false),
+      (at(&[(112.2, 6.1), (150.6, 58.3)]), 3.0, false),
+      (at(&[(160.7, 8.8), (192.0, 20.5)]), 6.0, false),
+      (around((60.0, 70.0), 30.0, 200.0, 10.0, 14), 2.0, false),
+      (around((140.0, 75.0), 28.0, 200.0, 10.0, 14), 5.0, false),
       (
         at(&[
           (8.5, 95.5),
@@ -821,27 +857,54 @@ mod lines {
           (8.5, 95.5),
         ]),
         2.0,
+        false,
       ),
-      (around((88.0, 112.0), 16.3, 7.0, 60.0, 6), 3.0),
-      (around((128.0, 114.0), 14.7, -90.0, 120.0, 3), 2.0),
+      (hexagon, 3.0, true),
+      (triangle, 2.0, true),
+      (zigzag(150.0, 100.0, 9.0, 18.0, 5), 4.0, false),
+      (zigzag(8.0, 132.0, 20.0, 14.0, 9), 2.0, false),
+      // The V's points end 4 pixels above the image; its tip, a 4.4 pixel
+      // half width times its miter (2.84) further, reaches 8 pixels in
+      (
+        at(&[(60.0, -20.0), (66.0, -4.0), (72.0, -20.0)]),
+        8.8,
+        false,
+      ),
+      // Its points left of the image, its edge 0.3 pixels in
+      (at(&[(-0.7, 40.0), (-0.7, 90.0)]), 2.0, false),
     ];
-    lines.push((zigzag(150.0, 100.0, 9.0, 18.0, 5), 4.0));
-    lines.push((zigzag(8.0, 132.0, 20.0, 14.0, 9), 2.0));
     lines
+      .into_iter()
+      .map(|(points, width, closed)| UiCommand::Line {
+        points: points.as_slice().into(),
+        at: Vec2::ZERO,
+        width: width / px_scale,
+        color: Color::new(240, 236, 250, 230),
+        closed,
+        clip: None,
+        layer: 0,
+      })
+      .collect()
   }
 
-  /// `lines` drawn as `ui.draw_line` makes them: through the batch with no
-  /// vertex shared between its triangles (`old`), and as one UI instance a
-  /// triangle through the UI pipeline (`new`)
+  /// `lines` drawn through the batch's line pipeline as world lines seen
+  /// by the UI camera at `px_scale` (`world`), and as the UI builds them
+  /// through the UI pipeline (`ui`)
   fn drawn(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    lines: &[(Vec<Vec2>, f32)],
+    lines: &[UiCommand],
+    px_scale: f32,
   ) -> (image::RgbaImage, image::RgbaImage) {
     let (width, height) = IMAGE;
+    let space = UiSpace {
+      size: Vec2::new(width as f32, height as f32) / px_scale,
+      px_scale,
+      image: IMAGE,
+      mouse_scale: 1.0,
+    };
     let camera = Camera2d::default();
-    let size = Vec2::new(width as f32, height as f32);
-    let view = CameraView::compute(size / 2.0, 0.0, &camera, Vec2::ZERO, size);
+    let view = ui_view(&space);
     let (mut cameras, mut targetless) = (Vec::new(), Vec::new());
     plan_cameras(
       [(UI_CAMERA, &camera, &view, None)].into_iter(),
@@ -856,54 +919,12 @@ mod lines {
     let mut batch = Batch2D::new(device, UI_FORMAT, Default::default());
     let mut list = DrawList::default();
     let mut points = Vec::new();
-    // The UI's lines, built on the CPU
-    let mut triangles = Triangles::default();
-    for (z, (line, width)) in (0..).zip(lines) {
-      let command = UiCommand::Line {
-        points: line.as_slice().into(),
-        at: Vec2::ZERO,
-        width: *width,
-        color: Color::new(240, 236, 250, 230),
-        closed: false,
-        clip: None,
-        layer: 0,
-      };
-      let (style, look) = line_of(&command, z, &mut points, None).expect("a line");
-      push_polyline(&mut list, batch.lines(), &points, &style, look);
-      push_polyline(
-        &mut DrawList::default(),
-        &mut triangles,
-        &points,
-        &style,
-        look,
-      );
-    }
-    let triangles = &triangles;
     let mut instances = Vec::new();
-    for triangle in triangles.indices.as_chunks::<3>().0 {
-      let corner = |i: u32| {
-        triangles
-          .corner(i)
-          .map(|(corner, _)| corner)
-          .unwrap_or_default()
-      };
-      let params = |i: u32| {
-        triangles
-          .corner(i)
-          .map(|(_, params)| params)
-          .unwrap_or_default()
-      };
-      instances.push(UiInstance::triangle(
-        [
-          corner(triangle[0]),
-          corner(triangle[1]),
-          corner(triangle[2]),
-        ],
-        params(triangle[0]),
-        ClipRect::of(None, IMAGE),
-      ));
+    for (z, command) in (0..).zip(lines) {
+      let (style, look) = line_of(command, z, &mut points, None).expect("a line");
+      push_polyline(&mut list, batch.lines(), &points, &style, look);
+      instances.extend(line_instances(command.clone(), px_scale, IMAGE));
     }
-    // The batch builds the same triangles on the GPU, sharing no vertex
     list.sorted();
     let mut uniforms = CameraUniforms::default();
     let globals = CameraGlobals::new(&view, IMAGE, 0.0, 0.0, false);
@@ -933,10 +954,10 @@ mod lines {
         view_formats: &[],
       })
     };
-    let (old, new) = (image(), image());
+    let (world, ui) = (image(), image());
     let mut encoder = device.create_command_encoder(&Default::default());
     {
-      let view = old.create_view(&Default::default());
+      let view = world.create_view(&Default::default());
       let mut pass = begin(&mut encoder, &view);
       let mut bound = Bound::default();
       for draw in batch.draws(UI_CAMERA, false) {
@@ -944,7 +965,7 @@ mod lines {
       }
     }
     {
-      let view = new.create_view(&Default::default());
+      let view = ui.create_view(&Default::default());
       let mut pass = begin(&mut encoder, &view);
       pass.set_pipeline(gpu.pipeline());
       pass.set_bind_group(0, camera_group, &[]);
@@ -957,54 +978,133 @@ mod lines {
     queue.submit([encoder.finish()]);
     let read = |texture| crate::core::capture::read_texture_rgba(device, queue, texture);
     (
-      read(&old).expect("read back"),
-      read(&new).expect("read back"),
+      read(&world).expect("read back"),
+      read(&ui).expect("read back"),
     )
   }
 
   /// How many pixels two images differ in, and the first few: where, then
   /// each image's
-  fn differ(old: &image::RgbaImage, new: &image::RgbaImage) -> (usize, Vec<String>) {
-    let differ: Vec<_> = old
+  fn differ(a: &image::RgbaImage, b: &image::RgbaImage) -> (usize, Vec<String>) {
+    let differ: Vec<_> = a
       .enumerate_pixels()
-      .zip(new.pixels())
+      .zip(b.pixels())
       .filter(|((_, _, a), b)| a != b)
       .map(|((x, y, a), b)| format!("({x}, {y}): {:?} {:?}", a.0, b.0))
       .collect();
     (differ.len(), differ.into_iter().take(8).collect())
   }
 
-  /// The proof behind the owner's acceptance (2026-10-20) of UI line pixels
-  /// differing between the paths on some GPUs (Apple): drawn by the batch's
-  /// own line pipeline with no vertex shared between its triangles, every
-  /// line is the UI pipeline's pixel for pixel, at every sub-pixel shift. The
-  /// geometry and the arithmetic are the same; what differs, where it does,
-  /// is how such a GPU takes the derivative (`fwidth`) across the triangles
-  /// of an indexed mesh that share vertices, as the batch drew lines.
+  const CLEARED: [u8; 4] = [51, 102, 153, 255];
+
+  /// UI lines are built by the world's piece functions from the points
+  /// their instances carry, pushed a pixel of the UI image out and covered
+  /// by their distances in pixels, as world lines are: drawn by the UI
+  /// pipeline, every line is the batch's pixel for pixel, at UI scales 1,
+  /// 1.25 and 2 and sub-pixel shifts, joins, closed seams and the edges of
+  /// the image included
   #[test]
-  #[ignore = "world lines now draw their edges by coverage from their distances in pixels; UI lines still ramp by the derivative until they move onto the same pieces"]
-  fn lines_draw_as_the_batch_draws_them_with_no_vertex_shared() {
+  fn ui_lines_draw_as_world_lines_at_every_ui_scale() {
     let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
       return;
     };
     let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-    let cleared = [51, 102, 153, 255];
-    for k in 0..16u16 {
-      let shift = Vec2::new(
-        f32::from(k % 4) * 0.25 + 0.0625,
-        f32::from(k / 4) * 0.25 + 0.03125,
-      );
-      let (old, new) = drawn(&device, &queue, &test_lines(shift));
-      let painted = new.pixels().filter(|pixel| pixel.0 != cleared).count();
-      assert!(painted > 2000, "shift {shift}: {painted} pixels drawn");
-      let (count, first) = differ(&old, &new);
-      assert_eq!(
-        count, 0,
-        "shift {shift}: pixels (old, new) differ: {first:?}"
-      );
+    for px_scale in [1.0, 1.25, 2.0] {
+      for k in 0..4u16 {
+        let shift = Vec2::new(
+          f32::from(k % 2) * 0.5 + 0.0625,
+          f32::from(k / 2) * 0.5 + 0.03125,
+        );
+        let (world, ui) = drawn(&device, &queue, &test_lines(shift, px_scale), px_scale);
+        let painted = ui.pixels().filter(|pixel| pixel.0 != CLEARED).count();
+        assert!(
+          painted > 2000,
+          "scale {px_scale}, shift {shift}: {painted} pixels drawn"
+        );
+        let (count, first) = differ(&world, &ui);
+        assert_eq!(
+          count, 0,
+          "scale {px_scale}, shift {shift}: pixels (world, UI) differ: {first:?}"
+        );
+      }
     }
     let error = pollster::block_on(scope.pop());
     assert!(error.is_none(), "{error:?}");
+  }
+
+  /// A UI line is kept wherever its miter's tip or its fringe reaches into
+  /// its clip or the view, though its points lie outside them: built on the
+  /// CPU (`build_line`'s cull) and not collapsed by the vertex stage
+  /// (`ui_line`'s): the V reaching into the image from above and the line
+  /// left of it draw as world lines (`test_lines`), and a V reaching into a
+  /// clip from above it draws there as it does unclipped
+  #[test]
+  fn a_line_whose_fringe_or_miter_tip_reaches_in_is_kept() {
+    let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+      return;
+    };
+    for px_scale in [1.0, 1.25] {
+      // Into the view
+      let lines = test_lines(Vec2::ZERO, px_scale);
+      let (world, ui) = drawn(&device, &queue, &lines[lines.len() - 2..], px_scale);
+      let reached = |image: &image::RgbaImage| {
+        let tip = (55..80).flat_map(|x| (0..6).map(move |y| (x, y)));
+        let edge = (0..2).flat_map(|x| (40..90).map(move |y| (x, y)));
+        let painted = |(x, y): (u32, u32)| image.get_pixel(x, y).0 != CLEARED;
+        (
+          tip.filter(|&at| painted(at)).count(),
+          edge.filter(|&at| painted(at)).count(),
+        )
+      };
+      let (tip, edge) = reached(&world);
+      assert!(
+        tip > 10 && edge > 40,
+        "scale {px_scale}: the world drew {tip}, {edge}"
+      );
+      assert_eq!(reached(&ui), (tip, edge), "scale {px_scale}");
+      assert_eq!(differ(&world, &ui).0, 0, "scale {px_scale}");
+
+      // Into a clip: the V's points end 8 pixels above the clip, its tip
+      // reaching 4 pixels in
+      let v = |clip| UiCommand::Line {
+        points: [(60.0, 20.0), (66.0, 36.0), (72.0, 20.0)].map(|(x, y)| Vec2::new(x, y) / px_scale)
+          [..]
+          .into(),
+        at: Vec2::ZERO,
+        width: 8.8 / px_scale,
+        color: Color::new(240, 236, 250, 230),
+        closed: false,
+        clip,
+        layer: 0,
+      };
+      let clip = Rect::new(40.0, 44.0, 60.0, 40.0);
+      let pixels = Rect::new(
+        clip.x / px_scale,
+        clip.y / px_scale,
+        clip.width / px_scale,
+        clip.height / px_scale,
+      );
+      let (_, clipped) = drawn(&device, &queue, &[v(Some(pixels))], px_scale);
+      let (_, whole) = drawn(&device, &queue, &[v(None)], px_scale);
+      let inside = |image: &image::RgbaImage| -> Vec<[u8; 4]> {
+        (44..84)
+          .flat_map(|y| (40..100).map(move |x| (x, y)))
+          .map(|(x, y)| image.get_pixel(x, y).0)
+          .collect()
+      };
+      let painted = inside(&whole)
+        .iter()
+        .filter(|&&pixel| pixel != CLEARED)
+        .count();
+      assert!(
+        painted > 10,
+        "scale {px_scale}: {painted} pixels of the tip in the clip"
+      );
+      assert!(
+        inside(&clipped) == inside(&whole),
+        "scale {px_scale}: the tip was culled"
+      );
+    }
   }
 }
 
@@ -1289,11 +1389,10 @@ mod building {
   use super::super::*;
   use crate::core::asset::{Assets, Handle};
   use crate::core::graphics::{Image, SpriteGpuRenderer};
-  use crate::core::render::batch::{Filter, Triangles, push_polyline};
+  use crate::core::render::batch::{Filter, MITER_LIMIT, PieceKind};
   use crate::core::render::text::{TextSources, TextTargets, emit_text};
-  use crate::core::render::ui::{
-    line_of, rect_instance, scissor_of, sprite_instance, text_of, ui_z,
-  };
+  use crate::core::render::ui::{rect_instance, scissor_of, sprite_instance, text_of, ui_z};
+  use crate::core::render::ui_renderer::instance::{UiLine, UiLineWindow};
   use crate::core::render::ui_retain::{UiRenderEnv, UiRunCache, UiTextCache};
   use crate::core::render::{DrawList, UiSpace};
   use crate::core::text::{
@@ -1731,8 +1830,12 @@ mod building {
     }
   }
 
+  /// A line becomes its pieces, two instances each (four triangles), in
+  /// the order they draw, each carrying the points about its own: their
+  /// places as the command lays them, their `u` and which slots hold one,
+  /// and the line's offset, half width, colour, params and miter limit
   #[test]
-  fn a_line_becomes_its_builders_triangles() {
+  fn a_line_becomes_its_pieces_with_their_points() {
     let Some(mut writes) = Writes::new() else {
       return;
     };
@@ -1742,11 +1845,6 @@ mod building {
       Vec2::new(70.0, 33.0),
     ];
     let command = line(&points, Some(Rect::new(0.0, 0.0, 200.0, 100.0)));
-    // The line's builder's triangles, as `line_of` asks for them
-    let (mut list, mut triangles, mut poly) =
-      (DrawList::default(), Triangles::default(), Vec::new());
-    let (style, look) = line_of(&command, ui_z(0, 0), &mut poly, None).expect("a line");
-    push_polyline(&mut list, &mut triangles, &poly, &style, look);
     let clip = ClipRect {
       x0: 0,
       y0: 0,
@@ -1754,44 +1852,53 @@ mod building {
       y1: 100,
     };
     let commands = commands_of([command]);
-    let expected: Vec<UiInstance> = triangles
-      .indices
-      .as_chunks::<3>()
-      .0
-      .iter()
-      .filter_map(|triangle| {
-        let corner = |i: u32| {
-          triangles
-            .corner(i)
-            .map(|(corner, _)| corner)
-            .unwrap_or_default()
-        };
-        // A triangle a line piece leaves unused has no area and is left out
-        let [a, b, c] = triangle.map(|i| corner(i).0);
-        if (b - a).perp_dot(c - a) == 0.0 {
-          return None;
+    // As the command lays them, `u` running 0 to 1 over them
+    let at = |i: usize| (points[i], i as f32 / 2.0);
+    let window = |slots: [Option<usize>; 6]| {
+      let mut window = UiLineWindow::default();
+      for (slot, point) in slots.into_iter().enumerate() {
+        if let Some(i) = point {
+          window.points[slot] = at(i);
+          window.present |= 1 << slot;
         }
-        let params = |i: u32| {
-          triangles
-            .corner(i)
-            .map(|(_, params)| params)
-            .unwrap_or_default()
-        };
-        Some(UiInstance::triangle(
-          [
-            corner(triangle[0]),
-            corner(triangle[1]),
-            corner(triangle[2]),
-          ],
-          params(triangle[0]),
-          clip,
-        ))
+      }
+      window
+    };
+    // `line` moves its points by (2, 1)
+    let shared = UiLine {
+      at: Vec2::new(2.0, 1.0),
+      half_width: 1.5,
+      along_half: 0.0,
+      color: Color::new(250, 240, 90, 200),
+      params: [0.0; 4],
+      miter_limit: MITER_LIMIT,
+    };
+    // The first segment, the join at the middle point, the second segment
+    let pieces = [
+      (
+        PieceKind::Segment,
+        [None, None, Some(0), Some(1), Some(2), None],
+      ),
+      (
+        PieceKind::Join,
+        [None, Some(0), Some(1), Some(2), None, None],
+      ),
+      (
+        PieceKind::Segment,
+        [None, Some(0), Some(1), Some(2), None, None],
+      ),
+    ];
+    let expected: Vec<UiInstance> = pieces
+      .iter()
+      .flat_map(|&(kind, slots)| {
+        (0..2).map(move |pair| UiInstance::line_piece(&window(slots), kind, pair, &shared, clip))
       })
       .collect();
-    // Two segments and the wedge at their corner
-    assert!(expected.len() >= 5, "{} triangles", expected.len());
     let build = built(&mut writes, &commands, env(), None);
-    assert_eq!(build.instances, expected);
+    assert_eq!(
+      bytemuck::cast_slice::<UiInstance, u8>(&build.instances),
+      bytemuck::cast_slice::<UiInstance, u8>(&expected)
+    );
     assert_eq!(build.needs, vec![TexNeed::None; expected.len()]);
   }
 

@@ -16,7 +16,9 @@ use crate::core::ecs::Entity;
 use crate::core::graphics::{
   Camera2d, CameraView, Presentation, RenderLayers, ScreenMapping, SpriteInstance,
 };
-use crate::core::render::batch::{BlendMode, Filter, LineLook, PolyPoint, PolyStyle};
+use crate::core::render::batch::{BlendMode, PolyPoint, PolyStyle};
+#[cfg(test)]
+use crate::core::render::batch::{Filter, LineLook};
 use crate::core::render::text::{TextDraw, TextPlacement, UI_GLYPH_PX};
 use crate::core::render::{DrawKind, PixelRect};
 use crate::core::text::TextLayout;
@@ -233,15 +235,18 @@ pub(crate) fn sprite_instance(rect: Rect, uv: [f32; 4], tint: Color) -> Option<S
   )
 }
 
-/// A line command's points (into `points`, cleared first), moved `by` (as
-/// `UiCommand::moved` moves it), and how it is drawn at `z`, or `None` for
-/// another command
-pub(crate) fn line_of(
+/// A line command's points (into `points`, cleared first) where its
+/// command lays them, before its offset, how it is drawn and that offset
+/// (`at`), moved `by` (as `UiCommand::moved` moves it), or `None` for
+/// another command. UI lines are solid, mitered, butt capped, of one width
+/// and one colour. The GPU adds the offset to each point (with a scroll
+/// slot's, `ui.wgsl`), so a line in a slot is built from the same points
+/// as one moved there on the CPU.
+pub(crate) fn ui_line_points(
   command: &UiCommand,
-  z: i32,
   points: &mut Vec<PolyPoint>,
   by: Option<Vec2>,
-) -> Option<(PolyStyle, LineLook)> {
+) -> Option<(PolyStyle, Vec2)> {
   let UiCommand::Line {
     points: line,
     at,
@@ -257,7 +262,7 @@ pub(crate) fn line_of(
   let last = line.len().saturating_sub(1).max(1) as f32;
   points.clear();
   points.extend(line.iter().enumerate().map(|(i, pos)| PolyPoint {
-    pos: *pos + at,
+    pos: *pos,
     half_width: width / 2.0,
     color: *color,
     u: i as f32 / last,
@@ -269,6 +274,24 @@ pub(crate) fn line_of(
     params: [0.0; 4],
     emission: 1.0,
   };
+  Some((style, at))
+}
+
+/// A line command's points (into `points`, cleared first) at their places,
+/// moved `by` (as `UiCommand::moved` moves it), and how the batch would
+/// draw it at `z` as a world line seen by the UI camera, or `None` for
+/// another command (tests: the UI's lines against the world's)
+#[cfg(test)]
+pub(crate) fn line_of(
+  command: &UiCommand,
+  z: i32,
+  points: &mut Vec<PolyPoint>,
+  by: Option<Vec2>,
+) -> Option<(PolyStyle, LineLook)> {
+  let (style, at) = ui_line_points(command, points, by)?;
+  for point in points.iter_mut() {
+    point.pos += at;
+  }
   let look = LineLook {
     lit: false,
     z,

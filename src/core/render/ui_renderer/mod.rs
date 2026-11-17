@@ -45,7 +45,7 @@ pub(crate) struct UiRenderer {
   texts: UiTextCache<UiInstance>,
   /// The fragment runs' built instances, kept from frame to frame
   fragments: UiRunCache,
-  /// Where texts and lines are laid while built (cleared for each): never
+  /// Where texts are laid while built (cleared for each): never
   /// the frame's draw list, which holds the world's items
   scratch: DrawList,
   /// The frame's runs, each with its bind group
@@ -80,7 +80,7 @@ impl UiRenderer {
   /// Build the frame's UI commands (see [`build_ui`]), its texts through the
   /// text cache and its fragment runs through the run cache, both begun in
   /// `env` (with `retain` off nothing is reused). Glyphs are made through
-  /// `targets`, but texts and lines are laid into the renderer's scratch
+  /// `targets`, but texts are laid into the renderer's scratch
   /// list, never `targets.list`.
   pub(crate) fn build(
     &mut self,

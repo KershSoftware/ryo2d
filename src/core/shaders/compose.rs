@@ -52,6 +52,10 @@ pub(crate) const UI: &str = concat!(
   "\n",
   include_str!("include/line_style.wgsl"),
   "\n",
+  include_str!("include/line_pieces.wgsl"),
+  "\n",
+  include_str!("include/line_cover.wgsl"),
+  "\n",
   include_str!("include/snap.wgsl"),
   "\n",
   include_str!("include/quad.wgsl"),
@@ -87,6 +91,8 @@ pub(crate) const LINE: &str = concat!(
   "\n",
   include_str!("include/line_pieces.wgsl"),
   "\n",
+  include_str!("include/line_cover.wgsl"),
+  "\n",
   include_str!("core/line.wgsl"),
 );
 
@@ -105,6 +111,8 @@ pub(crate) const LINE_TEST: &str = concat!(
   include_str!("include/line_style.wgsl"),
   "\n",
   include_str!("include/line_pieces.wgsl"),
+  "\n",
+  include_str!("include/line_cover.wgsl"),
   "\n",
   include_str!("core/line.wgsl"),
   "\n",

@@ -4,8 +4,9 @@
 //! (`shaders/include/line_pieces.wgsl`) are tested against, so it builds
 //! what they build, in the same order, in f32: the GPU's vertices equal its
 //! own triangle for triangle (`the_gpu_builds_the_reference_s_vertices`, in
-//! `line_gpu_tests.rs`). World lines are built on the GPU; the UI's lines
-//! are still built here.
+//! `line_gpu_tests.rs`). World lines and the UI's are built on the GPU, by
+//! the same piece functions; the builder itself is compiled for tests
+//! alone.
 //!
 //! Every vertex carries its distances to the line's edges, in the line's
 //! units, and how far a fringe may push it outward; the builder does not know
@@ -172,6 +173,7 @@
 //!   The quad limits take no account of the half width's change along a
 //!   segment.
 
+#[cfg(test)]
 use std::ops::Range;
 
 use glam::Vec2;
@@ -226,18 +228,23 @@ pub(crate) struct Vertex2D {
 }
 
 /// A vertex of a round piece: coverage by the length of its offset
+#[cfg(test)]
 pub(crate) const FLAG_ROUND: u32 = 1;
 /// A vertex whose `second` edge distance counts
+#[cfg(test)]
 pub(crate) const FLAG_SECOND: u32 = 2;
 /// A vertex whose `second` is a distance along a two-point capped line from
 /// the middle between its caps: a strip of its line's `along_half`
+#[cfg(test)]
 pub(crate) const FLAG_ALONG: u32 = 4;
 /// No edge: the `second` of a vertex without one, the `half` of one that
 /// only a second edge bounds, and no limit
+#[cfg(test)]
 pub(crate) const NO_EDGE: f32 = 1.0e6;
 /// The line table holds this many lines a frame; the rest draw nothing
 pub(crate) const MAX_LINES: usize = 1 << 20;
 
+#[cfg(test)]
 impl Vertex2D {
   pub(crate) fn push(&self) -> Vec2 {
     Vec2::from(self.push)
@@ -478,6 +485,7 @@ pub(crate) fn filter_points(
 
 /// Triangles built on the CPU for the batch's triangle stream, and the line
 /// table their vertices name.
+#[cfg(test)]
 #[derive(Default)]
 pub(crate) struct Triangles {
   pub(crate) vertices: Vec<Vertex2D>,
@@ -489,12 +497,14 @@ pub(crate) struct Triangles {
   warned: bool,
 }
 
+#[cfg(test)]
 #[derive(Default)]
 struct Scratch {
   points: Vec<PolyPoint>,
   pieces: Vec<Piece>,
 }
 
+#[cfg(test)]
 impl Triangles {
   /// Forget every triangle and line, keeping the allocations.
   pub(crate) fn clear(&mut self) {
@@ -572,27 +582,7 @@ impl Triangles {
       "{piece:?}"
     );
   }
-
-  /// Vertex `index` as a corner of a UI line's triangle, with its line's
-  /// parameters.
-  pub(crate) fn corner(&self, index: u32) -> Option<(Corner, [f32; 4])> {
-    let vertex = self.vertices.get(index as usize)?;
-    let line = self.lines.get(vertex.line as usize)?;
-    let [r, g, b, a] = vertex.color;
-    let [r, g, b, a] = Color::new(r, g, b, a).to_linear();
-    let e = line.emission;
-    let corner = (
-      Vec2::from(vertex.position),
-      Vec2::from(vertex.uv),
-      [r * e, g * e, b * e, a],
-    );
-    Some((corner, line.params))
-  }
 }
-
-/// A corner of a UI line's triangle: its place, its uv and its colour in
-/// linear light.
-pub(crate) type Corner = (Vec2, Vec2, [f32; 4]);
 
 /// How far a butt or square cap reaches past its end point.
 fn cap_reach(point: &PolyPoint, cap: LineCap) -> f32 {
@@ -605,6 +595,7 @@ fn cap_reach(point: &PolyPoint, cap: LineCap) -> f32 {
 
 /// The points a piece at point `i` reads: `i − 2` to `i + reach`, wrapped
 /// on a closed line and absent past an open one's ends.
+#[cfg(test)]
 #[derive(Clone, Copy)]
 struct Window {
   points: [Option<PolyPoint>; 6],
@@ -613,6 +604,7 @@ struct Window {
   cap: LineCap,
 }
 
+#[cfg(test)]
 impl Window {
   fn of(pts: &[PolyPoint], i: usize, closed: bool, reach: i32) -> Self {
     let n = pts.len() as i32;
@@ -704,6 +696,7 @@ impl Window {
 /// The second edge a line's end measures, on the segment from `a` to `b`:
 /// the start cap's (`first`), the end cap's (`last`), or both as one strip
 /// along a two-point line; none for round caps.
+#[cfg(test)]
 fn end_second(
   a: &PolyPoint,
   b: &PolyPoint,
@@ -731,6 +724,7 @@ fn end_second(
 }
 
 /// A segment's direction and left-hand normal.
+#[cfg(test)]
 #[derive(Clone, Copy)]
 struct Segment {
   dir: Vec2,
@@ -738,6 +732,7 @@ struct Segment {
   len: f32,
 }
 
+#[cfg(test)]
 impl Segment {
   fn between(a: Vec2, b: Vec2) -> Self {
     let len = a.distance(b);
@@ -751,6 +746,7 @@ impl Segment {
 }
 
 /// What the corner function decides at a point.
+#[cfg(test)]
 #[derive(Clone, Copy)]
 enum Shape {
   /// An open line's end
@@ -764,6 +760,7 @@ enum Shape {
 
 /// A corner: its shape and the most it lets the quads before and after it
 /// push.
+#[cfg(test)]
 #[derive(Clone, Copy)]
 struct Joint {
   shape: Shape,
@@ -771,6 +768,7 @@ struct Joint {
   after: f32,
 }
 
+#[cfg(test)]
 impl Joint {
   /// The corner at point `j` of `window`: the one function every piece
   /// touching it asks.
@@ -802,6 +800,7 @@ impl Joint {
 }
 
 /// A second edge a vertex measures.
+#[cfg(test)]
 #[derive(Clone, Copy)]
 enum Bound {
   /// The distance inside an edge through `point` with outward normal `out`
@@ -811,6 +810,7 @@ enum Bound {
   Along { mid: Vec2, dir: Vec2 },
 }
 
+#[cfg(test)]
 #[derive(Clone, Copy)]
 struct Second {
   bound: Bound,
@@ -819,6 +819,7 @@ struct Second {
   k: f32,
 }
 
+#[cfg(test)]
 impl Second {
   fn edge(point: Vec2, out: Vec2, k: f32) -> Self {
     Self {
@@ -853,6 +854,7 @@ impl Second {
 
 /// What a vertex measures, in the line's units, and how the fringe pushes
 /// it.
+#[cfg(test)]
 #[derive(Clone, Copy)]
 struct Measure {
   dist: f32,
@@ -869,6 +871,7 @@ struct Measure {
   point_u: bool,
 }
 
+#[cfg(test)]
 impl Measure {
   /// On the edge of a strip of half width `half`, on the `side` (1 left, -1
   /// right) of its centre line of normal `normal`, pushed along `push` by at
@@ -913,6 +916,7 @@ impl Measure {
 }
 
 /// `v` measuring `second` where it is, as it is pushed.
+#[cfg(test)]
 fn measure_second(v: &mut Vertex2D, second: Second) {
   v.second = second.at(Vec2::from(v.position));
   v.second_rate = second.rate(v.push());
@@ -921,6 +925,7 @@ fn measure_second(v: &mut Vertex2D, second: Second) {
 }
 
 /// `v` as a vertex of a round piece, `offset` from its corner point.
+#[cfg(test)]
 fn set_round(v: &mut Vertex2D, offset: Vec2) {
   v.dist = offset.x;
   v.second = offset.y;
@@ -932,11 +937,13 @@ fn set_round(v: &mut Vertex2D, offset: Vec2) {
 
 /// The push that moves a point out across two edges of outward normals `a`
 /// and `b` one unit each per unit (`a` and `b` at most a right angle apart).
+#[cfg(test)]
 fn miter_of(a: Vec2, b: Vec2) -> Vec2 {
   (a + b) / (1.0 + a.dot(b))
 }
 
 /// How a corner turns: what its vertices and their pushes follow.
+#[cfg(test)]
 #[derive(Clone, Copy)]
 struct Turn {
   /// The outside of the turn, as a multiple of the normals
@@ -962,6 +969,7 @@ struct Turn {
   angle: f32,
 }
 
+#[cfg(test)]
 impl Turn {
   /// Where `before` meets `after` at a point of half width `hw`; `None`
   /// where the line runs straight on.
@@ -1056,12 +1064,14 @@ impl Turn {
 
 /// The vertices at one end of a segment's quad: (left, right) by the
 /// normal, and the corner point where the inner side splits.
+#[cfg(test)]
 struct End {
   left: u32,
   right: u32,
   split: Option<u32>,
 }
 
+#[cfg(test)]
 struct Builder<'a> {
   out: &'a mut Triangles,
   window: Window,
@@ -1072,6 +1082,7 @@ struct Builder<'a> {
   first: Option<u32>,
 }
 
+#[cfg(test)]
 impl Builder<'_> {
   fn join_kind(&self) -> LineJoin {
     self.style.join

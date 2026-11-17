@@ -15,7 +15,8 @@
 // alpha of every style, and Soft and Glow shape by the distance over the
 // half width, averaged over the pixel; a Soft or Glow line under half a
 // pixel in half width covers as one of half a pixel, dimmed
-// (`batch/line_cover_tests.rs`).
+// (`batch/line_cover_tests.rs`). The fringe and the coverage are
+// `line_cover.wgsl`'s, which the UI's lines use too.
 
 @group(1) @binding(0) var line_texture: texture_2d<f32>;
 @group(1) @binding(1) var line_sampler: sampler;
@@ -197,37 +198,15 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VertexOutput {
     }
 
     // The fringe: a pixel of the camera's image out, as far as the vertex
-    // may go, its distances grown by the push
-    var push = 0.0;
-    if globals.px_per_unit > 0.0 {
-        push = min(1.0 / globals.px_per_unit, vertex.limit);
-    }
-    pos += vertex.push * push;
-    var measure = vec3<f32>(
-        vertex.dist + vertex.dist_rate * push,
-        vertex.second - vertex.second_rate * push,
-        vertex.half,
-    );
-    // The texture across runs on over the fringe as the distance does
-    // (`uv.y` is 0.5 - 0.5 × dist ÷ half), so it is not squeezed inside
-    var uv = vertex.uv;
-    if (vertex.flags & LINE_FLAG_ROUND) != 0u {
-        let offset = vec2<f32>(vertex.dist, vertex.second);
-        measure = vec3<f32>(offset + vertex.push * push, vertex.half);
-        let radius = length(offset);
-        if radius > 0.0 {
-            uv.y = 0.5 + (uv.y - 0.5) * length(measure.xy) / radius;
-        }
-    } else if vertex.half > 0.0 {
-        uv.y -= 0.5 * vertex.dist_rate * push / vertex.half;
-    }
+    // may go, its distances grown by the push (`line_cover.wgsl`)
+    let fringe = line_fringe(vertex, pos, globals.px_per_unit);
 
-    out.position = globals.view_proj * vec4<f32>(pos, 0.0, 1.0);
+    out.position = globals.view_proj * vec4<f32>(fringe.pos, 0.0, 1.0);
     out.color = vec4<f32>(srgb_to_linear(vertex.color.rgb) * line.emission, vertex.color.a);
-    out.uv = uv;
+    out.uv = fringe.uv;
     out.params = params;
     out.bounds = line.bounds;
-    out.measure = measure;
+    out.measure = fringe.measure;
     out.flags = vertex.flags;
     out.k = vertex.k;
     out.along_half = line.along_half;
@@ -239,83 +218,14 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VertexOutput {
 
 // ========== Fragment Shaders ==========
 
-// How much of the pixel a line of half width `half` covers: each edge's
-// distance in the image's pixels through a one-pixel box, two edges blended
-// by their angle
-fn line_cover(in: VertexOutput, half: f32) -> f32 {
-    let ppu = globals.px_per_unit;
-    if ppu <= 0.0 {
-        return 1.0;
-    }
-    if (in.flags & LINE_FLAG_ROUND) != 0u {
-        return clamp((half - length(in.measure.xy)) * ppu + 0.5, 0.0, 1.0);
-    }
-    var across = 1.0;
-    if in.measure.z < LINE_NO_EDGE * 0.5 {
-        let d = in.measure.x * ppu;
-        let hw = half * ppu;
-        across = clamp(min(d + 0.5, hw) - max(d - 0.5, -hw), 0.0, 1.0);
-    }
-    if (in.flags & LINE_FLAG_SECOND) == 0u {
-        return across;
-    }
-    var second: f32;
-    if (in.flags & LINE_FLAG_ALONG) != 0u {
-        let d = in.measure.y * ppu;
-        let hw = in.along_half * ppu;
-        second = clamp(min(d + 0.5, hw) - max(d - 0.5, -hw), 0.0, 1.0);
-    } else {
-        second = clamp(in.measure.y * ppu + 0.5, 0.0, 1.0);
-    }
-    let product = across * second;
-    var toward = max(across + second - 1.0, 0.0);
-    if in.k >= 0.0 {
-        toward = min(across, second);
-    }
-    return product + (toward - product) * in.k * in.k;
-}
-
-// The pixel's distance from the centre line over the half width, which
-// Soft and Glow shape by (a round piece's from its corner point)
-fn line_edge(in: VertexOutput) -> f32 {
-    if in.measure.z <= 0.0 || in.measure.z >= LINE_NO_EDGE * 0.5 {
-        return 0.0;
-    }
-    if (in.flags & LINE_FLAG_ROUND) != 0u {
-        return length(in.measure.xy) / in.measure.z;
-    }
-    return abs(in.measure.x) / in.measure.z;
-}
-
-// What the line gives a pixel: its coverage, and Soft's and Glow's shape
-struct LinePixel {
-    cover: f32,
-    shape: vec2<f32>,
-};
-
-// A Soft or Glow line under half a pixel in half width covers the pixels
-// one of half a pixel would, dimmed by the ratio of their widths, so it
-// stays whole wherever it lies, and its shape is averaged over each pixel
-// (`style_shape`). Solid takes its own coverage, which stays whole as it is
-fn line_pixel(in: VertexOutput) -> LinePixel {
-    let style = line_style(in.params);
-    let ppu = globals.px_per_unit;
-    let half = in.measure.z;
-    if style == LINE_SOLID || ppu <= 0.0 || half <= 0.0 || half >= LINE_NO_EDGE * 0.5 {
-        return LinePixel(line_cover(in, half), style_shape_at(style, line_edge(in)));
-    }
-    let hw = half * ppu;
-    let covered = max(hw, 0.5);
-    var d = abs(in.measure.x) * ppu;
-    if (in.flags & LINE_FLAG_ROUND) != 0u {
-        d = length(in.measure.xy) * ppu;
-    }
-    return LinePixel(line_cover(in, covered / ppu) * (hw / covered), style_shape(style, d, hw));
+// What the fragment's line measures (`line_cover.wgsl`)
+fn line_measure(in: VertexOutput) -> LineMeasure {
+    return LineMeasure(in.measure, in.flags, in.k, in.along_half);
 }
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let pixel = line_pixel(in);
+    let pixel = line_pixel(line_measure(in), in.params, globals.px_per_unit);
     return ui_out(styled(in.color, pixel.shape, in.params, pixel.cover));
 }
 
@@ -326,6 +236,6 @@ fn fs_textured(in: VertexOutput) -> @location(0) vec4<f32> {
     let ddy = dpdy(in.uv);
     let texel = sample_wrapped(line_texture, line_sampler, in.uv, in.bounds, ddx, ddy);
     let texture = vec4<f32>(srgb_to_linear(texel.rgb), texel.a);
-    let pixel = line_pixel(in);
+    let pixel = line_pixel(line_measure(in), in.params, globals.px_per_unit);
     return ui_out(styled(texture * in.color, pixel.shape, in.params, pixel.cover));
 }
