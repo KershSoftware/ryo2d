@@ -123,3 +123,18 @@ Measured with the vertex shader building every corner: CPU 65–88% under main, 
 - **The UI** keeps building in its vertex shader (its lines are few and its instances carry their points for retention), unless the measurement shows the UI benefits too.
 - **Testing.** The equality test compares the pre-pass's vertex records with the CPU reference; the count draw and every coverage test stay.
 - **Speed target:** GPU time near main's or under, with the CPU savings kept.
+
+### The compute pre-pass: settled at its builder check
+
+Per-vertex records were found to move the cost into memory (10k mitered lines ≈ 132 MiB at 96 bytes a record, over the storage cap, with read/write traffic comparable to today's time), so the build is:
+
+1. **Measure first:** split the line bench's GPU time into vertex and fragment work (an empty-fragment or 1×1 run).
+2. **Indexed vertex codes:** the CPU writes an index buffer whose values are vertex codes (point, kind, template slot); the vertex shader decodes `vertex_index` as it decodes triangle codes now, and the GPU's post-transform reuse shares a piece's vertices between its triangles (about 2–2.4× fewer vertex invocations). Each kind has fixed slots whose role follows the GPU's decision (miter or bevel, shared or split) and is used alike by every triangle; line pipelines draw without face culling.
+3. **A corner pre-pass:** one compute dispatch, one thread per point, writes a compact corner record (the point's joint) and a limits array; a vertex reads its own record and two neighbouring limits instead of evaluating three joints. Its own dispatch (not merged with vertex building), a 2D grid or per-thread loop past 65,535 workgroups, in the frame's encoder before the first camera pass and after the upload, skipped with no lines; `StreamCap` takes the record's size into account. Shared vertices assembled by different pieces stay bit-identical by one shader's same arithmetic, `@invariant` and the count draw.
+4. **Round arcs of 8 triangles** (circumscribed, radius exact by the offset's length; about 2% more fill).
+5. **Lines no camera sees are culled before they are copied** (against every camera's view and layers), saving CPU and GPU.
+6. Optionally, flat params and bounds read by the fragment from the line table.
+
+- **The UI** keeps building in its vertex shader through the same function, taking its joints computed in place; if a different compile context moves the UI-equals-world comparison by a level, the test allows 1/255 and the limit is recorded.
+- **The bench** stamps time before the pre-pass, so it is counted.
+- **Target:** GPU time ≤ 1.15× main on the lines-only scenes, CPU gains kept, 100k lines still drawable.
