@@ -4,7 +4,7 @@
 
 **Goal:** Every line in the engine draws its edges by analytic coverage from distances in pixels, with a one-pixel fringe and no coverage derivatives, so lines are smooth on both sides, thin lines fade instead of flickering, corners are right, and pixels are the same on every GPU and mesh layout; pixel-art targets draw crisp major-axis lines.
 
-**Architecture:** The one tessellator (`render/batch/polyline.rs`) gains the attributes (distance across, half width, a second edge, a round offset, a push direction and limit), splits vertices where a push must differ (bevels, round caps), and the shared shading body (`line_style.wgsl`) turns them into coverage. The world line shader and the UI line path push the fringe in pixels using pixels per unit from their camera. UI rects swap `fwidth` for `px_scale`. An `edge` setting picks Smooth or Hard, defaulting by the target.
+**Architecture:** (Revised 2026-11-16: lines are built on the GPU from their points; see the design's "Building on the GPU".) The one tessellator (`render/batch/polyline.rs`) gains the attributes (distance across, half width, a second edge, a round offset, a push direction and limit), splits vertices where a push must differ (bevels, round caps), and the shared shading body (`line_style.wgsl`) turns them into coverage. The world line shader and the UI line path push the fringe in pixels using pixels per unit from their camera. UI rects swap `fwidth` for `px_scale`. An `edge` setting picks Smooth or Hard, defaulting by the target.
 
 **Tech Stack:** Rust, wgpu, WGSL, the headless engine for GPU tests.
 
@@ -52,51 +52,53 @@
 - [ ] Step 2: Implement. Run: pass. Notes.
 - [ ] Step 3: Commit: `feat: the line builder gives every vertex its distances to the line's edges and how far its fringe may push`.
 
-### Task 3: World lines draw by analytic coverage
+### Task 3: The reference in pieces (CPU only)
 
-**Files:** `src/core/shaders/core/line.wgsl`, `src/core/shaders/include/line_style.wgsl`, the camera uniform (`CameraGlobals`: pixels per unit in its padding), `src/core/render/batch/lines.rs` (box growth), the cull, notes, tests (crate-internal GPU tests reading alpha from a UI-format image; e2e in `tests/e2e/gpu_world.rs`).
+**Files:** `src/core/render/batch/polyline.rs` (and `coverage.rs`), notes.
 
-- [ ] Step 1: Tests: coverage as modelled (widths 0.25 to 6, angles every 7.5°, 16 offsets, within 2/255 of `cover_strip`); within 0.12 of the supersampled reference for lines, joins, caps and closed corners; the indexed and expanded batch give equal pixels; thin-line flicker under 2%; `the_fringe_is_one_pixel_of_the_image_drawn` (Review Focus 3: an image camera, a rotated camera, Fit at 1.5); `a_miter_tip_reaching_into_view_is_drawn` (Review Focus 4); Soft and Glow shaped by `d ÷ hw`; textured trails' uv extrapolated; effects with the fringe; the existing e2e line tests pass or are updated with reasons. Run: fail.
-- [ ] Step 2: Implement: the vertex shader pushes by one pixel (pixels per unit from the uniform), clamped to the limit, growing the distances; the fragment computes coverage; `styled` takes coverage instead of `aa`. Box growth: one pixel per camera at cull time and `MITER_LIMIT × hw`. Run: pass; tour; look at the trails and debug pages.
+- [ ] Step 1: Restructure the builder into self-contained pieces in a fixed triangle order, in f32, with no packing: segment (2 triangles), miter/bevel join (4), round join (18, circumscribed), square cap (2), round cap (16); a per-corner "neighbourhood" function deciding miter or bevel, shared or split, straight-on, U-turn; the point window each piece reads; the point filter as a copy step; a split inner corner gives the segment a vertex at the corner point (no T-junction). Drop the f16/halving/angle packing. Tests: the existing CPU tests (attributes affine, coverage from pushed attributes, no double cover, no fold) kept green on the pieces, plus round pieces at a half width of 150 px, plus the T-junction gone. No GPU change (drawing still uses the reference's triangles until Task 4).
+- [ ] Step 2: Commit: `refactor: the line builder makes self-contained pieces, the reference for building lines on the GPU`.
+
+### Task 4: Lines built on the GPU (world)
+
+**Files:** `src/core/render/batch/{lines.rs,gpu.rs,pipelines.rs}`, new `src/core/shaders/include/line_pieces.wgsl`, `line.wgsl`, the camera uniform (pixels per unit in `CameraGlobals`), the cull, notes.
+
+- [ ] Step 1: Tests: GPU vertex outputs equal the reference (a test-only compute entry calling the same piece-vertex function, triangle for triangle, f32 tolerance); the additive-count watertightness draw (no pixel twice, none missed, many sub-pixel offsets, translucent lines of every join and cap); `a_miter_tip_reaching_into_view_is_drawn`; `the_fringe_is_one_pixel_of_the_image_drawn`. Fold in the review of Task 2's fix round (bevels, k blend, limits). Run: fail.
+- [ ] Step 2: Implement: point, line-table and triangle-code buffers; draws by code ranges, no vertex or index buffer for lines; the include with `@invariant` position and one corner function; the push by pixels per unit; culling growth; a minimal Solid coverage fragment. Run: pass; the line bench (CPU) against base.
+- [ ] Step 3: Commit: `feat: lines are built on the GPU from their points`.
+
+### Task 5: World coverage and styles complete
+
+**Files:** `line.wgsl`, `line_style.wgsl`, tests (crate-internal alpha reads; e2e).
+
+- [ ] Step 1: Tests: the model within 2/255 (widths 0.25–6, angles every 7.5°, 16 offsets); the supersampled truth within 0.12 (outside the recorded inner-corner zone); thin lines under 2%; translucent corners; Soft and Glow by d ÷ hw; textured trails' uv extrapolated; effects with the fringe; the e2e line tests pass or are updated with reasons. Run: fail.
+- [ ] Step 2: Implement; tour; look at the trails and debug pages.
 - [ ] Step 3: Commit: `feat: world lines and trails draw their edges by analytic coverage, the same on every GPU`.
 
-### Task 4: UI lines draw by analytic coverage
+### Task 6: UI lines on the pieces
 
-**Files:** `src/core/render/ui_renderer/{build.rs,instance.rs,gpu.rs,gpu_tests.rs}`, `src/core/shaders/core/ui.wgsl`, `src/core/render/ui.rs`, notes.
+**Files:** `src/core/render/ui_renderer/{build.rs,instance.rs,gpu.rs,gpu_tests.rs}`, `ui.wgsl`, `src/core/render/ui.rs`, notes.
 
-- [ ] Step 1: Tests: `lines_draw_as_the_batch_draws_them_with_no_vertex_shared` becomes equality of the UI pipeline with the batch indexed and expanded, no exception at miter tips; UI line coverage as modelled at UI scales 1, 1.25 and 2; the clip collapse and build cull keep a line whose fringe or miter tip reaches in; the retained-UI pixel oracles still pass. Run: fail.
-- [ ] Step 2: Implement: the instance carries the new attributes (grow or pack; measure the UI bench before and after), `vs_ui`'s line path pushes by `px_scale`, `fs_ui` takes coverage. Run: pass; UI bench; tour.
-- [ ] Step 3: Commit: `feat: UI lines draw their edges by analytic coverage`.
+- [ ] Step 1: Tests: UI lines equal world lines pixel for pixel at UI scales 1, 1.25 and 2 (replacing the shared-vertex proofs); the clip collapse and build cull keep a line whose fringe or miter tip reaches in; the retained-UI oracles pass. Run: fail.
+- [ ] Step 2: Implement: a line instance per two triangles with its points inline, the same include, the push by `px_scale`. Run: pass; the UI bench; tour.
+- [ ] Step 3: Commit: `feat: UI lines are built on the GPU by the same pieces as world lines`.
 
-### Task 5: UI rects without derivatives
+### Task 7: UI rects without derivatives
 
-**Files:** `ui.wgsl`, `ui_rect.wgsl`, the instance or pass uniform carrying `px_scale`, notes.
+As before: rects take their edge width from `px_scale`; the grep test (no coverage derivative in line or rect shading). Commit: `refactor: UI rects take their edge width from the UI's scale, not from derivatives`.
 
-- [ ] Step 1: Tests: the rect tests unchanged and passing; the grep test (no coverage derivative in the line and rect shading; mip-level derivatives allowed). Run the grep test: fail.
-- [ ] Step 2: Implement. Run: pass; tour (no rect pixel changes expected).
-- [ ] Step 3: Commit: `refactor: UI rects take their edge width from the UI's scale, not from derivatives`.
+### Task 8: Hard edges for pixel art
 
-### Task 6: Hard edges for pixel art
+As before (the major-axis rule; `LineEdge`; the default by target; Review Focus 5). Commit: `feat: lines on a pixel-art target draw crisp by default, and any line can choose its edge`.
 
-**Files:** `line_style.wgsl`, `Line2D`, `Trail2D`, the debug pen, `UiCommand::Line` (and its `draws_as` / retain comparison), the params bits, extract (default from the target), notes.
+### Task 9: Retire the CPU path, speed and docs
 
-**Interfaces:** `pub enum LineEdge { Smooth, Hard }` (prelude); `Line2D::with_edge`, `Trail2D::with_edge`, the debug pen's edge, `UiContext::draw_line_edge` or an option on the line command (choose the smallest clean API and say it); `None` means the target's default.
+**Files:** `polyline.rs` (reference to `cfg(test)`, with `coverage.rs`), remove line vertex/index buffers and the UI's per-triangle line build, `benches/lines.rs` (a profile scope around the line build; GPU timestamp queries, native only; a work-was-done bound; widths decoupled from joins), skills and notes, the backlog.
 
-- [ ] Step 1: Tests: `a_hard_line_is_one_pixel_per_column_at_any_angle` (Review Focus 5); only fully on or off pixels by default on a pixel-art target; `Smooth` explicitly gives partial ones; UI on the target follows the default, UI at window resolution is smooth. Run: fail.
-- [ ] Step 2: Implement. Run: pass; tour; look at pixel-art pages.
-- [ ] Step 3: Commit: `feat: lines on a pixel-art target draw crisp by default, and any line can choose its edge`.
+- [ ] Step 1: Retire; compare against main in one sitting (CPU and GPU time within ~15% on the lines-only bench); record.
+- [ ] Step 2: Docs: how lines are built and anti-aliased, the edge setting, pixel art, the limits (inner corners, the cover model); remove the accepted `fwidth` class and the backlog's pointers. Every Rust example compiles.
+- [ ] Step 3: Commit: `docs: lines are built on the GPU and anti-aliased by analytic coverage, and pixel-art lines are crisp`.
 
-### Task 7: Speed and docs
+### Task 10: The visual review
 
-**Files:** `benches/lines.rs`, `benches/ui_render.rs` record, the skills (`ryo-renderer`, `ryo-ui`, the trail and line sections wherever they are, `ryo-api` for `LineEdge`), the render, trail, shaders and UI notes, `docs/backlog/ui-retained-nodes.md` and `docs/backlog/follow-ups.md` (the notes that pointed here).
-
-- [ ] Step 1: Compare against main in one sitting (export main with `git archive`, its own target dir in the scratchpad, three alternating runs each, delete after): line and UI benches within 5%; record.
-- [ ] Step 2: Docs: how lines are anti-aliased, the edge setting, pixel art, limits; remove the notes' accepted `fwidth` class and the backlog's pointers once true. Every Rust example compiles.
-- [ ] Step 3: Commit: `docs: lines are anti-aliased by analytic coverage, and pixel-art lines are crisp`.
-
-### Task 8: The visual review
-
-**Files:** none committed (captures in the scratchpad).
-
-- [ ] Step 1: Before-and-after captures (main against the branch) of the text demo's page 5, the trails demo's pages, the UI demo's checkbox and dropdown pages, a debug-overlay page and a pixel-art page, at 1x and 2x, composed side by side; look at each and list what differs.
-- [ ] Step 2: No commit; the captures go to the owner with the final report.
+As before: before-and-after captures (main against the branch) at 1x and 2x, side by side, for the owner's hand-play. No commit.
