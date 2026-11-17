@@ -243,7 +243,7 @@ impl DebugDraw {
         scratch.extend(path.iter().enumerate().map(|(i, &pos)| PolyPoint {
           pos,
           half_width,
-          color: super::batch::line_color(shape.color, 1.0),
+          color: shape.color,
           u: i as f32 / last,
         }));
         let style = PolyStyle {
@@ -252,6 +252,7 @@ impl DebugDraw {
           closed,
           // Solid, no effect
           params: [0.0; 4],
+          emission: 1.0,
         };
         push_polyline(list, triangles, scratch, &style, look);
       };

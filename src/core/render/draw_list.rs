@@ -133,8 +133,9 @@ pub(crate) struct DrawTriangles {
   pub(crate) min: Vec2,
   pub(crate) max: Vec2,
   pub(crate) indices: Range<u32>,
-  /// Its vertices (a textured one is told its atlas slot when placed)
-  pub(crate) vertices: Range<u32>,
+  /// Its entry in the triangle stream's line table (a textured one is told
+  /// its atlas slot there when placed)
+  pub(crate) line: u32,
 }
 
 /// A glyph waiting to be drawn: its quad is already placed in its glyph
@@ -649,7 +650,7 @@ mod tests {
       min: Vec2::ZERO,
       max: Vec2::ONE,
       indices: 0..3,
-      vertices: 0..3,
+      line: 0,
     };
     list.push_triangles(lit, z, None, triangles);
   }

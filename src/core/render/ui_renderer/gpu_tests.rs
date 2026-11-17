@@ -12,7 +12,7 @@ use crate::core::graphics::{
 };
 use crate::core::render::batch::{
   Batch2D, BlendMode, Bound, Filter, LineLook, PolyPoint, PolyStyle, Sampling, Triangles,
-  line_color, push_polyline,
+  push_polyline,
 };
 use crate::core::render::{
   DrawKind, DrawList, PixelRect, SCENE_FORMAT, SpriteLook, SpriteShading, UI_FORMAT, plan_cameras,
@@ -291,7 +291,7 @@ fn every_kind_draws_inside_its_clip() {
     .map(|(i, &(x, y))| PolyPoint {
       pos: Vec2::new(x, y),
       half_width: 1.6,
-      color: line_color(Color::new(250, 240, 90, 200), 1.0),
+      color: Color::new(250, 240, 90, 200),
       u: i as f32 / 2.0,
     })
     .collect();
@@ -300,6 +300,7 @@ fn every_kind_draws_inside_its_clip() {
     cap: LineCap::Butt,
     closed: false,
     params: [0.0; 4],
+    emission: 1.0,
   };
   let look = LineLook {
     lit: false,
@@ -320,10 +321,17 @@ fn every_kind_draws_inside_its_clip() {
   );
   assert!(!triangles.indices.is_empty());
   for triangle in triangles.indices.as_chunks::<3>().0 {
-    let vertex = |i: u32| &triangles.vertices[i as usize];
     let corner = |i: u32| {
-      let v = vertex(i);
-      (Vec2::from(v.position), Vec2::from(v.uv), v.color)
+      triangles
+        .corner(i)
+        .map(|(corner, _)| corner)
+        .unwrap_or_default()
+    };
+    let params = |i: u32| {
+      triangles
+        .corner(i)
+        .map(|(_, params)| params)
+        .unwrap_or_default()
     };
     instances.push(UiInstance::triangle(
       [
@@ -331,7 +339,7 @@ fn every_kind_draws_inside_its_clip() {
         corner(triangle[1]),
         corner(triangle[2]),
       ],
-      vertex(triangle[0]).params,
+      params(triangle[0]),
       clip,
     ));
     needs.push(TexNeed::None);
@@ -864,10 +872,17 @@ mod lines {
     let triangles = batch.triangles();
     let mut instances = Vec::new();
     for triangle in triangles.indices.as_chunks::<3>().0 {
-      let vertex = |i: u32| &triangles.vertices[i as usize];
       let corner = |i: u32| {
-        let v = vertex(i);
-        (Vec2::from(v.position), Vec2::from(v.uv), v.color)
+        triangles
+          .corner(i)
+          .map(|(corner, _)| corner)
+          .unwrap_or_default()
+      };
+      let params = |i: u32| {
+        triangles
+          .corner(i)
+          .map(|(_, params)| params)
+          .unwrap_or_default()
       };
       instances.push(UiInstance::triangle(
         [
@@ -875,7 +890,7 @@ mod lines {
           corner(triangle[1]),
           corner(triangle[2]),
         ],
-        vertex(triangle[0]).params,
+        params(triangle[0]),
         ClipRect::of(None, IMAGE),
       ));
     }
@@ -1743,10 +1758,17 @@ mod building {
       .0
       .iter()
       .map(|triangle| {
-        let vertex = |i: u32| &triangles.vertices[i as usize];
         let corner = |i: u32| {
-          let v = vertex(i);
-          (Vec2::from(v.position), Vec2::from(v.uv), v.color)
+          triangles
+            .corner(i)
+            .map(|(corner, _)| corner)
+            .unwrap_or_default()
+        };
+        let params = |i: u32| {
+          triangles
+            .corner(i)
+            .map(|(_, params)| params)
+            .unwrap_or_default()
         };
         UiInstance::triangle(
           [
@@ -1754,7 +1776,7 @@ mod building {
             corner(triangle[1]),
             corner(triangle[2]),
           ],
-          vertex(triangle[0]).params,
+          params(triangle[0]),
           clip,
         )
       })

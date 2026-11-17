@@ -16,7 +16,7 @@ use crate::core::ecs::Entity;
 use crate::core::graphics::{
   Camera2d, CameraView, Presentation, RenderLayers, ScreenMapping, SpriteInstance,
 };
-use crate::core::render::batch::{BlendMode, Filter, LineLook, PolyPoint, PolyStyle, line_color};
+use crate::core::render::batch::{BlendMode, Filter, LineLook, PolyPoint, PolyStyle};
 use crate::core::render::text::{TextDraw, TextPlacement, UI_GLYPH_PX};
 use crate::core::render::{DrawKind, PixelRect};
 use crate::core::text::TextLayout;
@@ -259,7 +259,7 @@ pub(crate) fn line_of(
   points.extend(line.iter().enumerate().map(|(i, pos)| PolyPoint {
     pos: *pos + at,
     half_width: width / 2.0,
-    color: line_color(*color, 1.0),
+    color: *color,
     u: i as f32 / last,
   }));
   let style = PolyStyle {
@@ -267,6 +267,7 @@ pub(crate) fn line_of(
     cap: LineCap::Butt,
     closed: *closed,
     params: [0.0; 4],
+    emission: 1.0,
   };
   let look = LineLook {
     lit: false,

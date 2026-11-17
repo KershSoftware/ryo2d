@@ -3,44 +3,87 @@
 //!
 //! Every vertex carries its distances to the line's edges, in the line's
 //! units, and how far a fringe may push it outward; the builder does not know
-//! the camera.
+//! the camera. What a line's vertices share (its style and effect
+//! parameters, the atlas slot a textured line repeats, its emission, a
+//! two-point capped line's half length) is its entry in the line table
+//! (`LineInfo`), which each vertex names.
 //!
+//! - **A vertex is 48 bytes** (`a_vertex_packs_its_edges_into_48_bytes`):
+//!   place and uv, an sRGB colour (decoded by the vertex stage, which
+//!   multiplies it by the line's emission), its three distances (a round
+//!   piece's offset sharing two of them), its push, the push's limit and the
+//!   rates its distances move at in halves, its angle across, and its line,
+//!   flags and `k` in one word.
 //! - **Distances are true over every triangle.** Each triangle belongs to
 //!   one straight piece and measures across from its centre line (`dist`,
 //!   with `half` the half width there), a second edge where it lies against
 //!   two (`second`: the other segment's outer edge in a miter's point, the
-//!   bevel's edge in a bevel's halves, a butt or square cap's edge in the
-//!   capped half of its segment), or, in a round piece, its offset from the
-//!   corner point (`round`). Every one is an affine function of position over
-//!   its triangle, so it is exact wherever it is interpolated
-//!   (`every_attribute_is_the_true_distance_over_its_triangle`). A vertex is
-//!   shared only between triangles that measure the same; elsewhere a piece
-//!   has its own copy at the same place, pushed the same way: a miter's point,
-//!   a bevel's halves and a round join's arc each have their own vertices, a
-//!   round cap its own copies of the strip's end vertices.
-//! - **A push of one unit grows every distance by one unit**
-//!   (`a_push_of_one_unit_grows_every_distance_by_one`): `dist` away from the
-//!   centre line (down where `FLAG_GROWS_DOWN` says), `second` one less, and
-//!   `round` by the push itself. A vertex on two edges pushes along their
-//!   miter: a miter's point and the strip's outer vertices beside it along
-//!   the miter, a bevel's elbows and middle along the miter of the bevel and
-//!   their segment's edge, a cap's corners out across the cap and the side.
+//!   bevel's edge in a bevel's fans, a butt or square cap's edge in its
+//!   segment's quad, or, on a two-point capped line, its distance along from
+//!   the middle between its caps, a strip of the line's `along_half`), or,
+//!   in a round piece, its offset from the corner point. Every one is an
+//!   affine function of position over its triangle, so it is exact wherever
+//!   it is interpolated (`every_attribute_is_the_true_distance_over_its_triangle`).
+//!   A vertex is shared only between triangles that measure the same;
+//!   elsewhere a piece has its own copy at the same place, pushed the same
+//!   way: a miter's point, a bevel's fans, a round join's arc and a capped
+//!   segment's far end each have their own vertices, a round cap its own
+//!   copies of the strip's end vertices.
+//! - **A pushed vertex measures where it lands**
+//!   (`a_pushed_vertex_measures_where_it_lands`): pushed `a` units, `dist`
+//!   rises by `dist_rate × a`, `second` falls by `second_rate × a` and a
+//!   round offset grows by the push, each rate worked out from the push as
+//!   stored, so the pushed triangle's distances stay true. A vertex on two
+//!   edges pushes along their miter (a miter's point and the strip's outer
+//!   vertices beside it, a bevel's elbows, a cap's corners), so both rise by
+//!   one unit per unit; a bevel's middle pushes along the bevel's normal,
+//!   its distance across rising by `m · bevel`.
+//! - **Two edges blend by their angle.** Each vertex of a triangle with a
+//!   second edge carries `k`, the dot product of the two edges' outward
+//!   normals (`cos` of the turn in a miter's point, `m · bevel` in a bevel's
+//!   fans, zero beside a cap), for the coverage model's blend
+//!   (`coverage.rs`). Pushed one pixel, the mesh gives every pixel the
+//!   model's coverage within 0.12 of the exact area of the line drawn
+//!   unpushed, at every join, cap and closed corner, at half widths of 0.75
+//!   to 6 pixels, turns of 5 to 165 degrees, 8 directions and 4 sub-pixel
+//!   places (`the_pushed_mesh_gives_every_pixel_its_coverage`; worst 0.105
+//!   at round joins, 0.089 at bevels, 0.086 at miters, 0.072 at caps).
+//! - **A bevel is a fan each side.** From the corner point through copies of
+//!   the shared inner vertex (when the segments share it) and of the strip's
+//!   elbow, to the bevel's middle, which both fans share: every triangle
+//!   touching the elbow measures its segment across and the bevel's edge.
+//!   The strip's elbow pushes along the miter of its edge and the bevel, so
+//!   pushed, the strip quad's corner reaches past the bevel's edge by the
+//!   push, where only its strip is measured: that is in the bevels' 0.089
+//!   (at 90 degrees; a slide along the bevel's edge would keep it inside,
+//!   0.055 there, for two more vertices a bevel and a limit that runs short
+//!   at shallow bevels).
+//! - **A capped segment measures its cap over its whole quad**, through
+//!   copies of the pair it ends on at its far end; a two-point capped line
+//!   measures both caps as one strip along it. Nothing is cut.
 //! - **Pushed, the mesh stays watertight and covers nothing twice**
-//!   (`a_translucent_line_covers_no_pixel_twice_at_any_join`). Where two
-//!   copies at one place push apart, a fringe triangle with no area until
-//!   pushed fills what opens: between a bevel's halves (bounded by the
-//!   bevel's edge alone, `half` = `NO_EDGE`) and between a capped half and
-//!   the rest of its segment, which is cut at its middle for it. An unshared
-//!   inner vertex pushes opposite its outer one, so their end keeps passing
-//!   through the corner point the wedge fans from. A sharp corner's inner
-//!   side still overlaps, as it does unpushed.
+//!   (`a_translucent_line_covers_no_pixel_twice_at_any_join`). Copies at one
+//!   place push alike. An unshared inner vertex pushes opposite its outer
+//!   one, so their end keeps passing through the corner point the wedge fans
+//!   from. A sharp corner's inner side still overlaps, as it does unpushed.
 //! - **A pushed quad never folds** (`a_pushed_inner_vertex_never_folds_its_quad`).
-//!   Every vertex of a segment's quad pushes at most the quad's limit, the
-//!   least its corners allow: a shared inner vertex until it would pass the
-//!   shorter segment's middle, and a push that runs along the segment (a
-//!   miter's or a bevel's) until it has run half the quad's length. A capped
-//!   half moves whole and needs none. Vertices never pushed have a limit of
+//!   Every vertex of a segment's quad, a cap's corners included, pushes at
+//!   most the quad's limit, the least its corners allow: a shared inner
+//!   vertex until it would pass the shorter segment's middle, and a push
+//!   that runs along the segment (a miter's or a bevel's) until it has run
+//!   half the segment's length. Limits are stored 2⁻¹⁰ short of themselves
+//!   and rounded to halves, so the halves' rounding of the pushes never
+//!   takes two ends past each other. Vertices never pushed have a limit of
 //!   zero.
+//! - **Limit: the inner corner.** Within a pixel of a shared inner vertex,
+//!   or near it within a pixel of both inner edges, a pixel lies across both
+//!   segments' strips, and one triangle's distances cannot give their union:
+//!   the coverage there is off by up to 0.16 at a 60 degree turn, 0.26 at
+//!   90, 0.34 at 120, 0.39 at 150 and 0.45 at 165, whatever the join
+//!   (measured by the coverage test, which holds it to 0.45).
+//! - **Limit:** a push rounds to halves, off by up to 2⁻¹¹ of its length: a
+//!   two thousandths of a unit per unit at the miter limit's tip; the shared inner
+//!   vertex of a sharp corner pushes further, inside the inner corner.
 //! - **Limit:** on a tapered line a push that runs along the segment keeps
 //!   the vertex's `half`, which the taper would change by its slope times
 //!   that run.
@@ -48,10 +91,12 @@
 use std::ops::Range;
 
 use glam::Vec2;
+use half::f16;
 
 use crate::core::trail::{LineCap, LineJoin};
+use crate::core::ui::Color;
 
-/// One vertex of the triangle stream.
+/// One vertex of the triangle stream: 48 bytes.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub(crate) struct Vertex2D {
@@ -59,51 +104,152 @@ pub(crate) struct Vertex2D {
   pub(crate) position: [f32; 2],
   /// Along the line (`u`) and across it (`v`, 0 on one edge, 1 on the other)
   pub(crate) uv: [f32; 2],
-  /// Linear colour, straight alpha
-  pub(crate) color: [f32; 4],
-  /// Style and effect parameters
-  pub(crate) params: [f32; 4],
-  /// The unit perpendicular displacement effects move the vertex along
-  pub(crate) across: [f32; 2],
-  /// The atlas slot a textured line repeats (UV min and max), set when it
-  /// is placed; zero for untextured ones
-  pub(crate) bounds: [f32; 4],
+  /// sRGB colour, straight alpha; the vertex stage decodes it to linear
+  /// light and multiplies it by its line's emission
+  pub(crate) color: [u8; 4],
   /// Signed distance across from the centre line of its triangle's straight
-  /// piece, in the line's units (positive on the left, by the normal)
+  /// piece, in the line's units (positive on the left, by the normal); in a
+  /// round piece, the x of its offset from its corner point
   pub(crate) dist: f32,
+  /// The distance inside a second edge (the other outer edge in a miter's
+  /// point, the bevel's edge, a cap's edge), or a two-point capped line's
+  /// distance along from the middle between its caps, or `NO_EDGE`; in a
+  /// round piece, the y of its offset from its corner point
+  pub(crate) second: f32,
   /// The half width there (`NO_EDGE` where only the second edge bounds it)
   pub(crate) half: f32,
-  /// The distance inside a second edge (the other outer edge near a miter
-  /// tip, the bevel's edge, a cap's edge), or `NO_EDGE`
-  pub(crate) second: f32,
-  /// The most the fringe may push it, in the line's units
-  pub(crate) push_limit: f32,
-  /// A round piece's offset from its corner point (zero elsewhere)
-  pub(crate) round: [f32; 2],
-  /// The way the fringe pushes it, scaled so a push of one unit grows each
-  /// of its distances by one unit
-  pub(crate) push: [f32; 2],
-  /// `FLAG_ROUND`, `FLAG_SECOND` and `FLAG_GROWS_DOWN`
-  pub(crate) flags: u32,
+  /// The way the fringe pushes it, in the line's units per unit of push
+  pub(crate) push: [f16; 2],
+  /// The most the fringe may push it (rounded down)
+  pub(crate) limit: f16,
+  /// How much `dist` rises per unit of push
+  pub(crate) dist_rate: f16,
+  /// How much `second` falls per unit of push
+  pub(crate) second_rate: f16,
+  /// The unit perpendicular displacement effects move the vertex along, as
+  /// a sixteen-bit angle (`NO_ACROSS`: none)
+  pub(crate) across: u16,
+  /// Its line's entry in the line table (the low 20 bits), its flags (4) and
+  /// `k`, the dot product of its two edges' outward normals (8, signed, in
+  /// 127ths)
+  pub(crate) packed: u32,
 }
 
-/// A vertex of a round piece: coverage by the length of its `round` offset
+/// A vertex of a round piece: coverage by the length of its offset
 pub(crate) const FLAG_ROUND: u32 = 1;
 /// A vertex whose `second` edge distance counts
 pub(crate) const FLAG_SECOND: u32 = 2;
-/// A vertex whose `dist` falls as it is pushed (on the right of its centre
-/// line); otherwise it rises
-pub(crate) const FLAG_GROWS_DOWN: u32 = 4;
-/// No edge: the `second` of a vertex without one, the `half` of one that only
-/// a second edge bounds, and the `push_limit` of one pushed without limit
+/// A vertex whose `second` is a distance along a two-point capped line from
+/// the middle between its caps: a strip of its line's `along_half`
+pub(crate) const FLAG_ALONG: u32 = 4;
+/// No edge: the `second` of a vertex without one and the `half` of one that
+/// only a second edge bounds
 pub(crate) const NO_EDGE: f32 = 1.0e6;
+/// The line table holds this many lines a frame; the rest draw nothing
+pub(crate) const MAX_LINES: usize = 1 << LINE_BITS;
+const LINE_BITS: u32 = 20;
+const LINE_MASK: u32 = (1 << LINE_BITS) - 1;
+const FLAG_SHIFT: u32 = 20;
+const K_SHIFT: u32 = 24;
+/// The `across` of a vertex effects leave where it is
+const NO_ACROSS: u16 = u16::MAX;
+
+impl Vertex2D {
+  /// Its line's entry in the line table
+  pub(crate) fn line(&self) -> usize {
+    (self.packed & LINE_MASK) as usize
+  }
+
+  /// `FLAG_ROUND`, `FLAG_SECOND` and `FLAG_ALONG`
+  pub(crate) fn flags(&self) -> u32 {
+    (self.packed >> FLAG_SHIFT) & 0xF
+  }
+
+  /// The dot product of its two edges' outward normals
+  #[cfg(test)]
+  pub(crate) fn k(&self) -> f32 {
+    f32::from((self.packed >> K_SHIFT) as u8 as i8) / 127.0
+  }
+
+  pub(crate) fn push(&self) -> Vec2 {
+    Vec2::new(self.push[0].to_f32(), self.push[1].to_f32())
+  }
+}
+
+/// A vertex's `across`: a unit direction as a sixteen-bit angle, worked out
+/// once per segment or corner and turned for the vertices of an arc.
+#[derive(Clone, Copy)]
+struct Across(u16);
+
+impl Across {
+  const NONE: Self = Self(NO_ACROSS);
+
+  fn of(direction: Vec2) -> Self {
+    if direction == Vec2::ZERO || !direction.is_finite() {
+      return Self::NONE;
+    }
+    Self::from_angle(direction.y.atan2(direction.x))
+  }
+
+  /// This direction turned by `angle` radians
+  fn turned(self, angle: f32) -> Self {
+    if self.0 == NO_ACROSS {
+      return self;
+    }
+    Self::from_angle(f32::from(self.0) / ACROSS_STEPS * std::f32::consts::TAU + angle)
+  }
+
+  /// The direction `angle` radians from the x axis
+  fn from_angle(angle: f32) -> Self {
+    let steps = (angle * (ACROSS_STEPS / std::f32::consts::TAU)).round() as i32;
+    Self(steps.rem_euclid(ACROSS_STEPS as i32) as u16)
+  }
+}
+
+/// The steps of a whole turn an `across` angle counts
+const ACROSS_STEPS: f32 = 65535.0;
+
+/// `limit` in half precision, never above it, so a push never passes it:
+/// rounding to the nearest half moves a value by at most 2⁻¹¹ of itself, so
+/// a value first made 2⁻¹⁰ smaller rounds to at most what it was
+fn limit_of(limit: f32) -> f16 {
+  if limit.is_nan() || limit <= 0.0 {
+    return f16::ZERO;
+  }
+  f16::from_f32((limit * (1.0 - 1.0 / 1024.0)).min(f16::MAX.to_f32()))
+}
+
+/// `k` in 127ths
+fn k_code(k: f32) -> u32 {
+  u32::from((k.clamp(-1.0, 1.0) * 127.0).round() as i8 as u8)
+}
+
+/// What every vertex of one line shares: an entry of the line table, which
+/// the vertex stage reads by the line's number in each vertex.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+pub(crate) struct LineInfo {
+  /// Style and effect parameters (effect and style bits in `[0]`)
+  pub(crate) params: [f32; 4],
+  /// The atlas slot a textured line repeats (UV min and max), set when it
+  /// is placed; zero for untextured ones
+  pub(crate) bounds: [f32; 4],
+  /// What its colours' light is multiplied by
+  pub(crate) emission: f32,
+  /// A two-point capped line's half length between its caps (zero
+  /// elsewhere): the half width of the strip its `FLAG_ALONG` vertices
+  /// measure
+  pub(crate) along_half: f32,
+  pub(crate) _pad: [f32; 2],
+}
 
 /// A point of a polyline.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PolyPoint {
   pub(crate) pos: Vec2,
   pub(crate) half_width: f32,
-  pub(crate) color: [f32; 4],
+  /// sRGB, straight alpha
+  pub(crate) color: Color,
   /// Texture coordinate along the line: 0..1 when stretched, distance over
   /// tile length when tiled
   pub(crate) u: f32,
@@ -116,29 +262,46 @@ pub(crate) struct PolyStyle {
   pub(crate) cap: LineCap,
   /// The last point joins the first
   pub(crate) closed: bool,
-  /// Copied into every vertex (effect and style bits in `[0]`)
+  /// Its line table entry's (effect and style bits in `[0]`)
   pub(crate) params: [f32; 4],
+  /// What its colours' light is multiplied by
+  pub(crate) emission: f32,
 }
 
 /// A miter longer than this many times the line's width becomes a bevel.
 pub(crate) const MITER_LIMIT: f32 = 4.0;
 
-/// Triangles built on the CPU for the batch's triangle stream.
+/// Triangles built on the CPU for the batch's triangle stream, and the line
+/// table their vertices name.
 #[derive(Default)]
 pub(crate) struct Triangles {
   pub(crate) vertices: Vec<Vertex2D>,
   pub(crate) indices: Vec<u32>,
+  pub(crate) lines: Vec<LineInfo>,
+  /// Room the builder keeps from line to line
+  scratch: Scratch,
+  /// Whether the log has been told the line table is full
+  warned: bool,
+}
+
+#[derive(Default)]
+struct Scratch {
+  points: Vec<PolyPoint>,
+  segments: Vec<Segment>,
+  turns: Vec<Option<Turn>>,
+  joints: Vec<Joint>,
 }
 
 impl Triangles {
-  /// Forget every triangle, keeping the allocations.
+  /// Forget every triangle and line, keeping the allocations.
   pub(crate) fn clear(&mut self) {
     self.vertices.clear();
     self.indices.clear();
+    self.lines.clear();
   }
 
-  /// Add the triangles of a polyline through `points`; the index range they
-  /// take (empty when nothing is drawn).
+  /// Add the triangles of a polyline through `points`, and its line table
+  /// entry; the index range they take (empty when nothing is drawn).
   ///
   /// Non-finite points are skipped and points closer than `1e-4` to the one
   /// before collapse. Each segment is a quad sharing its edge vertices with
@@ -147,7 +310,24 @@ impl Triangles {
   /// overlaps on the inside instead of spiking).
   pub(crate) fn polyline(&mut self, points: &[PolyPoint], style: &PolyStyle) -> Range<u32> {
     let start = self.indices.len() as u32;
-    let mut pts: Vec<PolyPoint> = Vec::with_capacity(points.len());
+    let mut scratch = std::mem::take(&mut self.scratch);
+    let drawn = self.build(points, style, &mut scratch);
+    self.scratch = scratch;
+    if drawn {
+      start..self.indices.len() as u32
+    } else {
+      start..start
+    }
+  }
+
+  fn build(&mut self, points: &[PolyPoint], style: &PolyStyle, scratch: &mut Scratch) -> bool {
+    let Scratch {
+      points: pts,
+      segments,
+      turns,
+      joints,
+    } = scratch;
+    pts.clear();
     for point in points {
       if !point.pos.is_finite() || !point.half_width.is_finite() {
         continue;
@@ -161,30 +341,74 @@ impl Triangles {
       pts.push(*point);
     }
     let mut closed = style.closed;
-    if closed && pts.len() > 2 && pts[0].pos.distance(pts[pts.len() - 1].pos) < 1e-4 {
+    if closed
+      && pts.len() > 2
+      && let (Some(first), Some(last)) = (pts.first(), pts.last())
+      && first.pos.distance(last.pos) < 1e-4
+    {
       pts.pop();
     }
     if pts.len() < 3 {
       closed = false;
     }
     if pts.len() < 2 || pts.iter().all(|point| point.half_width <= 0.0) {
-      return start..start;
+      return false;
     }
-    let mut line = Builder {
+    if self.lines.len() >= MAX_LINES {
+      if !self.warned {
+        self.warned = true;
+        log::warn!(
+          "more than {MAX_LINES} lines and trails in one frame: the line table is full, so the rest draw nothing"
+        );
+      }
+      return false;
+    }
+    let line = self.lines.len() as u32;
+    self.lines.push(LineInfo {
+      params: style.params,
+      bounds: [0.0; 4],
+      emission: style.emission,
+      along_half: 0.0,
+      _pad: [0.0; 2],
+    });
+    let mut builder = Builder {
       out: self,
-      pts: &pts,
+      pts,
       style,
+      line,
     };
-    line.build(closed);
-    start..self.indices.len() as u32
+    builder.build(closed, segments, turns, joints);
+    true
+  }
+
+  /// Vertex `index` as a corner of a UI line's triangle, with its line's
+  /// parameters.
+  pub(crate) fn corner(&self, index: u32) -> Option<(Corner, [f32; 4])> {
+    let vertex = self.vertices.get(index as usize)?;
+    let line = self.lines.get(vertex.line())?;
+    let [r, g, b, a] = vertex.color;
+    let [r, g, b, a] = Color::new(r, g, b, a).to_linear();
+    let e = line.emission;
+    let corner = (
+      Vec2::from(vertex.position),
+      Vec2::from(vertex.uv),
+      [r * e, g * e, b * e, a],
+    );
+    Some((corner, line.params))
   }
 }
+
+/// A corner of a UI line's triangle: its place, its uv and its colour in
+/// linear light.
+pub(crate) type Corner = (Vec2, Vec2, [f32; 4]);
 
 /// A segment's direction and left-hand normal.
 #[derive(Clone, Copy)]
 struct Segment {
   dir: Vec2,
   normal: Vec2,
+  /// The normal as its vertices' `across`
+  across: Across,
   len: f32,
   /// The most any vertex of its quad may push: the least its corners allow
   limit: f32,
@@ -197,6 +421,7 @@ impl Segment {
     Self {
       dir,
       normal: dir.perp(),
+      across: Across::of(dir.perp()),
       len,
       limit: NO_EDGE,
     }
@@ -211,88 +436,120 @@ struct Joint {
   start: (u32, u32),
 }
 
+/// A second edge a vertex measures.
+#[derive(Clone, Copy)]
+enum Bound {
+  /// The distance inside an edge through `point` with outward normal `out`
+  Edge { point: Vec2, out: Vec2 },
+  /// The signed distance along `dir` from `mid`, the middle between a
+  /// two-point line's caps
+  Along { mid: Vec2, dir: Vec2 },
+}
+
+#[derive(Clone, Copy)]
+struct Second {
+  bound: Bound,
+  /// The dot product of the outward normals of this edge and the strip's
+  /// edge it meets
+  k: f32,
+}
+
+impl Second {
+  fn edge(point: Vec2, out: Vec2, k: f32) -> Self {
+    Self {
+      bound: Bound::Edge { point, out },
+      k,
+    }
+  }
+
+  /// What it measures at `at`
+  fn at(&self, at: Vec2) -> f32 {
+    match self.bound {
+      Bound::Edge { point, out } => (point - at).dot(out),
+      Bound::Along { mid, dir } => (at - mid).dot(dir),
+    }
+  }
+
+  /// How much what it measures falls per unit of `push`
+  fn rate(&self, push: Vec2) -> f32 {
+    match self.bound {
+      Bound::Edge { out, .. } => push.dot(out),
+      Bound::Along { dir, .. } => -push.dot(dir),
+    }
+  }
+
+  fn flags(&self) -> u32 {
+    match self.bound {
+      Bound::Edge { .. } => FLAG_SECOND,
+      Bound::Along { .. } => FLAG_SECOND | FLAG_ALONG,
+    }
+  }
+}
+
 /// What a vertex measures, in the line's units, and how the fringe pushes
 /// it.
 #[derive(Clone, Copy)]
 struct Measure {
   dist: f32,
   half: f32,
-  second: Option<f32>,
+  /// The normal of the centre line `dist` is measured from, which says how
+  /// it rises as the vertex is pushed
+  normal: Vec2,
+  second: Option<Second>,
   round: Option<Vec2>,
   push: Vec2,
   limit: f32,
-  /// The way `dist` goes as the vertex is pushed: 1 up, -1 down
-  grows: f32,
 }
 
 impl Measure {
   /// On the edge of a strip of half width `half`, on the `side` (1 left, -1
-  /// right) of its centre line, pushed along `push` (one unit across per
-  /// unit) by at most `limit`.
-  fn edge(side: f32, half: f32, push: Vec2, limit: f32) -> Self {
+  /// right) of its centre line of normal `normal`, pushed along `push` by at
+  /// most `limit`.
+  fn edge(side: f32, half: f32, normal: Vec2, push: Vec2, limit: f32) -> Self {
     Self {
       dist: side * half,
       half,
+      normal,
       second: None,
       round: None,
       push,
       limit,
-      grows: side,
     }
   }
 
   /// A corner point, never pushed.
   fn centre(half: f32) -> Self {
-    Self::edge(0.0, half, Vec2::ZERO, 0.0)
+    Self::edge(0.0, half, Vec2::ZERO, Vec2::ZERO, 0.0)
   }
 
   /// A vertex of a round piece, `offset` from its corner point.
   fn round(half: f32, offset: Vec2, push: Vec2, limit: f32) -> Self {
     Self {
       round: Some(offset),
-      ..Self::edge(0.0, half, push, limit)
+      ..Self::edge(0.0, half, Vec2::ZERO, push, limit)
     }
   }
 
-  /// A vertex of a piece no strip bounds, only its second edge.
-  fn second_only(second: f32, push: Vec2, limit: f32, grows: f32) -> Self {
-    Self {
-      dist: 0.0,
-      half: NO_EDGE,
-      second: Some(second),
-      round: None,
-      push,
-      limit,
-      grows,
-    }
-  }
-
-  fn with_second(self, second: f32) -> Self {
-    Self {
-      second: Some(second),
-      ..self
-    }
+  fn with(self, second: Option<Second>) -> Self {
+    Self { second, ..self }
   }
 }
 
-/// `v` measuring a second edge `second` inside it.
-fn set_second(v: &mut Vertex2D, second: f32) {
-  v.second = second;
-  v.flags |= FLAG_SECOND;
-}
-
-/// `v` measuring no second edge.
-fn clear_second(v: &mut Vertex2D) {
-  v.second = NO_EDGE;
-  v.flags &= !FLAG_SECOND;
+/// `v` measuring `second` where it is, as it is pushed.
+fn measure_second(v: &mut Vertex2D, second: Second) {
+  v.second = second.at(Vec2::from(v.position));
+  v.second_rate = f16::from_f32(second.rate(v.push()));
+  let flags = (v.flags() & !FLAG_ALONG) | second.flags();
+  v.packed = (v.packed & LINE_MASK) | flags << FLAG_SHIFT | k_code(second.k) << K_SHIFT;
 }
 
 /// `v` as a vertex of a round piece, `offset` from its corner point.
 fn set_round(v: &mut Vertex2D, offset: Vec2) {
-  v.dist = 0.0;
-  v.second = NO_EDGE;
-  v.round = offset.into();
-  v.flags = FLAG_ROUND;
+  v.dist = offset.x;
+  v.second = offset.y;
+  v.dist_rate = f16::ZERO;
+  v.second_rate = f16::ZERO;
+  v.packed = (v.packed & LINE_MASK) | FLAG_ROUND << FLAG_SHIFT;
 }
 
 /// The push that moves a point out across two edges of outward normals `a`
@@ -309,7 +566,8 @@ struct Turn {
   cos: f32,
   /// Where the offset edges meet, as a multiple of the half width
   miter: Vec2,
-  bisector: Vec2,
+  /// The bisector of the normals, as the `across` of the vertices on it
+  bisector: Across,
   /// Whether the segments share their inner vertex
   shares_inside: bool,
   /// Whether a miter join keeps its point (else it is bevelled)
@@ -353,7 +611,7 @@ impl Turn {
     // A miter's outer vertices push along the miter, which takes both outer
     // edges out by one unit per unit, as its point measures the other
     // segment's edge; a bevel's along the miter of their segment's edge and
-    // the bevel's; a round's straight out
+    // the bevel's, which the bevel's fans measure; a round's straight out
     let push = match join {
       LineJoin::Round => (m0, m1),
       _ if mitered => (side * miter, side * miter),
@@ -370,7 +628,7 @@ impl Turn {
       side,
       cos,
       miter,
-      bisector: (n0 + n1).normalize_or(n0),
+      bisector: Across::of((n0 + n1).normalize_or(n0)),
       shares_inside,
       mitered,
       bevel,
@@ -379,14 +637,14 @@ impl Turn {
     })
   }
 
-  /// The most a vertex of the quad beside it, `length` long along
-  /// `segment`, may push for this corner: until a push along the miter or a
-  /// bevel's, which also runs along the segment, has run half the quad's
-  /// length, and no further than the shared inner vertex may.
-  fn limit_on(&self, push: Vec2, segment: Segment, length: f32) -> f32 {
+  /// The most a vertex of the quad beside it, along `segment`, may push for
+  /// this corner: until a push along the miter or a bevel's, which also runs
+  /// along the segment, has run half the segment's length, and no further
+  /// than the shared inner vertex may.
+  fn limit_on(&self, push: Vec2, segment: Segment) -> f32 {
     let along = push.dot(segment.dir).abs();
     let runs = if along > 1e-6 {
-      (length / (2.0 * along)).min(NO_EDGE)
+      (segment.len / (2.0 * along)).min(NO_EDGE)
     } else {
       NO_EDGE
     };
@@ -398,258 +656,259 @@ struct Builder<'a> {
   out: &'a mut Triangles,
   pts: &'a [PolyPoint],
   style: &'a PolyStyle,
+  /// Its line's entry in the line table
+  line: u32,
 }
 
 impl Builder<'_> {
-  fn build(&mut self, closed: bool) {
-    let n = self.pts.len();
-    let mut segments: Vec<Segment> = (0..if closed { n } else { n - 1 })
-      .map(|i| Segment::between(self.pts[i].pos, self.pts[(i + 1) % n].pos))
-      .collect();
-    let cut = !closed && matches!(self.style.cap, LineCap::Butt | LineCap::Square);
-    let last = segments.len() - 1;
+  fn build(
+    &mut self,
+    closed: bool,
+    segments: &mut Vec<Segment>,
+    turns: &mut Vec<Option<Turn>>,
+    joints: &mut Vec<Joint>,
+  ) {
+    let pts = self.pts;
+    let n = pts.len();
+    let count = if closed { n } else { n - 1 };
+    segments.clear();
+    segments.extend((0..count).map(|i| {
+      let (a, b) = (pts[i].pos, pts[(i + 1) % n].pos);
+      Segment::between(a, b)
+    }));
+    // Each corner's turn, worked out once; the segments either side of
+    // point `i` are `before(i)` and `i % count`
+    let before = |i: usize| (i + count - 1) % count;
+    turns.clear();
+    for (i, point) in pts.iter().enumerate() {
+      let corner = closed || (i > 0 && i < n - 1);
+      let turn = match (corner, segments.get(before(i)), segments.get(i % count)) {
+        (true, Some(&b), Some(&a)) => Turn::at(b, a, point.half_width, self.style.join),
+        _ => None,
+      };
+      turns.push(turn);
+    }
     // Every vertex of a segment's quad pushes as far as the least its
     // corners allow, so the quad grows evenly and never folds
-    let corners = if closed { 0..n } else { 1..n - 1 };
-    for i in corners {
-      let (b, a) = (
-        (i + segments.len() - 1) % segments.len(),
-        i % segments.len(),
-      );
-      let Some(turn) = Turn::at(
-        segments[b],
-        segments[a],
-        self.pts[i].half_width,
-        self.style.join,
-      ) else {
+    for (i, turn) in turns.iter().enumerate() {
+      let Some(turn) = turn else {
         continue;
       };
-      // A cut segment's quad beside a corner is its uncapped half
-      let length = |s: usize| {
-        let len = segments[s].len;
-        if cut && (s == 0 || s == last) {
-          len / 2.0
-        } else {
-          len
-        }
+      let (b, a) = (before(i), i % count);
+      let (Some(&seg_b), Some(&seg_a)) = (segments.get(b), segments.get(a)) else {
+        continue;
       };
-      let before = turn.limit_on(turn.push.0, segments[b], length(b));
-      let after = turn.limit_on(turn.push.1, segments[a], length(a));
-      segments[b].limit = segments[b].limit.min(before);
-      segments[a].limit = segments[a].limit.min(after);
+      let (limit_b, limit_a) = (
+        turn.limit_on(turn.push.0, seg_b),
+        turn.limit_on(turn.push.1, seg_a),
+      );
+      if let Some(segment) = segments.get_mut(b) {
+        segment.limit = segment.limit.min(limit_b);
+      }
+      if let Some(segment) = segments.get_mut(a) {
+        segment.limit = segment.limit.min(limit_a);
+      }
     }
-    let mut joints = Vec::with_capacity(n + 1);
-    for i in 0..n {
-      let joint = match (closed, i) {
-        (false, 0) => self.end_pair(0, segments[0], true),
-        (false, _) if i == n - 1 => self.end_pair(i, segments[i - 1], false),
-        // The seam: the closing segment ends on the first corner, with `u`
-        // running on past the last point
-        (true, 0) => {
-          let last = segments[n - 1];
-          let u = self.pts[n - 1].u + last.len * self.u_scale(n - 2, n - 1);
-          self.corner_with_u(0, last, segments[0], Some(u))
+    // A butt or square cap's edge, which the quad of its segment measures
+    // over its whole length; a two-point line measures both as one strip
+    // along it
+    let capped = !closed && matches!(self.style.cap, LineCap::Butt | LineCap::Square);
+    let (Some(&first), Some(&last)) = (segments.first(), segments.last()) else {
+      return;
+    };
+    let reach = |point: &PolyPoint| {
+      if self.style.cap == LineCap::Square {
+        point.half_width
+      } else {
+        0.0
+      }
+    };
+    let (start_cap, end_cap) = match (capped, pts.first(), pts.last()) {
+      (true, Some(p0), Some(p1)) if count == 1 => {
+        let (r0, r1) = (reach(p0), reach(p1));
+        let mid = (p0.pos - first.dir * r0 + p1.pos + first.dir * r1) / 2.0;
+        if let Some(info) = self.out.lines.get_mut(self.line as usize) {
+          info.along_half = (first.len + r0 + r1) / 2.0;
         }
-        _ => self.corner(i, segments[i - 1], segments[i % segments.len()]),
+        let along = Second {
+          bound: Bound::Along {
+            mid,
+            dir: first.dir,
+          },
+          k: 0.0,
+        };
+        (Some(along), Some(along))
+      }
+      (true, Some(p0), Some(p1)) => (
+        Some(Second::edge(
+          p0.pos - first.dir * reach(p0),
+          -first.dir,
+          0.0,
+        )),
+        Some(Second::edge(p1.pos + last.dir * reach(p1), last.dir, 0.0)),
+      ),
+      _ => (None, None),
+    };
+    joints.clear();
+    for (i, point) in pts.iter().enumerate() {
+      let joint = match (closed, i) {
+        (false, 0) => self.end_pair(point, first, start_cap, None),
+        (false, _) if i == n - 1 => {
+          let back = pts.get(n - 2).map(|p| self.u_scale(p, point));
+          self.end_pair(point, last, end_cap, back)
+        }
+        _ => {
+          let (Some(&b), Some(&a), Some(turn)) = (
+            segments.get(before(i)),
+            segments.get(i % count),
+            turns.get(i).copied(),
+          ) else {
+            continue;
+          };
+          // The seam: the closing segment ends on the first corner, with
+          // `u` running on past the last point
+          let end_u = match (closed, i, pts.get(n - 2), pts.last()) {
+            (true, 0, Some(a), Some(z)) => Some(z.u + b.len * self.u_scale(a, z)),
+            _ => None,
+          };
+          self.corner(point, b, a, turn, end_u)
+        }
       };
       joints.push(joint);
     }
-    if closed {
-      joints.push(joints[0]);
+    if closed && let Some(&first) = joints.first() {
+      joints.push(first);
     }
-    for (i, segment) in segments.iter().enumerate() {
-      let (from, to) = (joints[i].start, joints[i + 1].end);
-      self.strip(from, to, *segment, cut && i == 0, cut && i == last);
+    for i in 0..count {
+      let (Some(from), Some(to)) = (joints.get(i), joints.get(i + 1)) else {
+        continue;
+      };
+      let (mut from, mut to) = (from.start, to.end);
+      // A capped segment's far end measures its cap too, with copies of the
+      // pair it ends on there, at their places and pushed as they are
+      if count > 1 {
+        if let (0, Some(cap)) = (i, start_cap) {
+          to = self.measured_pair(to, cap);
+        }
+        if let Some(cap) = end_cap
+          && i == count - 1
+        {
+          from = self.measured_pair(from, cap);
+        }
+      }
+      self.quad(from, to);
     }
   }
 
-  /// `u` per world unit along the segment from point `a` to point `b`.
-  fn u_scale(&self, a: usize, b: usize) -> f32 {
-    let (pa, pb) = (self.pts[a], self.pts[b]);
-    let len = pa.pos.distance(pb.pos);
-    if len > 0.0 { (pb.u - pa.u) / len } else { 0.0 }
+  /// `u` per world unit along the segment from `a` to `b`.
+  fn u_scale(&self, a: &PolyPoint, b: &PolyPoint) -> f32 {
+    let len = a.pos.distance(b.pos);
+    if len > 0.0 { (b.u - a.u) / len } else { 0.0 }
   }
 
-  fn vertex(&mut self, at: Vec2, point: &PolyPoint, uv: [f32; 2], across: Vec2, m: Measure) -> u32 {
+  fn vertex(
+    &mut self,
+    at: Vec2,
+    point: &PolyPoint,
+    uv: [f32; 2],
+    across: Across,
+    m: Measure,
+  ) -> u32 {
     let index = self.out.vertices.len() as u32;
-    let mut flags = 0;
-    if m.round.is_some() {
-      flags |= FLAG_ROUND;
-    }
-    if m.second.is_some() {
-      flags |= FLAG_SECOND;
-    }
-    if m.grows < 0.0 {
-      flags |= FLAG_GROWS_DOWN;
-    }
-    self.out.vertices.push(Vertex2D {
+    let push = [f16::from_f32(m.push.x), f16::from_f32(m.push.y)];
+    let Color { r, g, b, a } = point.color;
+    let mut vertex = Vertex2D {
       position: at.into(),
       uv,
-      color: point.color,
-      params: self.style.params,
-      across: across.into(),
-      bounds: [0.0; 4],
+      color: [r, g, b, a],
       dist: m.dist,
+      second: NO_EDGE,
       half: m.half,
-      second: m.second.unwrap_or(NO_EDGE),
-      push_limit: m.limit,
-      round: m.round.unwrap_or(Vec2::ZERO).into(),
-      push: m.push.into(),
-      flags,
-    });
+      push,
+      limit: limit_of(m.limit),
+      dist_rate: f16::ZERO,
+      second_rate: f16::ZERO,
+      across: across.0,
+      packed: self.line,
+    };
+    vertex.dist_rate = f16::from_f32(m.push.dot(m.normal));
+    if let Some(offset) = m.round {
+      set_round(&mut vertex, offset);
+    } else if let Some(second) = m.second {
+      measure_second(&mut vertex, second);
+    }
+    self.out.vertices.push(vertex);
     index
   }
 
   /// A copy of vertex `index`, at its place and pushed as it is, measuring
   /// what `edit` makes it measure.
   fn copy(&mut self, index: u32, edit: impl FnOnce(&mut Vertex2D)) -> u32 {
-    let mut vertex = self.out.vertices[index as usize];
+    let Some(mut vertex) = self.out.vertices.get(index as usize).copied() else {
+      return index;
+    };
     edit(&mut vertex);
     self.out.vertices.push(vertex);
     self.out.vertices.len() as u32 - 1
   }
 
-  /// The strip of `segment` from edge pair `from` to edge pair `to`.
-  ///
-  /// Beside a butt or square cap the strip measures the cap's edge as its
-  /// second, and its vertices push out across it too, so a capped strip is
-  /// cut at its middle: each capped half measures its own cap and moves with
-  /// it, and a fringe quad between the halves, with no area until they push
-  /// apart, keeps the strip watertight.
-  fn strip(
+  /// Copies of an edge pair measuring `second` too.
+  fn measured_pair(&mut self, (left, right): (u32, u32), second: Second) -> (u32, u32) {
+    (
+      self.copy(left, |v| measure_second(v, second)),
+      self.copy(right, |v| measure_second(v, second)),
+    )
+  }
+
+  /// The edge vertices at an open end, with its cap: `cap` is the second
+  /// edge a butt or square cap's vertices measure, and `back` how far `u`
+  /// runs per world unit into the last point (`None` at the first).
+  fn end_pair(
     &mut self,
-    from: (u32, u32),
-    to: (u32, u32),
+    point: &PolyPoint,
     segment: Segment,
-    cap_start: bool,
-    cap_end: bool,
-  ) {
-    let (n, dir) = (segment.normal, segment.dir);
-    // A capped half moves whole, so it needs no limit; the uncapped one
-    // pushes as far as the segment's quad may
-    let middle = |b: &mut Self, push: (Vec2, Vec2), cap: Option<((u32, u32), Vec2)>, limit| {
-      let left = cap.map(|(at, inward)| (at.0, inward));
-      let right = cap.map(|(at, inward)| (at.1, inward));
-      (
-        b.middle(from.0, to.0, 1.0, push.0, left, limit),
-        b.middle(from.1, to.1, -1.0, push.1, right, limit),
-      )
-    };
-    let near = cap_start.then(|| middle(self, (n - dir, -n - dir), Some((from, dir)), NO_EDGE));
-    let far = cap_end.then(|| middle(self, (n + dir, -n + dir), Some((to, -dir)), NO_EDGE));
-    let loose = |b: &mut Self, (left, right): (u32, u32)| {
-      (b.copy(left, clear_second), b.copy(right, clear_second))
-    };
-    match (near, far) {
-      (None, None) => self.quad(from, to),
-      (Some(near), Some(far)) => {
-        self.quad(from, near);
-        let gap = (loose(self, near), loose(self, far));
-        self.quad(gap.0, gap.1);
-        self.quad(far, to);
-      }
-      (Some(near), None) => {
-        let rest = middle(self, (n, -n), None, segment.limit);
-        self.quad(from, near);
-        let gap = loose(self, near);
-        self.quad(gap, rest);
-        self.quad(rest, to);
-      }
-      (None, Some(far)) => {
-        let rest = middle(self, (n, -n), None, segment.limit);
-        self.quad(from, rest);
-        let gap = loose(self, far);
-        self.quad(rest, gap);
-        self.quad(far, to);
-      }
-    }
-  }
-
-  /// A vertex halfway along a strip's edge from vertex `a` to vertex `b`, on
-  /// the `side` (1 left, -1 right) of its centre line, pushed along `push` by
-  /// at most `limit`; `cap` gives the cap vertex and inward direction a
-  /// capped half measures its cap's edge from.
-  fn middle(
-    &mut self,
-    a: u32,
-    b: u32,
-    side: f32,
-    push: Vec2,
-    cap: Option<(u32, Vec2)>,
-    limit: f32,
-  ) -> u32 {
-    let (va, vb) = (self.out.vertices[a as usize], self.out.vertices[b as usize]);
-    let mean = |x: f32, y: f32| (x + y) / 2.0;
-    let at = (Vec2::from(va.position) + Vec2::from(vb.position)) / 2.0;
-    let mut vertex = va;
-    vertex.position = at.into();
-    vertex.uv = [mean(va.uv[0], vb.uv[0]), mean(va.uv[1], vb.uv[1])];
-    vertex.color = [0, 1, 2, 3].map(|k| mean(va.color[k], vb.color[k]));
-    vertex.dist = mean(va.dist, vb.dist);
-    vertex.half = mean(va.half, vb.half);
-    vertex.push = push.into();
-    vertex.push_limit = limit;
-    vertex.round = [0.0; 2];
-    vertex.second = NO_EDGE;
-    vertex.flags = if side < 0.0 { FLAG_GROWS_DOWN } else { 0 };
-    if let Some((cap, inward)) = cap {
-      let edge = self.out.vertices[cap as usize];
-      let second = edge.second + (at - Vec2::from(edge.position)).dot(inward);
-      set_second(&mut vertex, second);
-    }
-    self.out.vertices.push(vertex);
-    self.out.vertices.len() as u32 - 1
-  }
-
-  /// The edge vertices at an open end, with its cap.
-  fn end_pair(&mut self, i: usize, segment: Segment, first: bool) -> Joint {
-    let point = self.pts[i];
+    cap: Option<Second>,
+    back: Option<f32>,
+  ) -> Joint {
     let (p, hw, n, u) = (point.pos, point.half_width, segment.normal, point.u);
-    // Outward from the line, and how far `u` runs per world unit
-    let (out, scale) = if first {
-      (-segment.dir, -self.u_scale(0, 1))
-    } else {
-      (segment.dir, self.u_scale(i - 1, i))
+    let across = segment.across;
+    let first = back.is_none();
+    // Outward from the line, and how far `u` runs per world unit outward
+    let (out, scale) = match back {
+      None => {
+        let next = self
+          .pts
+          .get(1)
+          .map_or(0.0, |next| self.u_scale(point, next));
+        (-segment.dir, -next)
+      }
+      Some(back) => (segment.dir, back),
     };
+    // A cap's corners push out across both of their edges, as far as the
+    // rest of their segment's quad may, so it never folds
+    let corner = |side: f32| Measure::edge(side, hw, n, side * n + out, segment.limit).with(cap);
     let (left, right) = match self.style.cap {
-      // The strip's end vertices are the cap's corners, pushed out across
-      // both of their edges
       LineCap::Butt => (
-        self.vertex(
-          p + n * hw,
-          &point,
-          [u, 0.0],
-          n,
-          Measure::edge(1.0, hw, n + out, NO_EDGE).with_second(0.0),
-        ),
-        self.vertex(
-          p - n * hw,
-          &point,
-          [u, 1.0],
-          n,
-          Measure::edge(-1.0, hw, -n + out, NO_EDGE).with_second(0.0),
-        ),
+        self.vertex(p + n * hw, point, [u, 0.0], across, corner(1.0)),
+        self.vertex(p - n * hw, point, [u, 1.0], across, corner(-1.0)),
       ),
       LineCap::Square => {
-        let edge = |side: f32, second: f32| {
-          Measure::edge(side, hw, side * n + out, NO_EDGE).with_second(second)
-        };
-        let left = self.vertex(p + n * hw, &point, [u, 0.0], n, edge(1.0, hw));
-        let right = self.vertex(p - n * hw, &point, [u, 1.0], n, edge(-1.0, hw));
+        let left = self.vertex(p + n * hw, point, [u, 0.0], across, corner(1.0));
+        let right = self.vertex(p - n * hw, point, [u, 1.0], across, corner(-1.0));
         let far_u = u + hw * scale;
         let far_left = self.vertex(
           p + n * hw + out * hw,
-          &point,
+          point,
           [far_u, 0.0],
-          n,
-          edge(1.0, 0.0),
+          across,
+          corner(1.0),
         );
         let far_right = self.vertex(
           p - n * hw + out * hw,
-          &point,
+          point,
           [far_u, 1.0],
-          n,
-          edge(-1.0, 0.0),
+          across,
+          corner(-1.0),
         );
         // Along the line's direction, like the strip
         if first {
@@ -660,15 +919,15 @@ impl Builder<'_> {
         (left, right)
       }
       LineCap::Round => {
-        let (left, right) = self.straight_pair(&point, n, u, segment.limit);
+        let (left, right) = self.straight_pair(point, (n, across), u, segment.limit);
         // The fan measures its distance from the end point, so it has its
         // own copies of the strip's end vertices, at their places and pushed
         // as they are
         let centre = self.vertex(
           p,
-          &point,
+          point,
           [u, 0.5],
-          Vec2::ZERO,
+          Across::NONE,
           Measure::round(hw, Vec2::ZERO, Vec2::ZERO, 0.0),
         );
         // From the left edge round the outside to the right edge
@@ -683,9 +942,9 @@ impl Builder<'_> {
           let uv = [u + along * scale, 0.5 - 0.5 * outward.dot(n)];
           let arc = self.vertex(
             p + offset,
-            &point,
+            point,
             uv,
-            n,
+            across,
             Measure::round(hw, offset, outward, NO_EDGE),
           );
           // The fan turns the other way at the end: wind it like the strip
@@ -703,43 +962,46 @@ impl Builder<'_> {
     }
   }
 
-  fn corner(&mut self, i: usize, before: Segment, after: Segment) -> Joint {
-    self.corner_with_u(i, before, after, None)
-  }
-
-  /// A left and right vertex at `point`, `n` (unit) and `-n` times its half
-  /// width from it, pushed straight out by at most `limit`.
-  fn straight_pair(&mut self, point: &PolyPoint, n: Vec2, u: f32, limit: f32) -> (u32, u32) {
+  /// A left and right vertex at `point`, `n` (unit, with its `across`) and
+  /// `-n` times its half width from it, pushed straight out by at most
+  /// `limit`.
+  fn straight_pair(
+    &mut self,
+    point: &PolyPoint,
+    (n, across): (Vec2, Across),
+    u: f32,
+    limit: f32,
+  ) -> (u32, u32) {
     let (p, hw) = (point.pos, point.half_width);
     (
       self.vertex(
         p + n * hw,
         point,
         [u, 0.0],
-        n,
-        Measure::edge(1.0, hw, n, limit),
+        across,
+        Measure::edge(1.0, hw, n, n, limit),
       ),
       self.vertex(
         p - n * hw,
         point,
         [u, 1.0],
-        n,
-        Measure::edge(-1.0, hw, -n, limit),
+        across,
+        Measure::edge(-1.0, hw, n, -n, limit),
       ),
     )
   }
 
-  /// The vertices where `before` meets `after` at point `i`, with the join's
+  /// The vertices where `before` meets `after` at `point`, with the join's
   /// wedge. `end_u` gives the ending side a `u` of its own (the closed
   /// seam), so nothing is shared across it.
-  fn corner_with_u(
+  fn corner(
     &mut self,
-    i: usize,
+    point: &PolyPoint,
     before: Segment,
     after: Segment,
+    turn: Option<Turn>,
     end_u: Option<f32>,
   ) -> Joint {
-    let point = self.pts[i];
     let (p, hw, u) = (point.pos, point.half_width, point.u);
     let (n0, n1) = (before.normal, after.normal);
     let u_end = end_u.unwrap_or(u);
@@ -749,12 +1011,13 @@ impl Builder<'_> {
     let both = limit0.min(limit1);
 
     // Straight on: one pair, shared
-    let Some(turn) = Turn::at(before, after, hw, self.style.join) else {
+    let Some(turn) = turn else {
       let n = (n0 + n1).normalize_or(n0);
-      let start = self.straight_pair(&point, n, u, both);
+      let normal = (n, Across::of(n));
+      let start = self.straight_pair(point, normal, u, both);
       let end = match end_u {
         None => start,
-        Some(u) => self.straight_pair(&point, n, u, both),
+        Some(u) => self.straight_pair(point, normal, u, both),
       };
       return Joint { end, start };
     };
@@ -765,7 +1028,6 @@ impl Builder<'_> {
       bisector,
       shares_inside,
       mitered,
-      bevel,
       push: (push0, push1),
       ..
     } = turn;
@@ -775,31 +1037,28 @@ impl Builder<'_> {
 
     let outer_end = self.vertex(
       p + m0 * hw,
-      &point,
+      point,
       [u_end, v_out],
-      n0,
-      Measure::edge(side, hw, push0, limit0),
+      before.across,
+      Measure::edge(side, hw, n0, push0, limit0),
     );
     let outer_start = self.vertex(
       p + m1 * hw,
-      &point,
+      point,
       [u, v_out],
-      n1,
-      Measure::edge(side, hw, push1, limit1),
+      after.across,
+      Measure::edge(side, hw, n1, push1, limit1),
     );
     let (inner_end, inner_start) = if shares_inside {
-      // The corner point: the segments' slanted ends fan from it, so `v`
-      // keeps measuring the distance from the centre line across the join
-      let centre = self.vertex(p, &point, [u, 0.5], Vec2::ZERO, Measure::centre(hw));
+      // The segments' slanted ends fan from the corner point, so `v` keeps
+      // measuring the distance from the centre line across the join
       let at = p - side * miter * hw;
-      let measure = Measure::edge(-side, hw, -side * miter, both);
-      let inner = self.vertex(at, &point, [u, v_in], bisector, measure);
+      let measure = Measure::edge(-side, hw, n0, -side * miter, both);
+      let inner = self.vertex(at, point, [u, v_in], bisector, measure);
       let inner_end = match end_u {
         None => inner,
-        Some(u) => self.vertex(at, &point, [u, v_in], bisector, measure),
+        Some(u) => self.vertex(at, point, [u, v_in], bisector, measure),
       };
-      self.wedge(side, centre, inner_end, outer_end);
-      self.wedge(side, centre, outer_start, inner);
       (inner_end, inner)
     } else {
       // Too sharp to share: each segment keeps its own inner edge, pushed
@@ -807,127 +1066,88 @@ impl Builder<'_> {
       // through the corner point the wedge fans from
       let inner_end = self.vertex(
         p - m0 * hw,
-        &point,
+        point,
         [u_end, v_in],
-        n0,
-        Measure::edge(-side, hw, -push0, limit0),
+        before.across,
+        Measure::edge(-side, hw, n0, -push0, limit0),
       );
       let inner_start = self.vertex(
         p - m1 * hw,
-        &point,
+        point,
         [u, v_in],
-        n1,
-        Measure::edge(-side, hw, -push1, limit1),
+        after.across,
+        Measure::edge(-side, hw, n1, -push1, limit1),
       );
       (inner_end, inner_start)
     };
 
-    // The outside: the miter's point, a bevel or the round's arc, each with
-    // vertices of its own at the strip's places, pushed as the strip's are
-    match self.style.join {
-      LineJoin::Miter if mitered => {
-        // Each half of the point measures its segment across and the other
-        // segment's outer edge as its second
-        let centre = self.vertex(
-          p,
-          &point,
-          [u, 0.5],
-          Vec2::ZERO,
-          Measure::centre(hw).with_second(hw),
-        );
-        let other_edge = hw * (1.0 - cos);
-        let end = self.copy(outer_end, |v| set_second(v, other_edge));
-        let tip = self.vertex(
-          p + side * miter * hw,
-          &point,
+    let bevelled = !mitered && self.style.join != LineJoin::Round;
+    if shares_inside && !bevelled {
+      // The slanted ends measure their segment's strip alone
+      let centre = self.vertex(p, point, [u, 0.5], Across::NONE, Measure::centre(hw));
+      self.wedge(side, centre, inner_end, outer_end);
+      self.wedge(side, centre, outer_start, inner_start);
+    }
+
+    // The outside: the miter's point, the bevel or the round's arc, each
+    // with vertices of its own at the strip's places
+    if bevelled {
+      self.bevel(
+        point,
+        &turn,
+        (before, after),
+        (outer_end, outer_start),
+        (inner_end, inner_start),
+      );
+    } else if mitered {
+      // Each half of the point measures its segment across and the other
+      // segment's outer edge as its second, the two edges `cos` apart
+      let other0 = Second::edge(p + m1 * hw, m1, cos);
+      let other1 = Second::edge(p + m0 * hw, m0, cos);
+      let centre = self.vertex(
+        p,
+        point,
+        [u, 0.5],
+        Across::NONE,
+        Measure::centre(hw).with(Some(other0)),
+      );
+      let end = self.copy(outer_end, |v| measure_second(v, other0));
+      let tip = self.vertex(
+        p + side * miter * hw,
+        point,
+        [u, v_out],
+        bisector,
+        Measure::edge(side, hw, n0, side * miter, NO_EDGE).with(Some(other0)),
+      );
+      let start = self.copy(outer_start, |v| measure_second(v, other1));
+      self.wedge(side, centre, end, tip);
+      self.wedge(side, centre, tip, start);
+    } else {
+      let centre = self.vertex(
+        p,
+        point,
+        [u, 0.5],
+        Across::NONE,
+        Measure::round(hw, Vec2::ZERO, Vec2::ZERO, 0.0),
+      );
+      let angle = m0.angle_to(m1);
+      let steps = ((angle.abs() / (std::f32::consts::PI / 16.0)).ceil() as u32).max(2);
+      let mut previous = self.copy(outer_end, |v| set_round(v, m0 * hw));
+      for k in 1..steps {
+        let t = k as f32 / steps as f32;
+        let outward = Vec2::from_angle(angle * t).rotate(m0);
+        let arc = self.vertex(
+          p + outward * hw,
+          point,
           [u, v_out],
-          bisector,
-          Measure::edge(side, hw, side * miter, NO_EDGE).with_second(0.0),
+          before.across.turned(angle * t),
+          Measure::round(hw, outward * hw, outward, NO_EDGE),
         );
-        let start = self.copy(outer_start, |v| set_second(v, other_edge));
-        self.wedge(side, centre, end, tip);
-        self.wedge(side, centre, tip, start);
+        self.wedge(side, centre, previous, arc);
+        previous = arc;
       }
-      LineJoin::Miter | LineJoin::Bevel => {
-        // Each half of the bevel measures its segment across and the bevel's
-        // edge as its second; between them a fringe triangle bounded by the
-        // bevel's edge alone, with no area until the halves push apart
-        let inside = hw * m0.dot(bevel);
-        let middle = p + (m0 + m1) * (hw / 2.0);
-        let dist = side * hw * (1.0 + cos) / 2.0;
-        let half_measure = |push: Vec2| Measure {
-          dist,
-          half: hw,
-          second: Some(0.0),
-          round: None,
-          push,
-          limit: NO_EDGE,
-          grows: side,
-        };
-        let centre = self.vertex(
-          p,
-          &point,
-          [u, 0.5],
-          Vec2::ZERO,
-          Measure::centre(hw).with_second(inside),
-        );
-        let end = self.copy(outer_end, |v| set_second(v, 0.0));
-        let half_end = self.vertex(middle, &point, [u, v_out], bisector, half_measure(push0));
-        let half_start = self.vertex(middle, &point, [u, v_out], bisector, half_measure(push1));
-        let start = self.copy(outer_start, |v| set_second(v, 0.0));
-        let gap_centre = self.vertex(
-          p,
-          &point,
-          [u, 0.5],
-          Vec2::ZERO,
-          Measure::second_only(inside, Vec2::ZERO, 0.0, 1.0),
-        );
-        let gap_end = self.vertex(
-          middle,
-          &point,
-          [u, v_out],
-          bisector,
-          Measure::second_only(0.0, push0, NO_EDGE, side),
-        );
-        let gap_start = self.vertex(
-          middle,
-          &point,
-          [u, v_out],
-          bisector,
-          Measure::second_only(0.0, push1, NO_EDGE, side),
-        );
-        self.wedge(side, centre, end, half_end);
-        self.wedge(side, gap_centre, gap_end, gap_start);
-        self.wedge(side, centre, half_start, start);
-      }
-      LineJoin::Round => {
-        let centre = self.vertex(
-          p,
-          &point,
-          [u, 0.5],
-          Vec2::ZERO,
-          Measure::round(hw, Vec2::ZERO, Vec2::ZERO, 0.0),
-        );
-        let angle = m0.angle_to(m1);
-        let steps = ((angle.abs() / (std::f32::consts::PI / 16.0)).ceil() as u32).max(2);
-        let mut previous = self.copy(outer_end, |v| set_round(v, m0 * hw));
-        for k in 1..steps {
-          let t = k as f32 / steps as f32;
-          let outward = Vec2::from_angle(angle * t).rotate(m0);
-          let across = Vec2::from_angle(angle * t).rotate(n0);
-          let arc = self.vertex(
-            p + outward * hw,
-            &point,
-            [u, v_out],
-            across,
-            Measure::round(hw, outward * hw, outward, NO_EDGE),
-          );
-          self.wedge(side, centre, previous, arc);
-          previous = arc;
-        }
-        let last = self.copy(outer_start, |v| set_round(v, m1 * hw));
-        self.wedge(side, centre, previous, last);
-      }
+      let last = self.copy(outer_start, |v| set_round(v, m1 * hw));
+      self.wedge(side, centre, previous, last);
     }
 
     // As (left, right) by the normal
@@ -941,6 +1161,81 @@ impl Builder<'_> {
     Joint {
       end: pair(outer_end, inner_end),
       start: pair(outer_start, inner_start),
+    }
+  }
+
+  /// A bevel at `point`: a fan from the corner point on each side, through
+  /// copies of the inner vertex (when the segments share it) and of the
+  /// strip's elbow, to the bevel's middle. Every triangle of it measures its
+  /// segment across and the bevel's edge as its second, the two edges
+  /// `m · bevel` apart.
+  fn bevel(
+    &mut self,
+    point: &PolyPoint,
+    turn: &Turn,
+    (before, after): (Segment, Segment),
+    (outer_end, outer_start): (u32, u32),
+    (inner_end, inner_start): (u32, u32),
+  ) {
+    let (p, hw, u) = (point.pos, point.half_width, point.u);
+    let Turn {
+      side,
+      cos,
+      bisector,
+      shares_inside,
+      bevel,
+      ..
+    } = *turn;
+    let v_out = if side > 0.0 { 0.0 } else { 1.0 };
+    let (n0, n1) = (before.normal, after.normal);
+    let (m0, m1) = (side * n0, side * n1);
+    let edge = Some(Second::edge(p + m0 * hw, bevel, m0.dot(bevel)));
+    let centre = self.vertex(
+      p,
+      point,
+      [u, 0.5],
+      Across::NONE,
+      Measure::centre(hw).with(edge),
+    );
+    let measured = |b: &mut Self, index: u32| match edge {
+      Some(edge) => b.copy(index, |v| measure_second(v, edge)),
+      None => index,
+    };
+    let inner = shares_inside.then(|| {
+      let end = measured(self, inner_end);
+      let start = if inner_start == inner_end {
+        end
+      } else {
+        measured(self, inner_start)
+      };
+      (end, start)
+    });
+    let elbow_end = measured(self, outer_end);
+    let elbow_start = measured(self, outer_start);
+    // Pushed along the bevel's normal, its distance from either centre line
+    // rises by `m · bevel` per unit
+    let middle = self.vertex(
+      p + (m0 + m1) * (hw / 2.0),
+      point,
+      [u, v_out],
+      bisector,
+      Measure {
+        dist: side * hw * (1.0 + cos) / 2.0,
+        half: hw,
+        normal: n0,
+        second: edge,
+        round: None,
+        push: bevel,
+        limit: NO_EDGE,
+      },
+    );
+    if let Some((end, _)) = inner {
+      self.wedge(side, centre, end, elbow_end);
+    }
+    self.wedge(side, centre, elbow_end, middle);
+    self.wedge(side, centre, middle, elbow_start);
+    if let Some((_, start)) = inner {
+      self.wedge(side, centre, elbow_start, start);
     }
   }
 
@@ -997,7 +1292,7 @@ mod tests {
       .map(|(i, (&(x, y), &half_width))| PolyPoint {
         pos: Vec2::new(x, y),
         half_width,
-        color: [1.0; 4],
+        color: Color::WHITE,
         u: i as f32,
       })
       .collect();
@@ -1009,6 +1304,7 @@ mod tests {
         cap,
         closed,
         params: [0.0; 4],
+        emission: 1.0,
       },
     );
     t
@@ -1146,20 +1442,20 @@ mod tests {
       cap: LineCap::Butt,
       closed: false,
       params: [0.0; 4],
+      emission: 1.0,
     };
     let points = [(0.0, 0.0), (5.0, 0.0)].map(|(x, y)| PolyPoint {
       pos: Vec2::new(x, y),
       half_width: 1.0,
-      color: [1.0; 4],
+      color: Color::WHITE,
       u: x / 5.0,
     });
     let second = t.polyline(&points, &style);
     assert_eq!(second.start as usize, t.indices.len() - second.len());
     t.clear();
     assert!(t.vertices.is_empty() && t.indices.is_empty());
-    // Six triangles: butt caps cut the segment into two capped halves and
-    // the fringe quad between them
-    assert_eq!(t.polyline(&points, &style), 0..18);
+    // One quad, which measures both butt caps as a strip along it
+    assert_eq!(t.polyline(&points, &style), 0..6);
   }
 
   #[test]
@@ -1236,10 +1532,12 @@ mod tests {
   }
 
   #[test]
-  fn a_vertex_packs_its_edges_into_108_bytes() {
-    // Four distances and limits in one lane, the round offset and the push in
-    // another, and the flags
-    assert_eq!(std::mem::size_of::<Vertex2D>(), 108);
+  fn a_vertex_packs_its_edges_into_48_bytes() {
+    // Place and uv, an sRGB colour, three distances (or a round offset and
+    // the half width), the push, its limit and rates in halves, the angle
+    // across, and the line, flags and angle between edges in one word
+    assert_eq!(std::mem::size_of::<Vertex2D>(), 48);
+    assert_eq!(std::mem::size_of::<LineInfo>(), 48);
   }
 
   const JOINS: [LineJoin; 3] = [LineJoin::Miter, LineJoin::Bevel, LineJoin::Round];
@@ -1303,6 +1601,24 @@ mod tests {
           (a, (b - a).normalize().perp())
         })
         .collect()
+    }
+
+    /// The middle between a two-point line's caps and its direction, which
+    /// its `FLAG_ALONG` vertices measure from
+    fn along(&self, cap: LineCap) -> Option<(Vec2, Vec2)> {
+      if self.closed || self.points.len() != 2 || cap == LineCap::Round {
+        return None;
+      }
+      let (a, b) = (self.at(0), self.at(1));
+      let dir = (b - a).normalize();
+      let reach = |i: usize| {
+        if cap == LineCap::Square {
+          self.half(i)
+        } else {
+          0.0
+        }
+      };
+      Some(((a - dir * reach(0) + b + dir * reach(1)) / 2.0, dir))
     }
 
     /// Every line a second edge may lie on: a point on it and its outward
@@ -1393,12 +1709,33 @@ mod tests {
 
   impl Sample {
     fn of(v: &Vertex2D) -> Self {
+      let round = v.flags() & FLAG_ROUND != 0;
       Self {
         pos: Vec2::from(v.position),
-        dist: v.dist,
+        dist: if round { 0.0 } else { v.dist },
         half: v.half,
-        second: v.second,
-        round: Vec2::from(v.round),
+        second: if round { NO_EDGE } else { v.second },
+        round: if round {
+          Vec2::new(v.dist, v.second)
+        } else {
+          Vec2::ZERO
+        },
+      }
+    }
+
+    /// One unit of push on, as the fringe would leave it
+    fn pushed(v: &Vertex2D) -> Self {
+      let s = Self::of(v);
+      Self {
+        pos: s.pos + v.push(),
+        dist: s.dist + v.dist_rate.to_f32(),
+        second: s.second - v.second_rate.to_f32(),
+        round: if v.flags() & FLAG_ROUND != 0 {
+          s.round + v.push()
+        } else {
+          Vec2::ZERO
+        },
+        ..s
       }
     }
 
@@ -1420,6 +1757,11 @@ mod tests {
     (a - b).abs() <= 1e-3 * a.abs().max(b.abs()).max(1.0)
   }
 
+  /// Near enough for a pushed vertex, whose push and rates are halves
+  fn near_pushed(a: f32, b: f32) -> bool {
+    (a - b).abs() <= 3e-3 * a.abs().max(b.abs()).max(1.0)
+  }
+
   /// What a triangle measures, found among its shape's lines and points:
   /// the centre line its `dist` is from, the line its `second` is inside
   /// and the point its `round` is from.
@@ -1439,57 +1781,41 @@ mod tests {
     tri: &[Vertex2D; 3],
     pushed: bool,
   ) -> Result<Fields, String> {
-    let flags = tri[0].flags & !FLAG_GROWS_DOWN;
-    if tri.iter().any(|v| v.flags & !FLAG_GROWS_DOWN != flags) {
-      return Err("its vertices' flags differ".into());
+    let (flags, k) = (tri[0].flags(), tri[0].k());
+    if tri.iter().any(|v| v.flags() != flags || v.k() != k) {
+      return Err("its vertices' flags or angles differ".into());
     }
     let samples = Sample::over(tri);
-    // Each pushed vertex one unit on, as the fringe would leave it
     let moved: Vec<Sample> = tri
       .iter()
-      .filter(|v| pushed && v.push_limit > 0.0)
-      .map(|v| {
-        let grows = if v.flags & FLAG_GROWS_DOWN != 0 {
-          -1.0
-        } else {
-          1.0
-        };
-        let s = Sample::of(v);
-        Sample {
-          pos: s.pos + Vec2::from(v.push),
-          dist: s.dist + grows,
-          second: s.second - 1.0,
-          round: s.round + Vec2::from(v.push),
-          ..s
-        }
-      })
+      .filter(|v| pushed && v.limit.to_f32() > 0.0)
+      .map(Sample::pushed)
       .collect();
     let mut found = Fields::default();
     if flags & FLAG_ROUND != 0 {
       let corner = (0..shape.points.len()).find(|&i| {
-        let from = |s: &Sample| (s.pos - shape.at(i) - s.round).length() < 1e-3;
+        let from =
+          |tolerance: f32| move |s: &Sample| (s.pos - shape.at(i) - s.round).length() < tolerance;
         samples
           .iter()
-          .all(|s| from(s) && near(s.half, shape.half(i)))
-          && moved.iter().all(from)
+          .all(|s| from(1e-3)(s) && near(s.half, shape.half(i)))
+          && moved.iter().all(from(1e-2))
       });
       found.corner = Some(shape.at(corner.ok_or("round from no point")?));
-      for v in tri.iter().filter(|v| pushed && v.push_limit > 0.0) {
-        let round = Vec2::from(v.round);
-        if !near((round + Vec2::from(v.push)).length(), round.length() + 1.0) {
+      for v in tri.iter().filter(|v| pushed && v.limit.to_f32() > 0.0) {
+        let round = Sample::of(v).round;
+        if !near_pushed((round + v.push()).length(), round.length() + 1.0) {
           return Err("a round piece's push is not straight out".into());
         }
-      }
-    } else if samples.iter().all(|s| s.half == NO_EDGE) {
-      if samples.iter().any(|s| s.dist != 0.0) || flags & FLAG_SECOND == 0 {
-        return Err("bounded by nothing".into());
       }
     } else {
       found.centre = shape.centre_lines().into_iter().find(|&(a, n)| {
         samples
           .iter()
           .all(|s| near(s.dist, (s.pos - a).dot(n)) && s.dist.abs() <= s.half + 1e-3)
-          && moved.iter().all(|s| near(s.dist, (s.pos - a).dot(n)))
+          && moved
+            .iter()
+            .all(|s| near_pushed(s.dist, (s.pos - a).dot(n)))
       });
       found
         .centre
@@ -1498,12 +1824,24 @@ mod tests {
         return Err("half is not the half width".into());
       }
     }
-    if flags & FLAG_SECOND != 0 {
-      found.second = shape.edge_lines(cap).into_iter().find(|&(q, m)| {
-        samples
+    if flags & FLAG_ALONG != 0 {
+      let (mid, dir) = shape.along(cap).ok_or("along a line with no two caps")?;
+      let fits = samples
+        .iter()
+        .all(|s| near(s.second, (s.pos - mid).dot(dir)))
+        && moved
           .iter()
-          .chain(&moved)
-          .all(|s| near(s.second, (q - s.pos).dot(m)))
+          .all(|s| near_pushed(s.second, (s.pos - mid).dot(dir)));
+      if !fits {
+        return Err("second is not the distance along from between the caps".into());
+      }
+      found.second = Some((mid, dir));
+    } else if flags & FLAG_SECOND != 0 {
+      found.second = shape.edge_lines(cap).into_iter().find(|&(q, m)| {
+        samples.iter().all(|s| near(s.second, (q - s.pos).dot(m)))
+          && moved
+            .iter()
+            .all(|s| near_pushed(s.second, (q - s.pos).dot(m)))
       });
       found.second.ok_or("second inside no edge")?;
     } else if samples.iter().any(|s| s.second != NO_EDGE) {
@@ -1530,8 +1868,8 @@ mod tests {
             if let Err(why) = fields(shape, cap, &tri, pushed) {
               panic!("shape {index} {join:?} {cap:?}: {why}: {tri:#?}");
             }
-            for v in tri.iter().filter(|v| v.push_limit == 0.0) {
-              assert_eq!(Vec2::from(v.push), Vec2::ZERO, "shape {index}: {v:#?}");
+            for v in tri.iter().filter(|v| v.limit.to_f32() == 0.0) {
+              assert_eq!(v.push(), Vec2::ZERO, "shape {index}: {v:#?}");
             }
           }
         }
@@ -1547,7 +1885,7 @@ mod tests {
   }
 
   #[test]
-  fn a_push_of_one_unit_grows_every_distance_by_one() {
+  fn a_pushed_vertex_measures_where_it_lands() {
     // The same fields give each pushed vertex's distances one unit on: across
     // grown by one, inside its second edge one less, its round offset one
     // longer
@@ -1559,7 +1897,7 @@ mod tests {
   fn pushed(t: &Triangles, p: f32) -> Vec<Vec2> {
     t.vertices
       .iter()
-      .map(|v| Vec2::from(v.position) + Vec2::from(v.push) * p.min(v.push_limit))
+      .map(|v| Vec2::from(v.position) + v.push() * p.min(v.limit.to_f32()))
       .collect()
   }
 
@@ -1702,6 +2040,296 @@ mod tests {
         }
       }
     }
+  }
+
+  /// A vertex as the vertex stage leaves it, pushed `p` units (as far as its
+  /// limit lets it): where it lands and what it measures there.
+  #[derive(Clone, Copy, Debug)]
+  struct Landed {
+    pos: Vec2,
+    dist: f32,
+    half: f32,
+    second: f32,
+    round: Vec2,
+  }
+
+  fn landed(v: &Vertex2D, p: f32) -> Landed {
+    let a = p.min(v.limit.to_f32());
+    let s = Sample::of(v);
+    Landed {
+      pos: s.pos + v.push() * a,
+      dist: s.dist + v.dist_rate.to_f32() * a,
+      half: s.half,
+      second: s.second - v.second_rate.to_f32() * a,
+      round: s.round + v.push() * a,
+    }
+  }
+
+  /// The model's coverage at `at`, inside the pushed triangle `tri` whose
+  /// corners landed at `land`: its attributes interpolated there.
+  fn modelled(tri: &[Vertex2D; 3], land: &[Landed; 3], at: Vec2, along_half: f32) -> f32 {
+    use super::super::coverage::{cover_corner, cover_edge, cover_strip};
+    let [a, b, c] = land.map(|l| l.pos);
+    let area = (b - a).perp_dot(c - a);
+    let wb = (at - a).perp_dot(c - a) / area;
+    let wc = (b - a).perp_dot(at - a) / area;
+    let wa = 1.0 - wb - wc;
+    let mix = |f: fn(&Landed) -> f32| wa * f(&land[0]) + wb * f(&land[1]) + wc * f(&land[2]);
+    let flags = tri[0].flags();
+    if flags & FLAG_ROUND != 0 {
+      let round = Vec2::new(mix(|l| l.round.x), mix(|l| l.round.y));
+      return cover_edge(mix(|l| l.half) - round.length());
+    }
+    let half = mix(|l| l.half);
+    let across = if half >= NO_EDGE * 0.5 {
+      1.0
+    } else {
+      cover_strip(mix(|l| l.dist), half)
+    };
+    if flags & FLAG_SECOND == 0 {
+      return across;
+    }
+    let second = if flags & FLAG_ALONG != 0 {
+      cover_strip(mix(|l| l.second), along_half)
+    } else {
+      cover_edge(mix(|l| l.second))
+    };
+    cover_corner(across, second, tri[0].k())
+  }
+
+  /// Whether `at` lies in the triangle (its edges included)
+  fn within([a, b, c]: [Vec2; 3], at: Vec2) -> bool {
+    let sides = [
+      (b - a).perp_dot(at - a),
+      (c - b).perp_dot(at - b),
+      (a - c).perp_dot(at - c),
+    ];
+    sides.iter().all(|&s| s >= -1e-6) || sides.iter().all(|&s| s <= 1e-6)
+  }
+
+  /// A corner whose segments share their inner vertex: where it is, and
+  /// the two inner edges' lines (a point and a normal each).
+  #[derive(Clone, Copy, Debug)]
+  struct Inner {
+    at: Vec2,
+    edges: [(Vec2, Vec2); 2],
+  }
+
+  impl Inner {
+    /// Whether a pixel centred at `at` is at the inner corner: within a
+    /// pixel of its vertex, or near it within a pixel of both inner edges,
+    /// so the pixel lies across both segments' strips where they overlap
+    fn holds(&self, at: Vec2) -> bool {
+      let distance = at.distance(self.at);
+      let both = self
+        .edges
+        .iter()
+        .all(|&(q, n)| (at - q).dot(n).abs() <= 1.0);
+      distance <= 1.0 || (distance <= INNER_REACH && both)
+    }
+  }
+
+  /// How far along the inner edges from the inner vertex the inner corner
+  /// reaches, where they are within a pixel of each other
+  const INNER_REACH: f32 = 4.0;
+
+  /// The worst coverage error over pixels whose centres lie within `reach`
+  /// of one of `around`, against the exact area of the unpushed mesh, and
+  /// the worst at one of the `inner` corners; and where the worst lies.
+  fn worst_coverage(
+    t: &Triangles,
+    around: &[Vec2],
+    reach: f32,
+    inner: &[Inner],
+  ) -> ((f32, Vec2), (f32, Vec2)) {
+    use super::super::coverage::area_in_pixel;
+    let rest: Vec<[Vec2; 3]> = triangles_of(t)
+      .map(|tri| tri.map(|v| Vec2::from(v.position)))
+      .collect();
+    let pushed: Vec<([Vertex2D; 3], [Landed; 3])> = triangles_of(t)
+      .map(|tri| (tri, tri.map(|v| landed(&v, 1.0))))
+      .filter(|(_, land)| {
+        let [a, b, c] = land.map(|l| l.pos);
+        (b - a).perp_dot(c - a).abs() > 1e-7
+      })
+      .collect();
+    let boxed = |tri: &[Vec2; 3]| {
+      (
+        tri[0].min(tri[1]).min(tri[2]),
+        tri[0].max(tri[1]).max(tri[2]),
+      )
+    };
+    let rest_boxes: Vec<_> = rest.iter().map(boxed).collect();
+    let pushed_boxes: Vec<_> = pushed
+      .iter()
+      .map(|(_, land)| boxed(&land.map(|l| l.pos)))
+      .collect();
+    let (mut outer, mut near_inner) = ((0.0f32, Vec2::ZERO), (0.0f32, Vec2::ZERO));
+    for &centre in around {
+      let (from, to) = ((centre - reach).floor(), (centre + reach).ceil());
+      for y in from.y as i32..to.y as i32 {
+        for x in from.x as i32..to.x as i32 {
+          let at = Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
+          if at.distance(centre) > reach {
+            continue;
+          }
+          let meets = |(min, max): &(Vec2, Vec2), grow: f32| {
+            at.x + grow >= min.x
+              && at.x - grow <= max.x
+              && at.y + grow >= min.y
+              && at.y - grow <= max.y
+          };
+          let truth: f32 = rest
+            .iter()
+            .zip(&rest_boxes)
+            .filter(|(_, b)| meets(b, 0.5))
+            .map(|(tri, _)| area_in_pixel(*tri, at))
+            .sum::<f32>()
+            .min(1.0);
+          let model = pushed
+            .iter()
+            .zip(&pushed_boxes)
+            .filter(|(_, b)| meets(b, 0.0))
+            .find(|((_, land), _)| within(land.map(|l| l.pos), at))
+            .map_or(0.0, |((tri, land), _)| {
+              let along = t
+                .lines
+                .get(tri[0].line())
+                .map_or(0.0, |line| line.along_half);
+              modelled(tri, land, at, along)
+            });
+          let error = (model - truth).abs();
+          let worst = if inner.iter().any(|corner| corner.holds(at)) {
+            &mut near_inner
+          } else {
+            &mut outer
+          };
+          if error > worst.0 {
+            *worst = (error, at);
+          }
+        }
+      }
+    }
+    (outer, near_inner)
+  }
+
+  /// Where the inner sides of a corner at `p` meet, between segments along
+  /// `d0` then `d1` of half width `hw`, if they share it.
+  fn shared_inner(p: Vec2, d0: Vec2, d1: Vec2, hw: f32, shortest: f32) -> Option<Inner> {
+    let (n0, n1) = (d0.perp(), d1.perp());
+    let side = if d0.perp_dot(d1) > 0.0 { -1.0 } else { 1.0 };
+    let miter = (n0 + n1) / (1.0 + n0.dot(n1));
+    (miter.length() * hw <= shortest / 2.0).then(|| Inner {
+      at: p - side * miter * hw,
+      edges: [(p - side * n0 * hw, n0), (p - side * n1 * hw, n1)],
+    })
+  }
+
+  #[test]
+  fn the_pushed_mesh_gives_every_pixel_its_coverage() {
+    // Pushed one pixel, every pixel's modelled coverage is within 0.12 of
+    // the exact area of the line drawn unpushed, at every join, cap and
+    // closed corner; at a shared inner vertex (within a pixel of it, or
+    // near it within a pixel of both inner edges), within the inner
+    // corner's recorded figure
+    const TOLERANCE: f32 = 0.12;
+    const INNER: f32 = 0.45;
+    let offsets = [
+      Vec2::ZERO,
+      Vec2::new(0.25, 0.1),
+      Vec2::new(0.5, 0.6),
+      Vec2::new(0.8, 0.35),
+    ];
+    let mut failures = Vec::new();
+    let mut inner_worst = (0.0f32, String::new());
+    let mut outer_worst = (0.0f32, String::new());
+    let mut check = |what: String, t: &Triangles, around: &[Vec2], reach: f32, inner: &[Inner]| {
+      let ((error, at), (near, near_at)) = worst_coverage(t, around, reach, inner);
+      if error > TOLERANCE {
+        failures.push(format!("{what}: {error:.3} at {at}"));
+      }
+      if error > outer_worst.0 {
+        outer_worst = (error, format!("{what} at {at}"));
+      }
+      if near > inner_worst.0 {
+        inner_worst = (near, format!("{what} at {near_at}"));
+      }
+    };
+    for hw in [0.75f32, 1.5, 3.0, 6.0] {
+      let length = 20.0 * hw + 10.0;
+      for rotation in 0..8 {
+        let d0 = Vec2::from_angle(rotation as f32 * std::f32::consts::TAU / 8.0 + 0.1);
+        for &offset in &offsets {
+          let p = Vec2::new(100.0, 100.0) + offset;
+          // Joins, both ways
+          for degrees in [5.0f32, 15.0, 30.0, 45.0, 60.0, 90.0, 120.0, 150.0, 165.0] {
+            for turn in [1.0f32, -1.0] {
+              let d1 = Vec2::from_angle(turn * degrees.to_radians()).rotate(d0);
+              let points = [p - d0 * length, p, p + d1 * length].map(|q| (q.x, q.y));
+              let inner: Vec<Inner> = shared_inner(p, d0, d1, hw, length).into_iter().collect();
+              for join in JOINS {
+                let t = build(&points, 2.0 * hw, join, LineCap::Butt, false);
+                let what = format!("{join:?} {degrees}° {turn} hw {hw} rot {rotation} {offset}");
+                check(what, &t, &[p], 5.0 * hw + 3.0, &inner);
+              }
+            }
+          }
+          // Caps on one segment and on two
+          for cap in CAPS {
+            let two = [p - d0 * length, p];
+            let bent = [p - d0 * length * 2.0, p - d0 * length, p];
+            let d1 = Vec2::from_angle(0.5).rotate(d0);
+            let bent = [bent[0], bent[1], bent[1] + d1 * length];
+            for points in [&two[..], &bent[..]] {
+              let ends = [points[0], points[points.len() - 1]];
+              let pts: Vec<(f32, f32)> = points.iter().map(|q| (q.x, q.y)).collect();
+              let t = build(&pts, 2.0 * hw, LineJoin::Miter, cap, false);
+              let what = format!(
+                "{cap:?} {} points hw {hw} rot {rotation} {offset}",
+                pts.len()
+              );
+              check(what, &t, &ends, 2.0 * hw + 3.0, &[]);
+            }
+          }
+        }
+      }
+      // Closed corners: a square and a triangle
+      let square = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)];
+      let triangle = [(0.0, 0.0), (1.0, 0.0), (0.5, 0.8)];
+      for shape in [&square[..], &triangle[..]] {
+        let scale = 25.0 * hw + 10.0;
+        let corners: Vec<Vec2> = shape
+          .iter()
+          .map(|&(x, y)| Vec2::new(50.0, 50.0) + Vec2::new(x, y) * scale + offsets[1])
+          .collect();
+        let n = corners.len();
+        let inner: Vec<Inner> = (0..n)
+          .filter_map(|i| {
+            let (a, p, b) = (corners[(i + n - 1) % n], corners[i], corners[(i + 1) % n]);
+            let shortest = p.distance(a).min(p.distance(b));
+            shared_inner(p, (p - a).normalize(), (b - p).normalize(), hw, shortest)
+          })
+          .collect();
+        let pts: Vec<(f32, f32)> = corners.iter().map(|q| (q.x, q.y)).collect();
+        for join in JOINS {
+          let t = build(&pts, 2.0 * hw, join, LineCap::Butt, true);
+          let what = format!("closed {n} {join:?} hw {hw}");
+          check(what, &t, &corners, 5.0 * hw + 3.0, &inner);
+        }
+      }
+    }
+    eprintln!("worst away from inner corners: {outer_worst:?}");
+    eprintln!("worst at an inner corner: {inner_worst:?}");
+    assert!(
+      failures.is_empty(),
+      "{} pixels off:\n{}",
+      failures.len(),
+      failures.join("\n")
+    );
+    assert!(
+      inner_worst.0 <= INNER,
+      "an inner corner is off by {inner_worst:?}"
+    );
   }
 
   #[test]

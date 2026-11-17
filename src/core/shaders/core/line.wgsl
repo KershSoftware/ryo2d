@@ -2,21 +2,47 @@
 // their width (Solid, Soft, Glow) and optionally displaced along their
 // perpendicular (Lightning, Noise, Ribbon) or scrolled (UV scroll).
 //
-// Colours are taken as linear (2a's trail renderer did the same) and leave
-// premultiplied by alpha. The textured entry samples the atlas slot in
+// A vertex's colour arrives in sRGB and is decoded to linear light, times
+// its line's emission; it leaves premultiplied by alpha. What a line's
+// vertices share (style and effect parameters, the atlas slot a textured
+// line repeats, emission) is its entry in the line table, read by the line
+// number in each vertex. The textured entry samples the atlas slot in
 // `bounds` (raw sRGB bytes), repeating it along the line.
 
 @group(1) @binding(0) var line_texture: texture_2d<f32>;
 @group(1) @binding(1) var line_sampler: sampler;
 
+// `LineInfo` (render/batch/polyline.rs)
+struct LineInfo {
+    params: vec4<f32>,
+    bounds: vec4<f32>,
+    emission: f32,
+    along_half: f32,
+    pad: vec2<f32>,
+};
+
+@group(2) @binding(0) var<storage, read> lines: array<LineInfo>;
+
+// The parts of `Vertex2D` (render/batch/polyline.rs) the shading reads
 struct LineVertex {
     @location(0) position: vec2<f32>,
     @location(1) uv: vec2<f32>,
     @location(2) color: vec4<f32>,
-    @location(3) params: vec4<f32>,
-    @location(4) across: vec2<f32>,
-    @location(5) bounds: vec4<f32>,
+    // The fall of the second edge's distance (low half) and the angle
+    // across, in 65535ths of a turn, or 65535 for none (high half)
+    @location(6) rate_across: u32,
+    // The line (low 20 bits), flags (4) and the angle between edges (8)
+    @location(7) packed: u32,
 };
+
+// The unit perpendicular effects displace along
+fn across_of(code: u32) -> vec2<f32> {
+    if code == 0xFFFFu {
+        return vec2<f32>(0.0, 0.0);
+    }
+    let angle = f32(code) / 65535.0 * 6.28318530718;
+    return vec2<f32>(cos(angle), sin(angle));
+}
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
@@ -92,23 +118,25 @@ fn ribbon_displacement(uv: vec2<f32>, amplitude: f32, frequency: f32, speed: f32
 fn vs_main(vertex: LineVertex) -> VertexOutput {
     var out: VertexOutput;
     var pos = vertex.position;
-    let params = vertex.params;
+    let line = lines[vertex.packed & 0xFFFFFu];
+    let params = line.params;
     let effect_type = u32(params[0]) & 0xFu;
+    let across = across_of(vertex.rate_across >> 16u);
 
     // Displacement effects move the vertex along its perpendicular
     if effect_type == 1u {
-        pos += vertex.across * lightning_displacement(vertex.uv.x, params[1], params[2], params[3], globals.real_time);
+        pos += across * lightning_displacement(vertex.uv.x, params[1], params[2], params[3], globals.real_time);
     } else if effect_type == 2u {
-        pos += vertex.across * noise_displacement(vertex.uv.x, params[1], params[2], params[3], globals.real_time);
+        pos += across * noise_displacement(vertex.uv.x, params[1], params[2], params[3], globals.real_time);
     } else if effect_type == 4u {
-        pos += vertex.across * ribbon_displacement(vertex.uv, params[1], params[2], params[3], globals.real_time);
+        pos += across * ribbon_displacement(vertex.uv, params[1], params[2], params[3], globals.real_time);
     }
 
     out.position = globals.view_proj * vec4<f32>(pos, 0.0, 1.0);
-    out.color = vertex.color;
+    out.color = vec4<f32>(srgb_to_linear(vertex.color.rgb) * line.emission, vertex.color.a);
     out.uv = vertex.uv;
     out.params = params;
-    out.bounds = vertex.bounds;
+    out.bounds = line.bounds;
     if effect_type == 3u {
         out.uv.x += globals.real_time * params[1];
     }

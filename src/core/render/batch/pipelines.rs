@@ -107,8 +107,10 @@ enum Groups {
   Textured,
   /// Camera, texture, then the tile slot (tile chunks)
   Tile,
-  /// Camera only (untextured lines)
-  Camera,
+  /// Camera, nothing, then the line table (untextured lines)
+  Line,
+  /// Camera, texture, then the line table (textured lines)
+  LineTextured,
   /// Camera, then the shadow atlas (lights)
   Light,
 }
@@ -153,9 +155,9 @@ fn built_in(key: &PipelineKey) -> Option<(Module, Groups, &'static str)> {
     // Repeated image layers are images, never render targets
     (BatchShader::Repeat, Stream::Quads) if premultiplied => textured("fs_repeat_premultiplied"),
     (BatchShader::Repeat, Stream::Quads) => textured("fs_repeat"),
-    (BatchShader::Line, Stream::Triangles) => (Module::Line, Groups::Camera, "fs_main"),
+    (BatchShader::Line, Stream::Triangles) => (Module::Line, Groups::Line, "fs_main"),
     (BatchShader::LineTextured, Stream::Triangles) => {
-      (Module::Line, Groups::Textured, "fs_textured")
+      (Module::Line, Groups::LineTextured, "fs_textured")
     }
     (BatchShader::TextMask, Stream::Quads) => textured("fs_text_mask"),
     (BatchShader::TextColor, Stream::Quads) => textured("fs_text_color"),
@@ -247,6 +249,25 @@ pub(crate) fn camera_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
   })
 }
 
+/// The layout the triangle stream's line table is bound with (group 2 of
+/// the line pipelines): one storage array of `LineInfo`, read by the vertex
+/// stage at each vertex's line.
+pub(crate) fn line_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+  device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+    label: Some("Batch Line Table Layout"),
+    entries: &[wgpu::BindGroupLayoutEntry {
+      binding: 0,
+      visibility: wgpu::ShaderStages::VERTEX,
+      ty: wgpu::BindingType::Buffer {
+        ty: wgpu::BufferBindingType::Storage { read_only: true },
+        has_dynamic_offset: false,
+        min_binding_size: None,
+      },
+      count: None,
+    }],
+  })
+}
+
 /// The unit quad's corners: position, then UV.
 const QUAD_ATTRIBUTES: [wgpu::VertexAttribute; 2] =
   wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2];
@@ -274,12 +295,13 @@ const INSTANCE_LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLay
   attributes: &INSTANCE_ATTRIBUTES,
 };
 
-/// A [`Vertex2D`]: position, UV, colour, parameters, perpendicular, the
-/// atlas slot it samples, its edge distances and push limit, its round offset
-/// and push, and its flags.
-const VERTEX2D_ATTRIBUTES: [wgpu::VertexAttribute; 9] = wgpu::vertex_attr_array![
-  0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32x4, 4 => Float32x2, 5 => Float32x4,
-  6 => Float32x4, 7 => Float32x4, 8 => Uint32,
+/// A [`Vertex2D`]: position, UV, sRGB colour, its three distances, its
+/// push, its limit and the rise of its distance across, the fall of its
+/// second edge's with its angle across (one word), and its line, flags and
+/// the angle between its edges (one word).
+const VERTEX2D_ATTRIBUTES: [wgpu::VertexAttribute; 8] = wgpu::vertex_attr_array![
+  0 => Float32x2, 1 => Float32x2, 2 => Unorm8x4, 3 => Float32x3, 4 => Float16x2, 5 => Float16x2,
+  6 => Uint32, 7 => Uint32,
 ];
 
 const VERTEX2D_LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLayout {
@@ -302,8 +324,10 @@ pub(crate) struct Pipelines {
   layout: wgpu::PipelineLayout,
   /// Camera, texture, then the tile slot (tile chunks)
   tile_layout: wgpu::PipelineLayout,
-  /// Camera only (untextured lines)
-  camera_only: wgpu::PipelineLayout,
+  /// Camera, nothing, then the line table (untextured lines)
+  line_layout: wgpu::PipelineLayout,
+  /// Camera, texture, then the line table (textured lines)
+  line_textured_layout: wgpu::PipelineLayout,
   /// Camera, then the shadow atlas (lights)
   light_layout: wgpu::PipelineLayout,
   sprite: wgpu::ShaderModule,
@@ -318,6 +342,7 @@ impl Pipelines {
     camera: &wgpu::BindGroupLayout,
     textures: &wgpu::BindGroupLayout,
     tile_slots: &wgpu::BindGroupLayout,
+    lines: &wgpu::BindGroupLayout,
   ) -> Self {
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
       label: Some("Batch Pipeline Layout"),
@@ -329,9 +354,14 @@ impl Pipelines {
       bind_group_layouts: &[Some(camera), Some(textures), Some(tile_slots)],
       immediate_size: 0,
     });
-    let camera_only = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+    let line_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
       label: Some("Batch Line Pipeline Layout"),
-      bind_group_layouts: &[Some(camera)],
+      bind_group_layouts: &[Some(camera), None, Some(lines)],
+      immediate_size: 0,
+    });
+    let line_textured_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+      label: Some("Batch Textured Line Pipeline Layout"),
+      bind_group_layouts: &[Some(camera), Some(textures), Some(lines)],
       immediate_size: 0,
     });
     let shadow = shadow_layout(device);
@@ -349,7 +379,8 @@ impl Pipelines {
     Self {
       layout,
       tile_layout,
-      camera_only,
+      line_layout,
+      line_textured_layout,
       light_layout,
       sprite: module("Sprite Shader", crate::core::shaders::compose::SPRITE),
       line: module("Line Shader", crate::core::shaders::compose::LINE),
@@ -396,7 +427,8 @@ impl Pipelines {
     let layout = match groups {
       Groups::Textured => &self.layout,
       Groups::Tile => &self.tile_layout,
-      Groups::Camera => &self.camera_only,
+      Groups::Line => &self.line_layout,
+      Groups::LineTextured => &self.line_textured_layout,
       Groups::Light => &self.light_layout,
     };
     let pipeline = batch_pipeline(device, layout, fragment, module, fragment, key);

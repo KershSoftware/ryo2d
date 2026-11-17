@@ -63,7 +63,7 @@ pub(crate) fn trail_points(trail: &Trail2D, out: &mut Vec<PolyPoint>) -> Option<
     out.push(PolyPoint {
       pos: Vec2::new(point.x, point.y),
       half_width: trail.width_at(t) / 2.0,
-      color: line_color(color, trail.emission()),
+      color,
       u,
     });
   }
@@ -72,6 +72,7 @@ pub(crate) fn trail_points(trail: &Trail2D, out: &mut Vec<PolyPoint>) -> Option<
     cap: trail.cap(),
     closed: false,
     params: build_effect_params(trail.effect(), trail.style()),
+    emission: trail.emission(),
   })
 }
 
@@ -88,7 +89,7 @@ pub(crate) fn line_points(line: &Line2D, at: Vec2, out: &mut Vec<PolyPoint>) -> 
     out.push(PolyPoint {
       pos: *point + at,
       half_width: line.width_at(t) / 2.0,
-      color: line_color(line.color_at(t), line.emission()),
+      color: line.color_at(t),
       u: t,
     });
   }
@@ -97,6 +98,7 @@ pub(crate) fn line_points(line: &Line2D, at: Vec2, out: &mut Vec<PolyPoint>) -> 
     cap: line.cap(),
     closed: line.is_closed(),
     params: build_effect_params(None, line.style()),
+    emission: line.emission(),
   })
 }
 
@@ -110,12 +112,11 @@ pub(crate) fn push_polyline(
   style: &PolyStyle,
   look: LineLook,
 ) {
-  let first_vertex = triangles.vertices.len() as u32;
+  let line = triangles.lines.len() as u32;
   let indices = triangles.polyline(points, style);
   if indices.is_empty() {
     return;
   }
-  let vertices = first_vertex..triangles.vertices.len() as u32;
   let (mut min, mut max) = (Vec2::splat(f32::INFINITY), Vec2::splat(f32::NEG_INFINITY));
   let mut reach = 0.0f32;
   for point in points.iter().filter(|point| point.pos.is_finite()) {
@@ -136,7 +137,7 @@ pub(crate) fn push_polyline(
       min: min - reach,
       max: max + reach,
       indices,
-      vertices,
+      line,
     },
   );
 }
@@ -150,13 +151,6 @@ fn effect_reach(params: &[f32; 4]) -> f32 {
     4 => params[1].abs(),
     _ => 0.0,
   }
-}
-
-/// A colour decoded to linear light for a vertex, its light multiplied by
-/// `emission`.
-pub(crate) fn line_color(color: Color, emission: f32) -> [f32; 4] {
-  let [r, g, b, a] = color.to_linear();
-  [r * emission, g * emission, b * emission, a]
 }
 
 /// Effect type in bits 0-3 (0 none, 1 lightning, 2 noise, 3 scroll, 4
@@ -295,7 +289,7 @@ mod tests {
     );
     assert_eq!((ends.0.half_width, ends.1.half_width), (2.0, 1.0));
     assert_eq!((ends.0.u, points[1].u, ends.1.u), (0.0, 0.5, 1.0));
-    assert_eq!(ends.1.color, [0.0, 0.0, 0.0, 1.0]);
+    assert_eq!(ends.1.color, Color::new(0, 0, 0, 255));
   }
 
   #[test]

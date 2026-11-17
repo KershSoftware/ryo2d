@@ -1317,20 +1317,10 @@ fn build_line(build: &mut UiBuild, seen: &Seen, list: &mut DrawList, z: i32, pla
   let range = line.indices.start as usize..line.indices.end as usize;
   let indices = triangles.indices.get(range).unwrap_or(&[]);
   for triangle in indices.as_chunks::<3>().0 {
-    let corner = |index: u32| {
-      triangles.vertices.get(index as usize).map(|vertex| {
-        let corner = (
-          Vec2::from(vertex.position),
-          Vec2::from(vertex.uv),
-          vertex.color,
-        );
-        (corner, vertex.params)
-      })
-    };
     let (Some((a, params)), Some((b, _)), Some((c, _))) = (
-      corner(triangle[0]),
-      corner(triangle[1]),
-      corner(triangle[2]),
+      triangles.corner(triangle[0]),
+      triangles.corner(triangle[1]),
+      triangles.corner(triangle[2]),
     ) else {
       continue;
     };

@@ -10,7 +10,7 @@ use wgpu::util::DeviceExt;
 use super::chunks::{ChunkBuffers, ChunkStore, SLOT_STRIDE};
 use super::mesh::{MeshStream, MeshVertex};
 use super::pipelines::{self, PipelineKey, Pipelines};
-use super::polyline::{Triangles, Vertex2D};
+use super::polyline::{LineInfo, Triangles, Vertex2D};
 use super::{
   BatchShader, BlendMode, Draw, DrawSource, DrawState, Filter, LightStep, PageKind, Placed,
   Sampling, Stream, plan_draws,
@@ -93,6 +93,11 @@ pub(crate) struct Batch2D {
   chunk_buffers: ChunkBuffers,
   vertices: GrowingBuffer,
   indices: GrowingBuffer,
+  // The triangles' line table, and its bind group (group 2 of the line
+  // pipelines), made again only when the buffer grows
+  lines: GrowingBuffer,
+  line_layout: wgpu::BindGroupLayout,
+  line_group: wgpu::BindGroup,
   mesh_vertices: GrowingBuffer,
   mesh_indices: GrowingBuffer,
   // Makes the new versions of game sprite shaders already drawn, while the
@@ -136,16 +141,19 @@ impl GrowingBuffer {
     }
   }
 
-  /// Upload `bytes`, growing to the next power of two elements if need be.
-  fn write(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, bytes: &[u8]) {
+  /// Upload `bytes`, growing to the next power of two elements if need be;
+  /// whether it grew (a new buffer).
+  fn write(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, bytes: &[u8]) -> bool {
     let needed = bytes.len() / self.element;
-    if needed > self.capacity {
+    let grows = needed > self.capacity;
+    if grows {
       self.capacity = needed.next_power_of_two();
       self.buffer = buffer(device, self.label, self.capacity * self.element, self.usage);
     }
     if !bytes.is_empty() {
       queue.write_buffer(&self.buffer, 0, bytes);
     }
+    grows
   }
 }
 
@@ -170,12 +178,21 @@ impl Batch2D {
     let camera_layout = pipelines::camera_layout(device);
     let texture_layout = pipelines::texture_layout(device);
     let chunk_buffers = ChunkBuffers::new(device);
+    let line_layout = pipelines::line_layout(device);
     let mut pipelines = Pipelines::new(
       device,
       &camera_layout,
       &texture_layout,
       chunk_buffers.slot_layout(),
+      &line_layout,
     );
+    let lines = GrowingBuffer::new(
+      device,
+      "Batch Line Table",
+      std::mem::size_of::<LineInfo>(),
+      wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+    );
+    let line_group = line_group(device, &line_layout, &lines.buffer);
     // Tile chunks' pipeline for a plain layer, made now rather than in the
     // frame the first map lands (about 0.85 ms there, measured headless)
     let key = PipelineKey::new(
@@ -215,6 +232,9 @@ impl Batch2D {
         std::mem::size_of::<u32>(),
         wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
       ),
+      lines,
+      line_layout,
+      line_group,
       mesh_vertices: GrowingBuffer::new(
         device,
         "Batch Mesh Vertices",
@@ -637,10 +657,7 @@ impl Batch2D {
               None => (None, Sampling::Nearest, BatchShader::Line),
               Some(texture) => {
                 let (slot, _) = textures.slot(texture)?;
-                let range = line.vertices.start as usize..line.vertices.end as usize;
-                for vertex in triangles.vertices.get_mut(range)? {
-                  vertex.bounds = slot.uv;
-                }
+                triangles.lines.get_mut(line.line as usize)?.bounds = slot.uv;
                 let sampling = line.filter.resolve(presentation);
                 (Some(slot.page), sampling, BatchShader::LineTextured)
               }
@@ -748,6 +765,12 @@ impl Batch2D {
     self.vertices.write(device, queue, vertices);
     let indices = bytemuck::cast_slice(&triangles.indices);
     self.indices.write(device, queue, indices);
+    if self
+      .lines
+      .write(device, queue, bytemuck::cast_slice(&triangles.lines))
+    {
+      self.line_group = line_group(device, &self.line_layout, &self.lines.buffer);
+    }
     let meshes = &self.meshes;
     let vertices = bytemuck::cast_slice(&meshes.vertices);
     self.mesh_vertices.write(device, queue, vertices);
@@ -919,6 +942,7 @@ impl Batch2D {
         pass.draw(0..6, 0..draw.range.len() as u32);
       }
       Stream::Triangles => {
+        bound.bind(pass, 2, (&self.line_group, None));
         if bound.stream != Some(Stream::Triangles) {
           pass.set_vertex_buffer(0, self.vertices.buffer.slice(..));
           pass.set_index_buffer(self.indices.buffer.slice(..), wgpu::IndexFormat::Uint32);
@@ -1104,6 +1128,25 @@ fn instance_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
   let size = capacity * std::mem::size_of::<SpriteInstance>();
   let usage = wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST;
   buffer(device, "Batch Instances", size, usage)
+}
+
+/// The line table's bind group over `buffer`.
+fn line_group(
+  device: &wgpu::Device,
+  layout: &wgpu::BindGroupLayout,
+  buffer: &wgpu::Buffer,
+) -> wgpu::BindGroup {
+  crate::core::graphics::bind_groups::create(
+    device,
+    &wgpu::BindGroupDescriptor {
+      label: Some("Batch Line Table Bind Group"),
+      layout,
+      entries: &[wgpu::BindGroupEntry {
+        binding: 0,
+        resource: buffer.as_entire_binding(),
+      }],
+    },
+  )
 }
 
 fn buffer(
