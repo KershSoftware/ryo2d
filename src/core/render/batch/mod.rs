@@ -13,6 +13,7 @@ mod lines;
 mod mesh;
 mod pipelines;
 mod plan;
+#[cfg(test)]
 mod polyline;
 
 pub(crate) use chunks::{
@@ -22,11 +23,11 @@ pub(crate) use chunks::{
 pub(crate) use gpu::{Batch2D, Bound, unit_quad};
 pub(crate) use key::{BatchShader, DrawState, LightStep, PageKind, Sampling, Stream};
 pub use key::{BlendMode, Filter};
-pub(crate) use lines::{LineLook, LineStream, line_points, push_polyline, trail_points};
+pub(crate) use lines::{
+  LineLook, LineStream, MITER_LIMIT, Piece, PieceKind, PolyPoint, PolyStyle, along_half,
+  edge_code, filter_points, line_points, piece_list, piece_triangles, push_polyline,
+  trail_points,
+};
 pub(crate) use mesh::MeshStream;
 pub(crate) use pipelines::{QUAD_LAYOUT, shadow_layout, texture_layout};
 pub(crate) use plan::{Draw, DrawSource, Placed, plan_draws};
-pub(crate) use polyline::{
-  MITER_LIMIT, Piece, PieceKind, PolyPoint, PolyStyle, along_half, edge_code, filter_points,
-  piece_list, piece_triangles,
-};

@@ -8,10 +8,9 @@ use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
 use super::chunks::{ChunkBuffers, ChunkStore, SLOT_STRIDE};
-use super::lines::{LinePoint, LineStream};
+use super::lines::{LineInfo, LinePoint, LineStream};
 use super::mesh::{MeshStream, MeshVertex};
 use super::pipelines::{self, PipelineKey, Pipelines};
-use super::polyline::LineInfo;
 use super::{
   BatchShader, BlendMode, Draw, DrawSource, DrawState, Filter, LightStep, PageKind, Placed,
   Sampling, Stream, plan_draws,

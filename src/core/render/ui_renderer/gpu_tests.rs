@@ -236,10 +236,6 @@ fn camera_bound(
   batch.sync_cameras(device, &uniforms);
 }
 
-/// Every kind but the linear sprite (a render target) in one image through
-/// the UI pipeline, all but one rect clipped by one clip in each instance,
-/// in one run: each draws, and no pixel outside the clip changes but the
-/// unclipped rect's
 /// A line command's instances as the UI builds them (culled), on a UI image
 /// of `image` pixels at `px_scale` image pixels per UI unit
 fn line_instances(command: UiCommand, px_scale: f32, image: (u32, u32)) -> Vec<UiInstance> {
@@ -311,6 +307,10 @@ fn a_line_whose_offset_or_points_are_not_finite_builds_nothing() {
 }
 
 #[test]
+/// Every kind but the linear sprite (a render target) in one image through
+/// the UI pipeline, all but one rect clipped by one clip in each instance,
+/// in one run: each draws, and no pixel outside the clip changes but the
+/// unclipped rect's
 fn every_kind_draws_inside_its_clip() {
   let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
     return;
@@ -1243,7 +1243,8 @@ mod bound {
   /// (a blend), keep the pipeline but change the texture group (a
   /// sampler), and change the stream and the pipeline layout (a line,
   /// which binds the camera alone) and back. Drawn in one pass (`together`)
-  /// and each draw in a pass of its own (`apart`); the draws' streams
+  /// and each draw in a pass of its own (`apart`); with the draws' streams,
+  /// blends and samplings
   #[allow(clippy::type_complexity)]
   fn drawn(
     device: &wgpu::Device,

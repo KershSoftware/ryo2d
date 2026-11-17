@@ -9,7 +9,9 @@
 //!   and miter limit); then one 32-bit code a triangle names its piece's
 //!   point, the piece's kind and the triangle within it, in the order the
 //!   pieces draw (`piece_list`, `piece_triangles`). Nothing is tessellated
-//!   on the CPU. A draw covers `3 × triangles` vertices of the code stream,
+//!   on the CPU. The filter, the piece list and the line table are the
+//!   CPU's whole part; their rules are told in `polyline.rs`, the reference
+//!   builder, compiled for tests alone. A draw covers `3 × triangles` vertices of the code stream,
 //!   and the vertex stage finds its triangle's code by `vertex_index ÷ 3`
 //!   (`line.wgsl`), so draws merge as index ranges did and z-order holds.
 //!   The GPU's vertices equal the CPU builder's (`polyline.rs`, the
@@ -41,18 +43,275 @@ use std::ops::Range;
 
 use glam::Vec2;
 
-#[cfg(test)]
-use super::polyline::Triangles;
-use super::polyline::{
-  LineInfo, MAX_LINES, MITER_LIMIT, Piece, PieceKind, PolyPoint, PolyStyle, along_half,
-  filter_points, piece_list, piece_triangles,
-};
 use super::{BlendMode, Filter};
 use crate::core::ecs::Entity;
 use crate::core::graphics::{RenderLayers, TextureId};
 use crate::core::render::{DrawList, DrawTriangles};
-use crate::core::trail::{Line2D, TextureMode, Trail2D, TrailEffect, TrailStyle};
+use crate::core::trail::{
+  Line2D, LineCap, LineEdge, LineJoin, TextureMode, Trail2D, TrailEffect, TrailStyle,
+};
 use crate::core::ui::Color;
+
+/// The line table holds this many lines a frame; the rest draw nothing
+pub(crate) const MAX_LINES: usize = 1 << 20;
+
+/// What every piece of one line shares: an entry of the line table, which
+/// the vertex stage reads by the line's number (`LineInfo` in
+/// `line_pieces.wgsl`, 80 bytes).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+pub(crate) struct LineInfo {
+  /// Style and effect parameters (effect and style bits in `[0]`)
+  pub(crate) params: [f32; 4],
+  /// The atlas slot a textured line repeats (UV min and max), set when it
+  /// is placed; zero for untextured ones
+  pub(crate) bounds: [f32; 4],
+  /// What its colours' light is multiplied by
+  pub(crate) emission: f32,
+  /// A two-point capped line's half length between its caps (zero
+  /// elsewhere): the half width of the strip its `FLAG_ALONG` vertices
+  /// measure
+  pub(crate) along_half: f32,
+  /// Its first point in the point buffer, and how many it has (filtered)
+  pub(crate) first: u32,
+  pub(crate) count: u32,
+  /// `JOIN_MITER`, `JOIN_BEVEL` or `JOIN_ROUND`
+  pub(crate) join: u32,
+  /// `CAP_BUTT`, `CAP_SQUARE` or `CAP_ROUND`
+  pub(crate) cap: u32,
+  /// 1 when its last point joins its first
+  pub(crate) closed: u32,
+  /// How its edges meet the pixels: `EDGE_TARGET`, `EDGE_SMOOTH` or
+  /// `EDGE_HARD`
+  pub(crate) edge: u32,
+  /// A miter longer than this many half widths is bevelled
+  pub(crate) miter_limit: f32,
+  pub(crate) _pad: [u32; 3],
+}
+
+/// A line's join and cap as the line table numbers them
+pub(crate) const JOIN_MITER: u32 = 0;
+pub(crate) const JOIN_BEVEL: u32 = 1;
+pub(crate) const JOIN_ROUND: u32 = 2;
+pub(crate) const CAP_BUTT: u32 = 0;
+pub(crate) const CAP_SQUARE: u32 = 1;
+pub(crate) const CAP_ROUND: u32 = 2;
+/// A line's edge as the line table and the UI's line instances number it:
+/// its target's (Hard on a pixel-art target, Smooth elsewhere), or its own
+pub(crate) const EDGE_TARGET: u32 = 0;
+pub(crate) const EDGE_SMOOTH: u32 = 1;
+pub(crate) const EDGE_HARD: u32 = 2;
+
+/// `edge` as the line table numbers it
+pub(crate) fn edge_code(edge: Option<LineEdge>) -> u32 {
+  match edge {
+    None => EDGE_TARGET,
+    Some(LineEdge::Smooth) => EDGE_SMOOTH,
+    Some(LineEdge::Hard) => EDGE_HARD,
+  }
+}
+
+impl LineInfo {
+  /// The entry of a line drawn in `style`, its `count` points from `first`
+  pub(crate) fn of(
+    style: &PolyStyle,
+    closed: bool,
+    along_half: f32,
+    first: u32,
+    count: u32,
+  ) -> Self {
+    Self {
+      params: style.params,
+      bounds: [0.0; 4],
+      emission: style.emission,
+      along_half,
+      first,
+      count,
+      join: match style.join {
+        LineJoin::Miter => JOIN_MITER,
+        LineJoin::Bevel => JOIN_BEVEL,
+        LineJoin::Round => JOIN_ROUND,
+      },
+      cap: match style.cap {
+        LineCap::Butt => CAP_BUTT,
+        LineCap::Square => CAP_SQUARE,
+        LineCap::Round => CAP_ROUND,
+      },
+      closed: u32::from(closed),
+      edge: edge_code(style.edge),
+      miter_limit: MITER_LIMIT,
+      _pad: [0; 3],
+    }
+  }
+}
+
+/// A two-point butt or square capped line measures both caps as one strip
+/// along it, this long each way from its middle (zero for any other line)
+pub(crate) fn along_half(pts: &[PolyPoint], closed: bool, cap: LineCap) -> f32 {
+  match (closed, pts, cap) {
+    (false, [a, b], LineCap::Butt | LineCap::Square) => {
+      let reach = |p: &PolyPoint| cap_reach(p, cap);
+      (a.pos.distance(b.pos) + reach(a) + reach(b)) / 2.0
+    }
+    _ => 0.0,
+  }
+}
+
+/// A point of a polyline.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PolyPoint {
+  pub(crate) pos: Vec2,
+  pub(crate) half_width: f32,
+  /// sRGB, straight alpha
+  pub(crate) color: Color,
+  /// Texture coordinate along the line: 0..1 when stretched, distance over
+  /// tile length when tiled
+  pub(crate) u: f32,
+}
+
+/// How a polyline is drawn.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PolyStyle {
+  pub(crate) join: LineJoin,
+  pub(crate) cap: LineCap,
+  /// The last point joins the first
+  pub(crate) closed: bool,
+  /// Its line table entry's (effect and style bits in `[0]`)
+  pub(crate) params: [f32; 4],
+  /// What its colours' light is multiplied by
+  pub(crate) emission: f32,
+  /// How its edges meet the pixels (`None`: its target's)
+  pub(crate) edge: Option<LineEdge>,
+}
+
+/// A miter longer than this many times the line's width becomes a bevel.
+pub(crate) const MITER_LIMIT: f32 = 4.0;
+
+/// What a piece of a line is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PieceKind {
+  /// The quad from its point to the next
+  Segment,
+  /// The corner at its point
+  Join,
+  /// The cap before the first point
+  StartCap,
+  /// The cap after the last point
+  EndCap,
+}
+
+/// One piece of a line: what it is and the point it is built at.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Piece {
+  pub(crate) kind: PieceKind,
+  pub(crate) point: u32,
+}
+
+/// The triangles a segment draws: its quad, fanned from the corner point of
+/// an end that splits or is round capped
+pub(crate) const SEGMENT_TRIANGLES: u32 = 4;
+/// The triangles a miter or bevel join draws
+pub(crate) const JOIN_TRIANGLES: u32 = 4;
+/// The triangles a round join draws: its two slanted ends and its arc
+pub(crate) const ROUND_JOIN_TRIANGLES: u32 = 2 + ARC_TRIANGLES;
+/// The triangles a square cap draws
+pub(crate) const SQUARE_CAP_TRIANGLES: u32 = 2;
+/// The triangles a round cap draws
+pub(crate) const ROUND_CAP_TRIANGLES: u32 = ARC_TRIANGLES;
+/// The triangles of a round piece's arc
+pub(crate) const ARC_TRIANGLES: u32 = 16;
+
+/// The triangles a piece of `kind` draws, whatever its geometry.
+pub(crate) fn piece_triangles(kind: PieceKind, join: LineJoin, cap: LineCap) -> u32 {
+  match (kind, join, cap) {
+    (PieceKind::Segment, ..) => SEGMENT_TRIANGLES,
+    (PieceKind::Join, LineJoin::Round, _) => ROUND_JOIN_TRIANGLES,
+    (PieceKind::Join, ..) => JOIN_TRIANGLES,
+    (PieceKind::StartCap | PieceKind::EndCap, _, LineCap::Butt) => 0,
+    (PieceKind::StartCap | PieceKind::EndCap, _, LineCap::Square) => SQUARE_CAP_TRIANGLES,
+    (PieceKind::StartCap | PieceKind::EndCap, _, LineCap::Round) => ROUND_CAP_TRIANGLES,
+  }
+}
+
+/// The pieces of a line of `n` filtered points, in the order they draw
+/// (into `out`, cleared first). Where each point sits in its line decides
+/// them, never where it is.
+pub(crate) fn piece_list(n: usize, closed: bool, cap: LineCap, out: &mut Vec<Piece>) {
+  out.clear();
+  let piece = |kind, point: usize| Piece {
+    kind,
+    point: point as u32,
+  };
+  if closed {
+    for i in 0..n {
+      out.push(piece(PieceKind::Segment, i));
+      out.push(piece(PieceKind::Join, (i + 1) % n));
+    }
+    return;
+  }
+  if n < 2 {
+    return;
+  }
+  let capped = cap != LineCap::Butt;
+  if capped {
+    out.push(piece(PieceKind::StartCap, 0));
+  }
+  for i in 0..n - 1 {
+    out.push(piece(PieceKind::Segment, i));
+    if i + 1 < n - 1 {
+      out.push(piece(PieceKind::Join, i + 1));
+    }
+  }
+  if capped {
+    out.push(piece(PieceKind::EndCap, n - 1));
+  }
+}
+
+/// `points` filtered into `out` as a line is copied (cleared first), and
+/// whether the line is still closed; `None` when it draws nothing.
+pub(crate) fn filter_points(
+  points: &[PolyPoint],
+  closed: bool,
+  out: &mut Vec<PolyPoint>,
+) -> Option<bool> {
+  out.clear();
+  for point in points {
+    if !point.pos.is_finite() || !point.half_width.is_finite() {
+      continue;
+    }
+    if out
+      .last()
+      .is_some_and(|last| last.pos.distance(point.pos) < 1e-4)
+    {
+      continue;
+    }
+    out.push(*point);
+  }
+  let mut closed = closed;
+  if closed
+    && out.len() > 2
+    && let (Some(first), Some(last)) = (out.first(), out.last())
+    && first.pos.distance(last.pos) < 1e-4
+  {
+    out.pop();
+  }
+  if out.len() < 3 {
+    closed = false;
+  }
+  if out.len() < 2 || out.iter().all(|point| point.half_width <= 0.0) {
+    return None;
+  }
+  Some(closed)
+}
+
+/// How far a butt or square cap reaches past its end point.
+pub(crate) fn cap_reach(point: &PolyPoint, cap: LineCap) -> f32 {
+  if cap == LineCap::Square {
+    point.half_width
+  } else {
+    0.0
+  }
+}
 
 /// How a trail or line joins the draw list, besides its geometry.
 #[derive(Debug, Clone, Copy)]
@@ -303,50 +562,19 @@ impl LineStream {
   }
 }
 
-/// Where a line's triangles go: the GPU's stream (world lines) or the CPU
-/// builder (the reference, tests).
-pub(crate) trait LineSink {
-  /// The line table entry the next line takes
-  fn next_line(&self) -> u32;
-  /// Add the line through `points`; the range its triangles' corners take,
-  /// three a triangle (empty when nothing is drawn)
-  fn add_line(&mut self, points: &[PolyPoint], style: &PolyStyle) -> Range<u32>;
-}
-
-impl LineSink for LineStream {
-  fn next_line(&self) -> u32 {
-    self.lines.len() as u32
-  }
-
-  fn add_line(&mut self, points: &[PolyPoint], style: &PolyStyle) -> Range<u32> {
-    self.polyline(points, style)
-  }
-}
-
-#[cfg(test)]
-impl LineSink for Triangles {
-  fn next_line(&self) -> u32 {
-    self.lines.len() as u32
-  }
-
-  fn add_line(&mut self, points: &[PolyPoint], style: &PolyStyle) -> Range<u32> {
-    self.polyline(points, style)
-  }
-}
-
-/// Add the line through `points` to `sink` and to `list` as one item, seen
+/// Add the line through `points` to `lines` and to `list` as one item, seen
 /// by the cameras whose view meets its points' box grown by `MITER_LIMIT`
 /// times its widest half width and how far its effect moves it (each
 /// camera grows it by one of its pixels more, for the fringe).
 pub(crate) fn push_polyline(
   list: &mut DrawList,
-  sink: &mut impl LineSink,
+  lines: &mut LineStream,
   points: &[PolyPoint],
   style: &PolyStyle,
   look: LineLook,
 ) {
-  let line = sink.next_line();
-  let indices = sink.add_line(points, style);
+  let line = lines.lines.len() as u32;
+  let indices = lines.polyline(points, style);
   if indices.is_empty() {
     return;
   }
@@ -522,14 +750,18 @@ mod tests {
       ..wgpu::Limits::default()
     };
     let mut stream = LineStream::for_device(&limits);
-    assert_eq!(
-      stream.cap(),
-      StreamCap {
-        points: 16,
-        codes: 100,
-        lines: 5,
-      }
-    );
+    let small = StreamCap {
+      points: 16,
+      codes: 100,
+      lines: 5,
+    };
+    assert_eq!(stream.cap(), small);
+    // A buffer may be no bigger than the device makes one, either
+    let buffer = wgpu::Limits {
+      max_buffer_size: 400,
+      ..wgpu::Limits::default()
+    };
+    assert_eq!(StreamCap::of(&buffer), small);
     let line = |count: usize| -> Vec<PolyPoint> {
       (0..count)
         .map(|i| PolyPoint {
@@ -612,7 +844,6 @@ mod tests {
 
   #[test]
   fn a_line_s_or_trail_s_edge_reaches_its_line_table_entry() {
-    use super::super::polyline::{EDGE_HARD, EDGE_SMOOTH, EDGE_TARGET};
     let ends = vec![Vec2::ZERO, Vec2::new(10.0, 0.0)];
     let mut points = Vec::new();
     for (edge, code) in [

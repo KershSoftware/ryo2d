@@ -23,7 +23,7 @@
 @group(1) @binding(0) var line_texture: texture_2d<f32>;
 @group(1) @binding(1) var line_sampler: sampler;
 
-// `LineInfo` (render/batch/polyline.rs)
+// `LineInfo` (render/batch/lines.rs)
 struct LineInfo {
     params: vec4<f32>,
     bounds: vec4<f32>,

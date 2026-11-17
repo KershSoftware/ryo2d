@@ -300,7 +300,7 @@ fn fs_ui(in: UiOut) -> @location(0) vec4<f32> {
     switch in.kind {
         // fs_ui_rect
         case KIND_RECT: {
-            color = ui_rect(rect_p, rect_size, 1.0 / globals.px_per_unit, in.tint, in.params, in.extra);
+            color = ui_rect(rect_p, rect_size, 1.0 / max(globals.px_per_unit, 1e-4), in.tint, in.params, in.extra);
         }
         // fs_text_mask
         case KIND_MASK: {

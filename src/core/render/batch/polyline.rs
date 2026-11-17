@@ -5,8 +5,10 @@
 //! what they build, in the same order, in f32: the GPU's vertices equal its
 //! own triangle for triangle (`the_gpu_builds_the_reference_s_vertices`, in
 //! `line_gpu_tests.rs`). World lines and the UI's are built on the GPU, by
-//! the same piece functions; the builder itself is compiled for tests
-//! alone.
+//! the same piece functions; this module is compiled for tests alone. What
+//! the engine itself runs on the CPU, the point filter, the piece list and
+//! the line table, is in `lines.rs`, and its rules are told here with the
+//! rest.
 //!
 //! Every vertex carries its distances to the line's edges, in the line's
 //! units, and how far a fringe may push it outward; the builder does not know
@@ -173,15 +175,19 @@
 //!   The quad limits take no account of the half width's change along a
 //!   segment.
 
-#[cfg(test)]
 use std::ops::Range;
 
 use glam::Vec2;
 
-use crate::core::trail::{LineCap, LineEdge, LineJoin};
+use super::lines::{
+  ARC_TRIANGLES, LineInfo, MAX_LINES, MITER_LIMIT, Piece, PieceKind, PolyPoint, PolyStyle, SEGMENT_TRIANGLES,
+  along_half, cap_reach, filter_points, piece_list, piece_triangles,
+};
+use crate::core::trail::{LineCap, LineJoin};
 use crate::core::ui::Color;
 
-/// One vertex of the triangle stream: 76 bytes, every number an f32.
+/// One vertex as the reference builds it (the GPU's `PieceVertex`), every
+/// number an f32.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub(crate) struct Vertex2D {
@@ -228,281 +234,24 @@ pub(crate) struct Vertex2D {
 }
 
 /// A vertex of a round piece: coverage by the length of its offset
-#[cfg(test)]
 pub(crate) const FLAG_ROUND: u32 = 1;
 /// A vertex whose `second` edge distance counts
-#[cfg(test)]
 pub(crate) const FLAG_SECOND: u32 = 2;
 /// A vertex whose `second` is a distance along a two-point capped line from
 /// the middle between its caps: a strip of its line's `along_half`
-#[cfg(test)]
 pub(crate) const FLAG_ALONG: u32 = 4;
 /// No edge: the `second` of a vertex without one, the `half` of one that
 /// only a second edge bounds, and no limit
-#[cfg(test)]
 pub(crate) const NO_EDGE: f32 = 1.0e6;
-/// The line table holds this many lines a frame; the rest draw nothing
-pub(crate) const MAX_LINES: usize = 1 << 20;
 
-#[cfg(test)]
 impl Vertex2D {
   pub(crate) fn push(&self) -> Vec2 {
     Vec2::from(self.push)
   }
 }
 
-/// What every piece of one line shares: an entry of the line table, which
-/// the vertex stage reads by the line's number (`LineInfo` in
-/// `line_pieces.wgsl`, 80 bytes).
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
-pub(crate) struct LineInfo {
-  /// Style and effect parameters (effect and style bits in `[0]`)
-  pub(crate) params: [f32; 4],
-  /// The atlas slot a textured line repeats (UV min and max), set when it
-  /// is placed; zero for untextured ones
-  pub(crate) bounds: [f32; 4],
-  /// What its colours' light is multiplied by
-  pub(crate) emission: f32,
-  /// A two-point capped line's half length between its caps (zero
-  /// elsewhere): the half width of the strip its `FLAG_ALONG` vertices
-  /// measure
-  pub(crate) along_half: f32,
-  /// Its first point in the point buffer, and how many it has (filtered)
-  pub(crate) first: u32,
-  pub(crate) count: u32,
-  /// `JOIN_MITER`, `JOIN_BEVEL` or `JOIN_ROUND`
-  pub(crate) join: u32,
-  /// `CAP_BUTT`, `CAP_SQUARE` or `CAP_ROUND`
-  pub(crate) cap: u32,
-  /// 1 when its last point joins its first
-  pub(crate) closed: u32,
-  /// How its edges meet the pixels: `EDGE_TARGET`, `EDGE_SMOOTH` or
-  /// `EDGE_HARD`
-  pub(crate) edge: u32,
-  /// A miter longer than this many half widths is bevelled
-  pub(crate) miter_limit: f32,
-  pub(crate) _pad: [u32; 3],
-}
-
-/// A line's join and cap as the line table numbers them
-pub(crate) const JOIN_MITER: u32 = 0;
-pub(crate) const JOIN_BEVEL: u32 = 1;
-pub(crate) const JOIN_ROUND: u32 = 2;
-pub(crate) const CAP_BUTT: u32 = 0;
-pub(crate) const CAP_SQUARE: u32 = 1;
-pub(crate) const CAP_ROUND: u32 = 2;
-/// A line's edge as the line table and the UI's line instances number it:
-/// its target's (Hard on a pixel-art target, Smooth elsewhere), or its own
-pub(crate) const EDGE_TARGET: u32 = 0;
-pub(crate) const EDGE_SMOOTH: u32 = 1;
-pub(crate) const EDGE_HARD: u32 = 2;
-
-/// `edge` as the line table numbers it
-pub(crate) fn edge_code(edge: Option<LineEdge>) -> u32 {
-  match edge {
-    None => EDGE_TARGET,
-    Some(LineEdge::Smooth) => EDGE_SMOOTH,
-    Some(LineEdge::Hard) => EDGE_HARD,
-  }
-}
-
-impl LineInfo {
-  /// The entry of a line drawn in `style`, its `count` points from `first`
-  pub(crate) fn of(
-    style: &PolyStyle,
-    closed: bool,
-    along_half: f32,
-    first: u32,
-    count: u32,
-  ) -> Self {
-    Self {
-      params: style.params,
-      bounds: [0.0; 4],
-      emission: style.emission,
-      along_half,
-      first,
-      count,
-      join: match style.join {
-        LineJoin::Miter => JOIN_MITER,
-        LineJoin::Bevel => JOIN_BEVEL,
-        LineJoin::Round => JOIN_ROUND,
-      },
-      cap: match style.cap {
-        LineCap::Butt => CAP_BUTT,
-        LineCap::Square => CAP_SQUARE,
-        LineCap::Round => CAP_ROUND,
-      },
-      closed: u32::from(closed),
-      edge: edge_code(style.edge),
-      miter_limit: MITER_LIMIT,
-      _pad: [0; 3],
-    }
-  }
-}
-
-/// A two-point butt or square capped line measures both caps as one strip
-/// along it, this long each way from its middle (zero for any other line)
-pub(crate) fn along_half(pts: &[PolyPoint], closed: bool, cap: LineCap) -> f32 {
-  match (closed, pts, cap) {
-    (false, [a, b], LineCap::Butt | LineCap::Square) => {
-      let reach = |p: &PolyPoint| cap_reach(p, cap);
-      (a.pos.distance(b.pos) + reach(a) + reach(b)) / 2.0
-    }
-    _ => 0.0,
-  }
-}
-
-/// A point of a polyline.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct PolyPoint {
-  pub(crate) pos: Vec2,
-  pub(crate) half_width: f32,
-  /// sRGB, straight alpha
-  pub(crate) color: Color,
-  /// Texture coordinate along the line: 0..1 when stretched, distance over
-  /// tile length when tiled
-  pub(crate) u: f32,
-}
-
-/// How a polyline is drawn.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct PolyStyle {
-  pub(crate) join: LineJoin,
-  pub(crate) cap: LineCap,
-  /// The last point joins the first
-  pub(crate) closed: bool,
-  /// Its line table entry's (effect and style bits in `[0]`)
-  pub(crate) params: [f32; 4],
-  /// What its colours' light is multiplied by
-  pub(crate) emission: f32,
-  /// How its edges meet the pixels (`None`: its target's)
-  pub(crate) edge: Option<LineEdge>,
-}
-
-/// A miter longer than this many times the line's width becomes a bevel.
-pub(crate) const MITER_LIMIT: f32 = 4.0;
-
-/// What a piece of a line is.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum PieceKind {
-  /// The quad from its point to the next
-  Segment,
-  /// The corner at its point
-  Join,
-  /// The cap before the first point
-  StartCap,
-  /// The cap after the last point
-  EndCap,
-}
-
-/// One piece of a line: what it is and the point it is built at.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Piece {
-  pub(crate) kind: PieceKind,
-  pub(crate) point: u32,
-}
-
-/// The triangles a segment draws: its quad, fanned from the corner point of
-/// an end that splits or is round capped
-pub(crate) const SEGMENT_TRIANGLES: u32 = 4;
-/// The triangles a miter or bevel join draws
-pub(crate) const JOIN_TRIANGLES: u32 = 4;
-/// The triangles a round join draws: its two slanted ends and its arc
-pub(crate) const ROUND_JOIN_TRIANGLES: u32 = 2 + ARC_TRIANGLES;
-/// The triangles a square cap draws
-pub(crate) const SQUARE_CAP_TRIANGLES: u32 = 2;
-/// The triangles a round cap draws
-pub(crate) const ROUND_CAP_TRIANGLES: u32 = ARC_TRIANGLES;
-/// The triangles of a round piece's arc
-const ARC_TRIANGLES: u32 = 16;
-
-/// The triangles a piece of `kind` draws, whatever its geometry.
-pub(crate) fn piece_triangles(kind: PieceKind, join: LineJoin, cap: LineCap) -> u32 {
-  match (kind, join, cap) {
-    (PieceKind::Segment, ..) => SEGMENT_TRIANGLES,
-    (PieceKind::Join, LineJoin::Round, _) => ROUND_JOIN_TRIANGLES,
-    (PieceKind::Join, ..) => JOIN_TRIANGLES,
-    (PieceKind::StartCap | PieceKind::EndCap, _, LineCap::Butt) => 0,
-    (PieceKind::StartCap | PieceKind::EndCap, _, LineCap::Square) => SQUARE_CAP_TRIANGLES,
-    (PieceKind::StartCap | PieceKind::EndCap, _, LineCap::Round) => ROUND_CAP_TRIANGLES,
-  }
-}
-
-/// The pieces of a line of `n` filtered points, in the order they draw
-/// (into `out`, cleared first). Where each point sits in its line decides
-/// them, never where it is.
-pub(crate) fn piece_list(n: usize, closed: bool, cap: LineCap, out: &mut Vec<Piece>) {
-  out.clear();
-  let piece = |kind, point: usize| Piece {
-    kind,
-    point: point as u32,
-  };
-  if closed {
-    for i in 0..n {
-      out.push(piece(PieceKind::Segment, i));
-      out.push(piece(PieceKind::Join, (i + 1) % n));
-    }
-    return;
-  }
-  if n < 2 {
-    return;
-  }
-  let capped = cap != LineCap::Butt;
-  if capped {
-    out.push(piece(PieceKind::StartCap, 0));
-  }
-  for i in 0..n - 1 {
-    out.push(piece(PieceKind::Segment, i));
-    if i + 1 < n - 1 {
-      out.push(piece(PieceKind::Join, i + 1));
-    }
-  }
-  if capped {
-    out.push(piece(PieceKind::EndCap, n - 1));
-  }
-}
-
-/// `points` filtered into `out` as a line is copied (cleared first), and
-/// whether the line is still closed; `None` when it draws nothing.
-pub(crate) fn filter_points(
-  points: &[PolyPoint],
-  closed: bool,
-  out: &mut Vec<PolyPoint>,
-) -> Option<bool> {
-  out.clear();
-  for point in points {
-    if !point.pos.is_finite() || !point.half_width.is_finite() {
-      continue;
-    }
-    if out
-      .last()
-      .is_some_and(|last| last.pos.distance(point.pos) < 1e-4)
-    {
-      continue;
-    }
-    out.push(*point);
-  }
-  let mut closed = closed;
-  if closed
-    && out.len() > 2
-    && let (Some(first), Some(last)) = (out.first(), out.last())
-    && first.pos.distance(last.pos) < 1e-4
-  {
-    out.pop();
-  }
-  if out.len() < 3 {
-    closed = false;
-  }
-  if out.len() < 2 || out.iter().all(|point| point.half_width <= 0.0) {
-    return None;
-  }
-  Some(closed)
-}
-
 /// Triangles built on the CPU for the batch's triangle stream, and the line
 /// table their vertices name.
-#[cfg(test)]
 #[derive(Default)]
 pub(crate) struct Triangles {
   pub(crate) vertices: Vec<Vertex2D>,
@@ -514,14 +263,12 @@ pub(crate) struct Triangles {
   warned: bool,
 }
 
-#[cfg(test)]
 #[derive(Default)]
 struct Scratch {
   points: Vec<PolyPoint>,
   pieces: Vec<Piece>,
 }
 
-#[cfg(test)]
 impl Triangles {
   /// Forget every triangle and line, keeping the allocations.
   pub(crate) fn clear(&mut self) {
@@ -601,18 +348,8 @@ impl Triangles {
   }
 }
 
-/// How far a butt or square cap reaches past its end point.
-fn cap_reach(point: &PolyPoint, cap: LineCap) -> f32 {
-  if cap == LineCap::Square {
-    point.half_width
-  } else {
-    0.0
-  }
-}
-
 /// The points a piece at point `i` reads: `i − 2` to `i + reach`, wrapped
 /// on a closed line and absent past an open one's ends.
-#[cfg(test)]
 #[derive(Clone, Copy)]
 struct Window {
   points: [Option<PolyPoint>; 6],
@@ -621,7 +358,6 @@ struct Window {
   cap: LineCap,
 }
 
-#[cfg(test)]
 impl Window {
   fn of(pts: &[PolyPoint], i: usize, closed: bool, reach: i32) -> Self {
     let n = pts.len() as i32;
@@ -713,7 +449,6 @@ impl Window {
 /// The second edge a line's end measures, on the segment from `a` to `b`:
 /// the start cap's (`first`), the end cap's (`last`), or both as one strip
 /// along a two-point line; none for round caps.
-#[cfg(test)]
 fn end_second(
   a: &PolyPoint,
   b: &PolyPoint,
@@ -741,7 +476,6 @@ fn end_second(
 }
 
 /// A segment's direction and left-hand normal.
-#[cfg(test)]
 #[derive(Clone, Copy)]
 struct Segment {
   dir: Vec2,
@@ -749,7 +483,6 @@ struct Segment {
   len: f32,
 }
 
-#[cfg(test)]
 impl Segment {
   fn between(a: Vec2, b: Vec2) -> Self {
     let len = a.distance(b);
@@ -763,7 +496,6 @@ impl Segment {
 }
 
 /// What the corner function decides at a point.
-#[cfg(test)]
 #[derive(Clone, Copy)]
 enum Shape {
   /// An open line's end
@@ -777,7 +509,6 @@ enum Shape {
 
 /// A corner: its shape and the most it lets the quads before and after it
 /// push.
-#[cfg(test)]
 #[derive(Clone, Copy)]
 struct Joint {
   shape: Shape,
@@ -785,7 +516,6 @@ struct Joint {
   after: f32,
 }
 
-#[cfg(test)]
 impl Joint {
   /// The corner at point `j` of `window`: the one function every piece
   /// touching it asks.
@@ -817,7 +547,6 @@ impl Joint {
 }
 
 /// A second edge a vertex measures.
-#[cfg(test)]
 #[derive(Clone, Copy)]
 enum Bound {
   /// The distance inside an edge through `point` with outward normal `out`
@@ -827,7 +556,6 @@ enum Bound {
   Along { mid: Vec2, dir: Vec2 },
 }
 
-#[cfg(test)]
 #[derive(Clone, Copy)]
 struct Second {
   bound: Bound,
@@ -836,7 +564,6 @@ struct Second {
   k: f32,
 }
 
-#[cfg(test)]
 impl Second {
   fn edge(point: Vec2, out: Vec2, k: f32) -> Self {
     Self {
@@ -871,7 +598,6 @@ impl Second {
 
 /// What a vertex measures, in the line's units, and how the fringe pushes
 /// it.
-#[cfg(test)]
 #[derive(Clone, Copy)]
 struct Measure {
   dist: f32,
@@ -888,7 +614,6 @@ struct Measure {
   point_u: bool,
 }
 
-#[cfg(test)]
 impl Measure {
   /// On the edge of a strip of half width `half`, on the `side` (1 left, -1
   /// right) of its centre line of normal `normal`, pushed along `push` by at
@@ -933,7 +658,6 @@ impl Measure {
 }
 
 /// `v` measuring `second` where it is, as it is pushed.
-#[cfg(test)]
 fn measure_second(v: &mut Vertex2D, second: Second) {
   v.second = second.at(Vec2::from(v.position));
   v.second_rate = second.rate(v.push());
@@ -942,7 +666,6 @@ fn measure_second(v: &mut Vertex2D, second: Second) {
 }
 
 /// `v` as a vertex of a round piece, `offset` from its corner point.
-#[cfg(test)]
 fn set_round(v: &mut Vertex2D, offset: Vec2) {
   v.dist = offset.x;
   v.second = offset.y;
@@ -954,13 +677,11 @@ fn set_round(v: &mut Vertex2D, offset: Vec2) {
 
 /// The push that moves a point out across two edges of outward normals `a`
 /// and `b` one unit each per unit (`a` and `b` at most a right angle apart).
-#[cfg(test)]
 fn miter_of(a: Vec2, b: Vec2) -> Vec2 {
   (a + b) / (1.0 + a.dot(b))
 }
 
 /// How a corner turns: what its vertices and their pushes follow.
-#[cfg(test)]
 #[derive(Clone, Copy)]
 struct Turn {
   /// The outside of the turn, as a multiple of the normals
@@ -986,7 +707,6 @@ struct Turn {
   angle: f32,
 }
 
-#[cfg(test)]
 impl Turn {
   /// Where `before` meets `after` at a point of half width `hw`; `None`
   /// where the line runs straight on.
@@ -1081,14 +801,12 @@ impl Turn {
 
 /// The vertices at one end of a segment's quad: (left, right) by the
 /// normal, and the corner point where the inner side splits.
-#[cfg(test)]
 struct End {
   left: u32,
   right: u32,
   split: Option<u32>,
 }
 
-#[cfg(test)]
 struct Builder<'a> {
   out: &'a mut Triangles,
   window: Window,
@@ -1099,7 +817,6 @@ struct Builder<'a> {
   first: Option<u32>,
 }
 
-#[cfg(test)]
 impl Builder<'_> {
   fn join_kind(&self) -> LineJoin {
     self.style.join
@@ -1740,7 +1457,6 @@ impl Builder<'_> {
   }
 }
 
-#[cfg(test)]
 mod tests {
   use super::*;
   use crate::core::trail::{LineCap, LineJoin};
