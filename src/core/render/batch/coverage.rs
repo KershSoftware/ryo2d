@@ -27,9 +27,6 @@
 //! `two_edges_blend_by_their_angle` and
 //! `a_triangle_s_area_in_a_pixel_is_exact`.
 
-// The model and the reference are for the line tests
-#![allow(dead_code)]
-
 use glam::Vec2;
 
 /// Samples across a pixel, each way

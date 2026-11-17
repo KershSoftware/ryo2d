@@ -1757,20 +1757,25 @@ mod building {
       .as_chunks::<3>()
       .0
       .iter()
-      .map(|triangle| {
+      .filter_map(|triangle| {
         let corner = |i: u32| {
           triangles
             .corner(i)
             .map(|(corner, _)| corner)
             .unwrap_or_default()
         };
+        // A triangle a line piece leaves unused has no area and is left out
+        let [a, b, c] = triangle.map(|i| corner(i).0);
+        if (b - a).perp_dot(c - a) == 0.0 {
+          return None;
+        }
         let params = |i: u32| {
           triangles
             .corner(i)
             .map(|(_, params)| params)
             .unwrap_or_default()
         };
-        UiInstance::triangle(
+        Some(UiInstance::triangle(
           [
             corner(triangle[0]),
             corner(triangle[1]),
@@ -1778,7 +1783,7 @@ mod building {
           ],
           params(triangle[0]),
           clip,
-        )
+        ))
       })
       .collect();
     // Two segments and the wedge at their corner

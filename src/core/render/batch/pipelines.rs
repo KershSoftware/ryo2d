@@ -295,13 +295,34 @@ const INSTANCE_LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLay
   attributes: &INSTANCE_ATTRIBUTES,
 };
 
-/// A [`Vertex2D`]: position, UV, sRGB colour, its three distances, its
-/// push, its limit and the rise of its distance across, the fall of its
-/// second edge's with its angle across (one word), and its line, flags and
-/// the angle between its edges (one word).
-const VERTEX2D_ATTRIBUTES: [wgpu::VertexAttribute; 8] = wgpu::vertex_attr_array![
-  0 => Float32x2, 1 => Float32x2, 2 => Unorm8x4, 3 => Float32x3, 4 => Float16x2, 5 => Float16x2,
-  6 => Uint32, 7 => Uint32,
+/// The parts of a [`Vertex2D`] the line shader reads: position, UV, sRGB
+/// colour, its direction across and its line.
+const VERTEX2D_ATTRIBUTES: [wgpu::VertexAttribute; 5] = [
+  wgpu::VertexAttribute {
+    format: wgpu::VertexFormat::Float32x2,
+    offset: std::mem::offset_of!(Vertex2D, position) as u64,
+    shader_location: 0,
+  },
+  wgpu::VertexAttribute {
+    format: wgpu::VertexFormat::Float32x2,
+    offset: std::mem::offset_of!(Vertex2D, uv) as u64,
+    shader_location: 1,
+  },
+  wgpu::VertexAttribute {
+    format: wgpu::VertexFormat::Unorm8x4,
+    offset: std::mem::offset_of!(Vertex2D, color) as u64,
+    shader_location: 2,
+  },
+  wgpu::VertexAttribute {
+    format: wgpu::VertexFormat::Float32x2,
+    offset: std::mem::offset_of!(Vertex2D, across) as u64,
+    shader_location: 6,
+  },
+  wgpu::VertexAttribute {
+    format: wgpu::VertexFormat::Uint32,
+    offset: std::mem::offset_of!(Vertex2D, line) as u64,
+    shader_location: 7,
+  },
 ];
 
 const VERTEX2D_LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLayout {

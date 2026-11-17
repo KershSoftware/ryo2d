@@ -19,7 +19,7 @@
 
 ## Shader
 
-`shaders/core/line.wgsl` (composed with the camera, colour and sampling includes) has `fs_main` and `fs_textured`. Style (Solid, Soft, Glow) and `TrailEffect` (Lightning, Noise, UvScroll, Ribbon) travel in each line's `params`, in the triangle stream's line table with its emission and a textured line's atlas slot (`render/batch/lines.rs`, `build_effect_params`; `LineInfo` in `render/batch/polyline.rs`), which the vertex stage reads by the line's number in each vertex; displacement moves a vertex along its `across` perpendicular, stored as an angle. Its vertex input reads the place, uv, sRGB colour (decoded to linear and multiplied by the emission there), the angle across and the line of `Vertex2D` (48 bytes; the rest are each vertex's edge distances and fringe push). Solid edges anti-alias by pixel coverage, so a one-pixel line stays solid.
+`shaders/core/line.wgsl` (composed with the camera, colour and sampling includes) has `fs_main` and `fs_textured`. Style (Solid, Soft, Glow) and `TrailEffect` (Lightning, Noise, UvScroll, Ribbon) travel in each line's `params`, in the triangle stream's line table with its emission and a textured line's atlas slot (`render/batch/lines.rs`, `build_effect_params`; `LineInfo` in `render/batch/polyline.rs`), which the vertex stage reads by the line's number in each vertex; displacement moves a vertex along its `across` perpendicular. Its vertex input reads the place, uv, sRGB colour (decoded to linear and multiplied by the emission there), the direction across and the line of `Vertex2D` (72 bytes of f32; the rest are each vertex's edge distances and fringe push). Solid edges anti-alias by pixel coverage, so a one-pixel line stays solid.
 
 ## Tips for AI Agents
 

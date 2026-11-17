@@ -1324,6 +1324,10 @@ fn build_line(build: &mut UiBuild, seen: &Seen, list: &mut DrawList, z: i32, pla
     ) else {
       continue;
     };
+    // A triangle a line piece leaves unused has no area and draws nothing
+    if (b.0 - a.0).perp_dot(c.0 - a.0) == 0.0 {
+      continue;
+    }
     let (min, max) = (a.0.min(b.0).min(c.0), a.0.max(b.0).max(c.0));
     let shown = placed
       .cull

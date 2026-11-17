@@ -28,21 +28,11 @@ struct LineVertex {
     @location(0) position: vec2<f32>,
     @location(1) uv: vec2<f32>,
     @location(2) color: vec4<f32>,
-    // The fall of the second edge's distance (low half) and the angle
-    // across, in 65535ths of a turn, or 65535 for none (high half)
-    @location(6) rate_across: u32,
-    // The line (low 20 bits), flags (4) and the angle between edges (8)
-    @location(7) packed: u32,
+    // The unit perpendicular effects displace along (zero: none)
+    @location(6) across: vec2<f32>,
+    // Its line's entry in the line table
+    @location(7) line: u32,
 };
-
-// The unit perpendicular effects displace along
-fn across_of(code: u32) -> vec2<f32> {
-    if code == 0xFFFFu {
-        return vec2<f32>(0.0, 0.0);
-    }
-    let angle = f32(code) / 65535.0 * 6.28318530718;
-    return vec2<f32>(cos(angle), sin(angle));
-}
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
@@ -118,10 +108,10 @@ fn ribbon_displacement(uv: vec2<f32>, amplitude: f32, frequency: f32, speed: f32
 fn vs_main(vertex: LineVertex) -> VertexOutput {
     var out: VertexOutput;
     var pos = vertex.position;
-    let line = lines[vertex.packed & 0xFFFFFu];
+    let line = lines[vertex.line];
     let params = line.params;
     let effect_type = u32(params[0]) & 0xFu;
-    let across = across_of(vertex.rate_across >> 16u);
+    let across = vertex.across;
 
     // Displacement effects move the vertex along its perpendicular
     if effect_type == 1u {
