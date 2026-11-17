@@ -256,7 +256,8 @@ fn fs_ui(in: UiOut) -> @location(0) vec4<f32> {
             // distance from the centre per pixel)
             let edge_dist = abs(in.uv.y - 0.5) * 2.0;
             let to_edge = (1.0 - edge_dist) / max(line_aa, 1e-4);
-            color = styled(in.color, edge_dist, in.params, clamp(to_edge + 0.5, 0.0, 1.0));
+            let shape = style_shape_at(line_style(in.params), edge_dist);
+            color = styled(in.color, shape, in.params, clamp(to_edge + 0.5, 0.0, 1.0));
         }
         default: {}
     }

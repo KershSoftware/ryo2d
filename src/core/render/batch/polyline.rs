@@ -102,6 +102,20 @@
 //!   closed line's seam too, where the arriving segment's texture `u` runs on
 //!   past the last point while point 0's starts again, and no crack or notch
 //!   opens under an effect.
+//! - **Limit: a displaced piece is sheared.** Its ends move along its
+//!   normal by different amounts, so its edges stay parallel and its
+//!   distances, measured at the vertices, are unchanged: across the line
+//!   along the normal (a column across a level line) it covers what it
+//!   covers undisplaced, the fringe moving with it (each column's summed
+//!   alpha within 0.6% of the undisplaced line's,
+//!   `a_displaced_line_keeps_its_coverage_across_it`), but across its slant
+//!   it draws narrower, and its edge's ramp shorter, by `L ÷ √(L² + Δ²)`
+//!   for a piece of length `L` whose ends move `Δ` apart: 98% on average
+//!   and 91% at the steepest piece of a moderate Lightning or Ribbon line,
+//!   62% on average and 34% at the steepest of a Ribbon as steep as the
+//!   trails demo's. Widening a piece by its slant would need the
+//!   neighbouring points' displacement at every vertex and would part a
+//!   corner's copies (a join borders two slants), so it is left.
 //! - **A bevel is a fan each side.** From the corner point through copies of
 //!   the shared inner vertex (when the segments share it) and of the strip's
 //!   elbow, to the bevel's middle: every triangle touching the elbow

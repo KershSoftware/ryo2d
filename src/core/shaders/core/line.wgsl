@@ -13,7 +13,9 @@
 // Every pixel is covered by its distances to the line's edges in the
 // image's pixels (no derivative); the coverage multiplies the straight
 // alpha of every style, and Soft and Glow shape by the distance over the
-// half width (`batch/line_cover_tests.rs`).
+// half width, averaged over the pixel; a Soft or Glow line under half a
+// pixel in half width covers as one of half a pixel, dimmed
+// (`batch/line_cover_tests.rs`).
 
 @group(1) @binding(0) var line_texture: texture_2d<f32>;
 @group(1) @binding(1) var line_sampler: sampler;
@@ -182,7 +184,9 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VertexOutput {
     let across = vertex.across;
 
     // Displacement effects move the vertex along its perpendicular
-    // by their own `u` (a corner point's copies by the point's)
+    // by their own `u` (a corner point's copies by the point's). A piece
+    // whose ends move apart is sheared, its distances unchanged, so it
+    // draws narrower across its slant (`polyline.rs`, the shear's limit)
     let along = vec2<f32>(vertex.effect_u, vertex.uv.y);
     if effect_type == 1u {
         pos += across * lightning_displacement(along.x, params[1], params[2], params[3], globals.real_time);
@@ -235,20 +239,21 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VertexOutput {
 
 // ========== Fragment Shaders ==========
 
-// How much of the pixel the line covers: each edge's distance in the
-// image's pixels through a one-pixel box, two edges blended by their angle
-fn line_cover(in: VertexOutput) -> f32 {
+// How much of the pixel a line of half width `half` covers: each edge's
+// distance in the image's pixels through a one-pixel box, two edges blended
+// by their angle
+fn line_cover(in: VertexOutput, half: f32) -> f32 {
     let ppu = globals.px_per_unit;
     if ppu <= 0.0 {
         return 1.0;
     }
     if (in.flags & LINE_FLAG_ROUND) != 0u {
-        return clamp((in.measure.z - length(in.measure.xy)) * ppu + 0.5, 0.0, 1.0);
+        return clamp((half - length(in.measure.xy)) * ppu + 0.5, 0.0, 1.0);
     }
     var across = 1.0;
     if in.measure.z < LINE_NO_EDGE * 0.5 {
         let d = in.measure.x * ppu;
-        let hw = in.measure.z * ppu;
+        let hw = half * ppu;
         across = clamp(min(d + 0.5, hw) - max(d - 0.5, -hw), 0.0, 1.0);
     }
     if (in.flags & LINE_FLAG_SECOND) == 0u {
@@ -282,9 +287,36 @@ fn line_edge(in: VertexOutput) -> f32 {
     return abs(in.measure.x) / in.measure.z;
 }
 
+// What the line gives a pixel: its coverage, and Soft's and Glow's shape
+struct LinePixel {
+    cover: f32,
+    shape: vec2<f32>,
+};
+
+// A Soft or Glow line under half a pixel in half width covers the pixels
+// one of half a pixel would, dimmed by the ratio of their widths, so it
+// stays whole wherever it lies, and its shape is averaged over each pixel
+// (`style_shape`). Solid takes its own coverage, which stays whole as it is
+fn line_pixel(in: VertexOutput) -> LinePixel {
+    let style = line_style(in.params);
+    let ppu = globals.px_per_unit;
+    let half = in.measure.z;
+    if style == LINE_SOLID || ppu <= 0.0 || half <= 0.0 || half >= LINE_NO_EDGE * 0.5 {
+        return LinePixel(line_cover(in, half), style_shape_at(style, line_edge(in)));
+    }
+    let hw = half * ppu;
+    let covered = max(hw, 0.5);
+    var d = abs(in.measure.x) * ppu;
+    if (in.flags & LINE_FLAG_ROUND) != 0u {
+        d = length(in.measure.xy) * ppu;
+    }
+    return LinePixel(line_cover(in, covered / ppu) * (hw / covered), style_shape(style, d, hw));
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    return ui_out(styled(in.color, line_edge(in), in.params, line_cover(in)));
+    let pixel = line_pixel(in);
+    return ui_out(styled(in.color, pixel.shape, in.params, pixel.cover));
 }
 
 @fragment
@@ -294,5 +326,6 @@ fn fs_textured(in: VertexOutput) -> @location(0) vec4<f32> {
     let ddy = dpdy(in.uv);
     let texel = sample_wrapped(line_texture, line_sampler, in.uv, in.bounds, ddx, ddy);
     let texture = vec4<f32>(srgb_to_linear(texel.rgb), texel.a);
-    return ui_out(styled(texture * in.color, line_edge(in), in.params, line_cover(in)));
+    let pixel = line_pixel(in);
+    return ui_out(styled(texture * in.color, pixel.shape, in.params, pixel.cover));
 }

@@ -1642,8 +1642,9 @@ fn light_above_white_survives_until_the_tonemap() {
 
 #[test]
 fn a_glowing_line_over_white_keeps_its_look() {
-  let scene = Fixture::new(|ctx| {
-    let image = solid(ctx, 64, [255, 255, 255, 255]);
+  // A glowing line over a grey of `below`
+  fn glow_over(ctx: &mut SceneContext, below: u8) {
+    let image = solid(ctx, 64, [below, below, below, 255]);
     ctx.world.spawn((
       Transform::from_xy(0.0, 0.0),
       Renderable::image(image)
@@ -1654,18 +1655,25 @@ fn a_glowing_line_over_white_keeps_its_look() {
       .with_style(TrailStyle::Glow)
       .with_fade(false)
       .with_lighting(false);
-    // Through the centres of pixel row 31, where the glow's core is whole
-    // (it shapes by the true distance from the centre line)
+    // Through the centres of pixel row 31, the glow's core
     trail.populate_line(4.0, 31.5, 60.0, 31.5, 8);
     ctx.world.spawn((Transform::from_xy(0.0, 0.0), trail));
-  });
-  let Some(frame) = frame_of(scene, (64, 64)) else {
+  }
+  let core_red = |scene| frame_of(scene, (64, 64)).map(|frame| frame.get_pixel(32, 31).0[0]);
+  let (Some(over_white), Some(over_black)) = (
+    core_red(Fixture::new(|ctx| glow_over(ctx, 255))),
+    core_red(Fixture::new(|ctx| glow_over(ctx, 0))),
+  ) else {
     return;
   };
-  // Glow alpha peaks above 1; it must not subtract from what is below
-  let red = frame.get_pixel(32, 31).0[0];
-  // 0.127 (the decoded 100) times the glow core's 1.94, over white's 1.0
-  assert!(red.abs_diff(136) <= 1, "core red {red}");
+  // Glow alpha peaks above 1 at the core, which hides what is below
+  // whole; above 1 it must not subtract from it, so the core is the same
+  // over white as over black (0.127, the decoded 100, times the core's
+  // brightness and alpha, about 1.7 averaged over its pixel)
+  assert!(
+    over_white.abs_diff(over_black) <= 1 && over_white > 110,
+    "core red {over_white} over white, {over_black} over black"
+  );
 }
 
 #[test]

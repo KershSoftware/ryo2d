@@ -418,6 +418,18 @@ impl Inner {
       edges: [(p - side * n0 * hw, n0), (p - side * n1 * hw, n1)],
     })
   }
+
+  /// A split corner's point `p`, between segments along `d0` then `d1`:
+  /// the zone's lines are through `p` across each segment (the directions
+  /// themselves as their normals, not the segments' normals), so it holds
+  /// the patch about `p` within a pixel along both segments, where the
+  /// two segments' cut ends cross
+  fn split_point(p: Vec2, d0: Vec2, d1: Vec2) -> Self {
+    Self {
+      at: p,
+      edges: [(p, d0), (p, d1)],
+    }
+  }
 }
 
 /// A split corner's inside, where its two strips overlap, unmeasured
@@ -560,10 +572,7 @@ fn truth_cases() -> Vec<Case> {
                 closed: false,
                 around: vec![p],
                 reach: 3.0 * hw + 3.0,
-                inner: vec![Inner {
-                  at: p,
-                  edges: [(p, d0), (p, d1)],
-                }],
+                inner: vec![Inner::split_point(p, d0, d1)],
                 overlap: vec![Overlap {
                   at: p,
                   out,
@@ -792,6 +801,235 @@ fn a_half_pixel_line_draws_at_half_coverage_wherever_it_lies() {
   assert!((high - low) / 0.5 < 0.02, "{low} to {high}");
 }
 
+/// Each column's spread of its summed alpha over a run of placements, as a
+/// fraction of its mean: the worst column's, the least sum seen, and the
+/// mean sum over every column and placement
+fn column_spread(sums: &[Vec<f32>]) -> (f32, f32, f32) {
+  let columns = sums.first().map_or(0, Vec::len);
+  let (mut worst, mut least, mut total) = (0.0f32, f32::MAX, 0.0f32);
+  for c in 0..columns {
+    let (mut lo, mut hi, mut sum) = (f32::MAX, f32::MIN, 0.0f32);
+    for run in sums {
+      lo = lo.min(run[c]);
+      hi = hi.max(run[c]);
+      sum += run[c];
+    }
+    let mean = sum / sums.len() as f32;
+    worst = worst.max((hi - lo) / mean.max(1e-6));
+    least = least.min(lo);
+    total += mean;
+  }
+  (worst, least, total / columns.max(1) as f32)
+}
+
+#[test]
+fn thin_lines_stay_whole_and_steady_wherever_they_lie() {
+  // Solid, Soft and Glow lines a quarter of a pixel to one and a half in
+  // half width, level and at 30 degrees, moved by sixteenths of a pixel:
+  // every column's summed alpha away from the ends is never empty, and its
+  // spread over the moves is within 5% level; at 30 degrees within the strip
+  // model's own spread for a Solid line of the width covered (a Soft or Glow
+  // line covers at least half a pixel of half width), and a byte a pixel
+  let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+    return;
+  };
+  let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+  let painter = Painter::new(&device, &queue);
+  let size = (160u32, 96u32);
+  let centre = Vec2::new(80.0, 48.0);
+  const HALF_LENGTH: f32 = 70.0;
+  let mut failures = Vec::new();
+  for (name, look) in [("solid", SOLID), ("soft", SOFT), ("glow", GLOW)] {
+    for degrees in [0.0f32, 30.0] {
+      let dir = Vec2::from_angle(degrees.to_radians());
+      // The columns at least 4 px along from either end
+      let columns: Vec<u32> = (0..size.0)
+        .filter(|&x| ((x as f32 + 0.5 - centre.x) / dir.x).abs() <= HALF_LENGTH - 4.0)
+        .collect();
+      for hw in [0.25f32, 0.5, 1.0, 1.5] {
+        let covered = if look == SOLID { hw } else { hw.max(0.5) };
+        let (mut drawn, mut model) = (Vec::new(), Vec::new());
+        for k in 0..16u16 {
+          let middle = Vec2::new(centre.x, centre.y + 0.5 + f32::from(k) / 16.0);
+          let ends = [middle - dir * HALF_LENGTH, middle + dir * HALF_LENGTH];
+          let mut stream = LineStream::default();
+          let points = points_of(&ends, hw, Color::WHITE);
+          stream.polyline(&points, &style(LineJoin::Miter, LineCap::Butt, false, look));
+          let image = painter.paint(&device, &queue, &stream, (centre, 1.0), size, None);
+          drawn.push(columns.iter().map(|&x| summed(&image, x, true)).collect());
+          model.push(
+            columns
+              .iter()
+              .map(|&x| {
+                (0..size.1)
+                  .map(|y| {
+                    let at = world_of(x, y, centre, size) - middle;
+                    cover_strip(at.dot(dir.perp()), covered)
+                  })
+                  .sum::<f32>()
+              })
+              .collect(),
+          );
+        }
+        let (spread, least, mean) = column_spread(&drawn);
+        let (own, _, _) = column_spread(&model);
+        let limit = if degrees == 0.0 {
+          0.05
+        } else {
+          own.max(0.05) + 2.0 * (2.0 / 255.0) / mean
+        };
+        eprintln!(
+          "{name} {degrees}° hw {hw}: column sums from {least:.4}, mean {mean:.4}, spread {:.1}% (the model's {:.1}%, limit {:.1}%)",
+          spread * 100.0,
+          own * 100.0,
+          limit * 100.0
+        );
+        if least <= 0.0 || spread > limit {
+          failures.push(format!(
+            "{name} {degrees}° hw {hw}: least {least}, spread {spread} over {limit}"
+          ));
+        }
+      }
+    }
+  }
+  let error = pollster::block_on(scope.pop());
+  assert!(error.is_none(), "{error:?}");
+  assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// The value noise of `line.wgsl`, for the displacement a test expects
+fn value_noise(p: f32) -> f32 {
+  let hash = |p: f32| {
+    let mut q = (p * 0.1031).fract();
+    q *= q + 33.33;
+    q *= q + q;
+    q.fract()
+  };
+  let (i, f) = (p.floor(), p - p.floor());
+  let u = f * f * (3.0 - 2.0 * f);
+  hash(i) + (hash(i + 1.0) - hash(i)) * u
+}
+
+#[test]
+fn a_displaced_line_keeps_its_coverage_across_it() {
+  // Lightning and Ribbon lines across the image, Solid and a thin Glow,
+  // their vertices moved along their perpendicular: away from the ends no
+  // column is empty and each column's summed alpha stays within 3% of the
+  // undisplaced line's, the fringe moving with the vertices
+  let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+    return;
+  };
+  let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+  let painter = Painter::new(&device, &queue);
+  let size = (224u32, 128u32);
+  let centre = Vec2::new(112.0, 64.0);
+  let count = 97;
+  let ends = (16.0f32, 208.0f32);
+  let row = 64.5;
+  let points: Vec<Vec2> = (0..count)
+    .map(|i| {
+      Vec2::new(
+        ends.0 + (ends.1 - ends.0) * i as f32 / (count - 1) as f32,
+        row,
+      )
+    })
+    .collect();
+  let columns: Vec<u32> = (24..200).collect();
+  // Its displacement at `u` (`lightning_displacement`, `ribbon_displacement`
+  // at time 0)
+  let lightning = |u: f32, jitter: f32| {
+    (0..3)
+      .map(|i| {
+        let (amp, freq) = (jitter / 2f32.powi(i), 4.0 * 2f32.powi(i));
+        (value_noise(u * freq + i as f32 * 17.0) * 2.0 - 1.0) * amp
+      })
+      .sum::<f32>()
+  };
+  let ribbon = |u: f32, amplitude: f32, frequency: f32| {
+    let tau = std::f32::consts::TAU;
+    ((u * frequency * tau).sin() * 0.7 + (u * frequency * 1.618 * tau).sin() * 0.3) * amplitude
+  };
+  let mut failures = Vec::new();
+  for (name, look, hw, effect) in [
+    ("lightning solid", SOLID, 2.0f32, [1.0, 6.0, 0.0, 3.0]),
+    ("lightning glow", GLOW, 1.0, [1.0, 6.0, 0.0, 3.0]),
+    ("ribbon solid", SOLID, 2.0, [4.0, 6.0, 2.0, 0.0]),
+    // As steep as the trails demo's ribbon
+    ("steep ribbon solid", SOLID, 2.0, [4.0, 12.0, 6.0, 0.0]),
+  ] {
+    let mut sums = Vec::new();
+    for displaced in [false, true] {
+      let mut line_style = style(LineJoin::Miter, LineCap::Butt, false, look);
+      if displaced {
+        line_style.params = [effect[0] + look, effect[1], effect[2], effect[3]];
+      }
+      let mut stream = LineStream::default();
+      stream.polyline(&points_of(&points, hw, Color::WHITE), &line_style);
+      let image = painter.paint(&device, &queue, &stream, (centre, 1.0), size, None);
+      sums.push(
+        columns
+          .iter()
+          .map(|&x| summed(&image, x, true))
+          .collect::<Vec<f32>>(),
+      );
+    }
+    let (plain, moved) = (&sums[0], &sums[1]);
+    let mut worst = (0.0f32, 0u32);
+    for (c, &x) in columns.iter().enumerate() {
+      let off = (moved[c] - plain[c]).abs() / plain[c];
+      if off > worst.0 {
+        worst = (off, x);
+      }
+      if moved[c] <= 0.0 || off > 0.03 {
+        failures.push(format!(
+          "{name} column {x}: {} against {}",
+          moved[c], plain[c]
+        ));
+      }
+    }
+    // How much the shear between a piece's ends narrows it: the drawn width
+    // across the moved line, against the line's
+    let shift = |u: f32| {
+      if effect[0] == 1.0 {
+        lightning(u, effect[1])
+      } else {
+        ribbon(u, effect[1], effect[2])
+      }
+    };
+    let (mut along, mut path, mut narrowest) = (0.0f32, 0.0f32, 1.0f32);
+    for i in 0..count - 1 {
+      let (a, b) = (points[i], points[i + 1]);
+      if a.x < columns[0] as f32 || b.x > columns[columns.len() - 1] as f32 + 1.0 {
+        continue;
+      }
+      let (u0, u1) = (
+        i as f32 / (count - 1) as f32,
+        (i + 1) as f32 / (count - 1) as f32,
+      );
+      let length = b.x - a.x;
+      let slanted = length.hypot(shift(u1) - shift(u0));
+      along += length;
+      path += slanted;
+      narrowest = narrowest.min(length / slanted);
+    }
+    eprintln!(
+      "{name}: column sums within {:.2}% of the undisplaced line's (column {}); the moved line drawn {:.0}% as wide on average, {:.0}% at the steepest piece",
+      worst.0 * 100.0,
+      worst.1,
+      along / path * 100.0,
+      narrowest * 100.0
+    );
+  }
+  let error = pollster::block_on(scope.pop());
+  assert!(error.is_none(), "{error:?}");
+  assert!(
+    failures.is_empty(),
+    "{} columns off:\n{}",
+    failures.len(),
+    failures[..failures.len().min(30)].join("\n")
+  );
+}
+
 #[test]
 fn a_translucent_corner_is_no_darker_than_its_segments() {
   // Half-transparent lines turning at every sharpness, every join, and a
@@ -857,11 +1095,45 @@ fn smoothstep(low: f32, high: f32, x: f32) -> f32 {
   t * t * (3.0 - 2.0 * t)
 }
 
+/// Soft's or Glow's alpha at `edge`, the distance from the centre line over
+/// the half width
+fn shape_at(look: f32, edge: f32) -> f32 {
+  if look == SOFT {
+    1.0 - smoothstep(0.7, 1.0, edge)
+  } else {
+    let core = 1.0 - smoothstep(0.0, 0.3, edge);
+    let halo = 1.0 - smoothstep(0.3, 1.0, edge);
+    core + halo * 0.3
+  }
+}
+
+/// Soft's or Glow's alpha over a pixel `d` pixels from the centre line of a
+/// line `hw` pixels in half width: the shape averaged over the part of the
+/// pixel's box the line covers (summed in fine steps), toward its mean over
+/// the width as the half width falls from 3 pixels to 1
+fn shape_over_pixel(look: f32, d: f32, hw: f32) -> f32 {
+  let mean = if look == SOFT { 0.85 } else { 0.345 };
+  let (lo, hi) = ((d - 0.5).max(-hw), (d + 0.5).min(hw));
+  let boxed = if hi > lo {
+    const STEPS: usize = 4000;
+    let step = (hi - lo) / STEPS as f32;
+    (0..STEPS)
+      .map(|i| shape_at(look, (lo + (i as f32 + 0.5) * step).abs() / hw))
+      .sum::<f32>()
+      / STEPS as f32
+  } else {
+    mean
+  };
+  mean + (boxed - mean) * ((hw - 1.0) / 2.0).clamp(0.0, 1.0)
+}
+
 #[test]
 fn soft_and_glow_shape_by_the_distance_over_the_half_width() {
   // A wide straight line, row by row across it: Soft fades over its outer
-  // 30% and Glow is a core and a halo, each by the pixel's true distance
-  // from the centre over the half width, times the pixel's coverage
+  // 30% and Glow is a core and a halo, each by the true distance from the
+  // centre over the half width, averaged over the part of the pixel the
+  // line covers (and toward its mean below 3 pixels of half width), times
+  // the pixel's coverage
   let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
     return;
   };
@@ -872,7 +1144,7 @@ fn soft_and_glow_shape_by_the_distance_over_the_half_width() {
   let mut failures = Vec::new();
   let mut worst = (0.0f32, String::new());
   for (name, look) in [("soft", SOFT), ("glow", GLOW)] {
-    for (hw, y_centre) in [(8.0f32, 32.5), (5.25, 31.8)] {
+    for (hw, y_centre) in [(8.0f32, 32.5), (5.25, 31.8), (2.0, 32.3)] {
       let mut stream = LineStream::default();
       let ends = [Vec2::new(4.0, y_centre), Vec2::new(60.0, y_centre)];
       let points = points_of(&ends, hw, Color::WHITE);
@@ -880,15 +1152,7 @@ fn soft_and_glow_shape_by_the_distance_over_the_half_width() {
       let image = painter.paint(&device, &queue, &stream, (centre, 1.0), size, None);
       for y in 0..size.1 {
         let d = (world_of(32, y, centre, size).y - y_centre).abs();
-        let edge = d / hw;
-        let shape = if look == SOFT {
-          1.0 - smoothstep(0.7, 1.0, edge)
-        } else {
-          let core = 1.0 - smoothstep(0.0, 0.3, edge);
-          let halo = 1.0 - smoothstep(0.3, 1.0, edge);
-          core + halo * 0.3
-        };
-        let want = (shape * cover_strip(d, hw)).min(1.0);
+        let want = (shape_over_pixel(look, d, hw) * cover_strip(d, hw)).min(1.0);
         let got = alpha(&image, 32, y);
         let off = (got - want).abs();
         let what = format!("{name} hw {hw} row {y} (d {d}): {got} against {want}");
@@ -907,11 +1171,21 @@ fn soft_and_glow_shape_by_the_distance_over_the_half_width() {
   assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
+/// Where a column of `a_textured_line_s_texture_runs_on_across_the_fringe`
+/// runs: along a segment, through a join's corner point, through a cap
+#[derive(Clone, Copy)]
+enum Through {
+  Segment,
+  Join,
+  Cap,
+}
+
 #[test]
 fn a_textured_line_s_texture_runs_on_across_the_fringe() {
   // A texture whose rows count up drawn across a wide line: every pixel
   // inside the line reads the row of its true distance across (v = 0.5 -
-  // 0.5 d ÷ hw), so the fringe does not squeeze the texture into the line
+  // 0.5 d ÷ hw), so the fringe does not squeeze the texture into the line,
+  // along a segment, through a miter and a round join, and in a round cap
   let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
     return;
   };
@@ -923,16 +1197,42 @@ fn a_textured_line_s_texture_runs_on_across_the_fringe() {
   let mut failures = Vec::new();
   let mut worst = (0.0f32, String::new());
   for (hw, y_centre) in [(8.0f32, 32.5), (6.5, 31.75)] {
-    for join in [LineJoin::Miter, LineJoin::Round] {
+    // A 30° bend at x 32, its join's wedge on the side before the line
+    // (d < 0), and a line ending at x 40 in a round cap
+    let corner = Vec2::new(32.0, y_centre);
+    let bent = vec![
+      Vec2::new(-20.0, y_centre),
+      corner,
+      Vec2::new(84.0, y_centre + 30.0),
+    ];
+    let end = Vec2::new(40.0, y_centre);
+    let capped = vec![Vec2::new(-20.0, y_centre), end];
+    for (what, ends, join, cap, columns) in [
+      (
+        "miter",
+        bent.clone(),
+        LineJoin::Miter,
+        LineCap::Butt,
+        vec![(16, Through::Segment), (32, Through::Join)],
+      ),
+      (
+        "round join",
+        bent,
+        LineJoin::Round,
+        LineCap::Butt,
+        vec![(16, Through::Segment), (32, Through::Join)],
+      ),
+      (
+        "round cap",
+        capped,
+        LineJoin::Miter,
+        LineCap::Round,
+        vec![(44, Through::Cap)],
+      ),
+    ] {
       let mut stream = LineStream::default();
-      // A gentle bend, so a join's pieces are drawn too
-      let ends = [
-        Vec2::new(-20.0, y_centre),
-        Vec2::new(32.0, y_centre),
-        Vec2::new(84.0, y_centre + 3.0),
-      ];
       let points = points_of(&ends, hw, Color::WHITE);
-      stream.polyline(&points, &style(join, LineCap::Butt, false, SOLID));
+      stream.polyline(&points, &style(join, cap, false, SOLID));
       let image = painter.paint(
         &device,
         &queue,
@@ -941,23 +1241,35 @@ fn a_textured_line_s_texture_runs_on_across_the_fringe() {
         size,
         Some(&texture),
       );
-      // Left of the bend, where the line runs straight along x
-      let x = 16;
-      for y in 0..size.1 {
-        let d = world_of(x, y, centre, size).y - y_centre;
-        if d.abs() > hw - 0.5 {
-          continue;
-        }
-        let v = 0.5 - 0.5 * d / hw;
-        let want = (v * 256.0 - 0.5).clamp(0.0, 255.0);
-        let got = f32::from(image.get_pixel(x, y).0[0]);
-        let off = (got - want).abs();
-        let what = format!("hw {hw} {join:?} row {y} (d {d}): red {got} against {want}");
-        if off > worst.0 {
-          worst = (off, what.clone());
-        }
-        if off > 2.0 {
-          failures.push(what);
+      // Left of the bend, where the line runs straight along x: v by the
+      // distance across. Through the corner point on the wedge's side,
+      // where the join reaches out: by the distance from the corner. Past
+      // the end, through the round cap: across, as along a segment. Each
+      // round piece's `uv.y` extrapolated over the fringe with its offset
+      for (x, through) in columns {
+        for y in 0..size.1 {
+          let at = world_of(x, y, centre, size);
+          let d = at.y - y_centre;
+          let (reach, across) = match through {
+            Through::Segment => (d.abs(), d),
+            Through::Join if d <= -1.0 => (at.distance(corner), -at.distance(corner)),
+            Through::Join => continue,
+            Through::Cap => (at.distance(end), d),
+          };
+          if reach > hw - 0.5 {
+            continue;
+          }
+          let v = 0.5 - 0.5 * across / hw;
+          let want = (v * 256.0 - 0.5).clamp(0.0, 255.0);
+          let got = f32::from(image.get_pixel(x, y).0[0]);
+          let off = (got - want).abs();
+          let what = format!("hw {hw} {what} column {x} row {y} (d {d}): red {got} against {want}");
+          if off > worst.0 {
+            worst = (off, what.clone());
+          }
+          if off > 2.0 {
+            failures.push(what);
+          }
         }
       }
     }
