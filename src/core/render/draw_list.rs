@@ -11,6 +11,7 @@ use crate::core::ecs::Entity;
 use crate::core::ecs::Vec2;
 use std::ops::Range;
 
+use crate::core::graphics::camera_gpu::pixels_per_unit;
 use crate::core::graphics::{GlyphPage, RenderLayers, RenderTarget, SpriteInstance, TextureId};
 
 /// What a drawable is, which breaks ties between equal z (in declaration order).
@@ -119,8 +120,8 @@ pub(crate) struct DrawSprite {
   pub(crate) max: Vec2,
 }
 
-/// A trail or line waiting to be drawn: its triangles in the batch's
-/// triangle stream.
+/// A trail or line waiting to be drawn: its triangles in the batch's line
+/// stream (or, for a UI line, in the CPU builder's).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct DrawTriangles {
   /// The texture along it (textured trails)
@@ -129,12 +130,14 @@ pub(crate) struct DrawTriangles {
   pub(crate) filter: Filter,
   /// The cameras on these layers draw it
   pub(crate) layers: RenderLayers,
-  /// The world box it stays inside
+  /// The world box it stays inside, but for the fringe
   pub(crate) min: Vec2,
   pub(crate) max: Vec2,
+  /// Its triangles' corners, three a triangle: vertices of the line
+  /// stream's codes (indices of the CPU builder's)
   pub(crate) indices: Range<u32>,
-  /// Its entry in the triangle stream's line table (a textured one is told
-  /// its atlas slot there when placed)
+  /// Its entry in the line table (a textured one is told its atlas slot
+  /// there when placed)
   pub(crate) line: u32,
 }
 
@@ -592,8 +595,13 @@ impl DrawList {
           && (sprite.shows.is_none() || sprite.shows != camera.target)
       }),
       DrawPayload::Triangles(index) => self.triangles.get(index).is_some_and(|triangles| {
+        // Grown by one of the camera's pixels, which the fringe pushes out
+        let ppu = pixels_per_unit(&camera.view, camera.rect.size());
+        let pixel = Vec2::splat(if ppu > 0.0 { 1.0 / ppu } else { 0.0 });
         triangles.layers.intersects(&camera.layers)
-          && camera.view.is_visible(triangles.min, triangles.max)
+          && camera
+            .view
+            .is_visible(triangles.min - pixel, triangles.max + pixel)
       }),
       DrawPayload::Glyph(index) => self.glyphs.get(index).is_some_and(|glyph| {
         glyph.layers.intersects(&camera.layers) && camera.view.is_visible(glyph.min, glyph.max)

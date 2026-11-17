@@ -20,7 +20,23 @@ pub(crate) struct CameraGlobals {
   real_time: f32,
   /// 1.0 when axis-aligned sprites snap to whole pixels (pixel art)
   snap: f32,
-  _pad: [f32; 3],
+  /// The camera image's pixels per world unit (lines push their fringe a
+  /// pixel out and measure their edges in pixels by it)
+  px_per_unit: f32,
+  _pad: [f32; 2],
+}
+
+/// `view`'s pixels per world unit in its camera's image of `image_size`:
+/// its scale times the image's size over the view's (one figure: 2D cameras
+/// scale alike both ways, and a fraction of a pixel's difference a fitted
+/// viewport's rounding makes is ignored); 0 when it has none.
+pub(crate) fn pixels_per_unit(view: &CameraView, image_size: (u32, u32)) -> f32 {
+  let ppu = view.scale * image_size.0 as f32 / view.rect_size.x;
+  if ppu.is_finite() && ppu > 0.0 {
+    ppu
+  } else {
+    0.0
+  }
 }
 
 impl CameraGlobals {
@@ -37,7 +53,8 @@ impl CameraGlobals {
       game_time,
       real_time,
       snap: if snap { 1.0 } else { 0.0 },
-      _pad: [0.0; 3],
+      px_per_unit: pixels_per_unit(view, image_size),
+      _pad: [0.0; 2],
     }
   }
 }

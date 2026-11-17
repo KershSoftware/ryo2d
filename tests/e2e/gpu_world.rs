@@ -1682,6 +1682,175 @@ fn a_line_shows_the_colour_it_names() {
   assert!(pixel[0].abs_diff(128) <= 1, "{pixel:?}");
 }
 
+/// The sRGB byte a white line shows where it covers `cover` of a pixel
+/// whose background shows `background`
+fn white_over(cover: f32, background: u8) -> u8 {
+  let b = background as f32 / 255.0;
+  let below = if b <= 0.040_45 {
+    b / 12.92
+  } else {
+    ((b + 0.055) / 1.055).powf(2.4)
+  };
+  let cover = cover.clamp(0.0, 1.0);
+  let c = cover + (1.0 - cover) * below;
+  let encoded = if c <= 0.003_130_8 {
+    12.92 * c
+  } else {
+    1.055 * c.powf(1.0 / 2.4) - 0.055
+  };
+  (encoded * 255.0).round() as u8
+}
+
+/// A one-pixel box's overlap with a strip of half width `hw` whose centre
+/// line is `d` away (both in pixels)
+fn strip_cover(d: f32, hw: f32) -> f32 {
+  ((d + 0.5).min(hw) - (d - 0.5).max(-hw)).clamp(0.0, 1.0)
+}
+
+#[test]
+fn the_fringe_is_one_pixel_of_the_image_drawn() {
+  // A white line 1.75 pixels of its image each side of its centre, which
+  // lies on a row's middle: the rows two away, whose centres lie a quarter
+  // pixel past its edge, show a quarter cover. They are drawn only when the
+  // fringe reaches a pixel of that image past the edge, and covered by a
+  // quarter only when the distances are counted in its pixels
+  struct Case {
+    name: &'static str,
+    builder: fn() -> EngineBuilder,
+    /// Where the line's centre row and the column read are in the frame
+    row: u32,
+    column: u32,
+  }
+  struct ImageCamera;
+  impl Scene for ImageCamera {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
+      ctx.look().tonemap = Tonemap::Clamp;
+      // Seen at zoom 2 by a camera drawing into a 32 x 32 image, shown
+      // pixel for pixel by a sprite over the frame's 16..48
+      let target = ctx.render_targets().create(32, 32);
+      ctx.world.spawn((
+        Transform::from_xy(1000.0, 1000.0),
+        Camera2d {
+          target: CameraTarget::Texture(target),
+          zoom: 2.0,
+          ..Default::default()
+        },
+      ));
+      ctx.world.spawn((
+        Transform::from_xy(32.0, 32.0),
+        Renderable::render_target(target),
+      ));
+      ctx.world.spawn((
+        Transform::from_xy(0.0, 0.0),
+        Line2D::horizontal(1000.25, 980.0, 1020.0, Color::WHITE, 1.75),
+      ));
+    }
+  }
+  struct Turned;
+  impl Scene for Turned {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
+      ctx.look().tonemap = Tonemap::Clamp;
+      let angle = 0.3f32;
+      ctx.camera().set_position(32.0, 16.0);
+      ctx.camera().set_rotation(angle);
+      // Along the camera's x axis, half a pixel below its centre
+      let turn = Vec2::from_angle(angle);
+      let at = |x: f32, y: f32| Vec2::new(32.0, 16.0) + turn.rotate(Vec2::new(x, y));
+      ctx.world.spawn((
+        Transform::from_xy(0.0, 0.0),
+        Line2D::segment(at(-40.0, 0.5), at(40.0, 0.5), Color::WHITE, 3.5),
+      ));
+    }
+  }
+  struct Fitted;
+  impl Scene for Fitted {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
+      ctx.look().tonemap = Tonemap::Clamp;
+      // 64 x 32 world units over a 96 x 48 image: 1.5 pixels a unit
+      ctx.camera().set_projection(Projection::Fit {
+        width: 64.0,
+        height: 32.0,
+      });
+      ctx.camera().set_position(32.0, 16.0);
+      ctx.world.spawn((
+        Transform::from_xy(0.0, 0.0),
+        Line2D::horizontal(16.0 + 1.0 / 3.0, -10.0, 74.0, Color::WHITE, 7.0 / 3.0),
+      ));
+    }
+  }
+  let cases = [
+    Case {
+      name: "a camera drawing into an image",
+      builder: || {
+        EngineBuilder::new()
+          .resolution(64, 64)
+          .start_scene(ImageCamera)
+      },
+      row: 32,
+      column: 32,
+    },
+    Case {
+      name: "a turned camera",
+      builder: || EngineBuilder::new().resolution(64, 32).start_scene(Turned),
+      row: 16,
+      column: 32,
+    },
+    Case {
+      name: "a fitted view at 1.5",
+      builder: || EngineBuilder::new().resolution(96, 48).start_scene(Fitted),
+      row: 24,
+      column: 48,
+    },
+  ];
+  for case in cases {
+    let Some(mut engine) = start((case.builder)()) else {
+      return;
+    };
+    engine.step_frames(2).unwrap();
+    let frame = engine.frame().unwrap();
+    let background = frame.get_pixel(case.column, case.row + 6).0[0];
+    for offset in -3i32..=3 {
+      let y = (case.row as i32 + offset) as u32;
+      let shown = frame.get_pixel(case.column, y).0[0];
+      let expected = white_over(strip_cover(offset.abs() as f32, 1.75), background);
+      assert!(
+        shown.abs_diff(expected) <= 3,
+        "{}: row {offset} from the centre shows {shown}, not {expected}",
+        case.name
+      );
+    }
+  }
+}
+
+#[test]
+fn a_miter_tip_reaching_into_view_is_drawn() {
+  // A sharp corner just left of the view, 20 wide: its miter's tip reaches
+  // 3.6 half widths, 36 units, to the right of the corner, about 21 into
+  // the view, while its points and their half widths stay out of it
+  let scene = Fixture::new(|ctx| {
+    let corner = Vec2::new(-15.0, 32.0);
+    let back = |angle: f32| corner + Vec2::from_angle(angle) * 100.0;
+    let half = 16.0f32.to_radians();
+    ctx.world.spawn((
+      Transform::from_xy(0.0, 0.0),
+      Line2D::new(
+        vec![
+          back(std::f32::consts::PI - half),
+          corner,
+          back(std::f32::consts::PI + half),
+        ],
+        Color::new(0, 255, 0, 255),
+        20.0,
+      ),
+    ));
+  });
+  let Some(frame) = frame_of(scene, (64, 64)) else {
+    return;
+  };
+  let pixel = frame.get_pixel(8, 32).0;
+  assert!(is_line(pixel), "{pixel:?}");
+}
+
 // ---------------------------------------------------------------------------
 // Mirrored transforms
 // ---------------------------------------------------------------------------

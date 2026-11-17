@@ -1,16 +1,13 @@
 // The line style: shading across a line's width
 
-// `color` shaded across the line by its style, premultiplied by alpha
-fn styled(color_in: vec4<f32>, uv: vec2<f32>, params: vec4<f32>, aa: f32) -> vec4<f32> {
+// `color` shaded across the line by its style, premultiplied by alpha;
+// `cover` is how much of the pixel a solid line covers
+fn styled(color_in: vec4<f32>, uv: vec2<f32>, params: vec4<f32>, cover: f32) -> vec4<f32> {
     let style = (u32(params[0]) >> 4u) & 0x3u;
     let edge_dist = abs(uv.y - 0.5) * 2.0;
     var color = color_in;
     if style == 0u {
-        // Solid: how much of the pixel the line covers, ramping over the
-        // pixel its edge crosses (`aa` is edge_dist per pixel), so a line
-        // one pixel wide stays solid
-        let to_edge = (1.0 - edge_dist) / max(aa, 1e-4);
-        color.a *= clamp(to_edge + 0.5, 0.0, 1.0);
+        color.a *= cover;
     } else if style == 1u {
         // Soft edges
         color.a *= 1.0 - smoothstep(0.7, 1.0, edge_dist);

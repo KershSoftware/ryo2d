@@ -5,6 +5,8 @@ mod chunks;
 mod coverage;
 mod gpu;
 mod key;
+#[cfg(test)]
+mod line_gpu_tests;
 mod lines;
 mod mesh;
 mod pipelines;
@@ -18,7 +20,7 @@ pub(crate) use chunks::{
 pub(crate) use gpu::{Batch2D, Bound, unit_quad};
 pub(crate) use key::{BatchShader, DrawState, LightStep, PageKind, Sampling, Stream};
 pub use key::{BlendMode, Filter};
-pub(crate) use lines::{LineLook, line_points, push_polyline, trail_points};
+pub(crate) use lines::{LineLook, LineStream, line_points, push_polyline, trail_points};
 pub(crate) use mesh::MeshStream;
 pub(crate) use pipelines::{QUAD_LAYOUT, shadow_layout, texture_layout};
 pub(crate) use plan::{Draw, DrawSource, Placed, plan_draws};

@@ -2,7 +2,7 @@
 name: ryo-renderer
 description: Working on the wgpu renderer, shaders, and GPU batching.
 metadata:
-  version: 2.7.0
+  version: 2.8.0
 ---
 
 # Ryo2D Renderer Specialist
@@ -37,7 +37,7 @@ The world is read fresh every frame; there is no render cache to invalidate. Eve
 5. One query over the renderables (plus `CompositeTile`) adds the entities, skipping quads no camera on the entity's layers can see. `Disabled` entities are skipped by the query itself. A skeleton (`Renderable::skeleton()`, `RenderStyle::Skeleton`) is one of them, in the same order: the entity drawer (`collect_skeleton`) walks the entity's `Skeleton`'s parts (`Skeleton::parts`, bones blended between their last two steps under an interpolated entity): a region becomes a quad, pushed as runs sorted as an entity (`DrawList::push_run_as(DrawKind::Entity, ..)`), one for each stretch of consecutive quads of one image and one blend, and a mesh attachment is skinned on the CPU and pushed as a mesh item (`Emitter::draw_skinned`, `DrawList::push_mesh`, also `DrawKind::Entity`) where it comes in the draw order, ending the run before it. Each part's drop shadow is drawn before every part; each run, and each mesh by its skinned vertices' box, is culled per camera. With a game shader on the entity each quad is a sprite item of its own.
 6. World text: `Text2d`s whose text, style or fonts changed are laid out again, and each camera that sees a block gets its glyphs (made at the size that camera sees) as glyph items for that camera alone.
 7. The UI: unless its image is kept, the UI renderer builds the frame's UI commands (rects, sprites, lines, text) into instances of its own in painter's order; it does not use the frame's draw list or the batch's cameras.
-6. Trails and lines become joined polylines on the batch's triangle stream, one item each; `DebugDraw`'s shapes (and the overlays) are built for each camera in its own screen pixels.
+6. Trails and lines join the batch's line stream as their points, one item each, and the GPU builds their triangles; `DebugDraw`'s shapes (and the overlays) are built for each camera in its own screen pixels.
 7. `Batch2D::prepare` makes the textures resident, lays each camera's lit and unlit items into draws (on its layers, inside its `CameraView::bounds`, not showing its own target) and uploads the quads and triangles once.
 8. The render pipeline runs; `world` and `unlit_world` replay the camera's draws.
 
@@ -140,7 +140,7 @@ Particles (the effect's `z`, or the emitter's `with_z`), parallax and trails def
 
 ## The 2D Batch
 
-- **Streams.** Instanced quads (`SpriteInstance`, 128 bytes, remapped into its atlas slot), indexed triangles (`Vertex2D`, 72 bytes) and an entity's meshes (`MeshVertex`, 16 bytes: a world position and a UV, with indices; each mesh draws with one quad instance, through the sprite's own fragment stages, and merges with no draw beside it). Each is written once per frame into a buffer that doubles when needed.
+- **Streams.** Instanced quads (`SpriteInstance`, 128 bytes, remapped into its atlas slot), the line stream (each line's points, its line table entry and one code a triangle, built into triangles by the vertex stage, `line_pieces.wgsl`; no vertex or index buffer) and an entity's meshes (`MeshVertex`, 16 bytes: a world position and a UV, with indices; each mesh draws with one quad instance, through the sprite's own fragment stages, and merges with no draw beside it). Each is written once per frame into a buffer that doubles when needed.
 - **Keys.** Every item resolves to a `DrawState`: page (atlas page, standalone texture or render target; none for untextured lines), `BatchShader` (`Sprite`, `SpriteEffect`, `Custom(source)`, `Line`, `LineTextured`, `TextMask`, `TextColor`, `TextMsdf`), `BlendMode`, `Sampling`. `plan_draws` merges consecutive equal states per camera (triangles also need adjacent index ranges).
 - **Blend modes.** Every batch shader outputs premultiplied colour, so each `BlendMode` is one fixed blend state (`pipelines::blend_state`): Alpha and Premultiplied `(One, OneMinusSrcAlpha)`; Additive `(One, One)`; Multiply `(Dst, OneMinusSrcAlpha)`; Screen `(OneMinusDst, One)`; the last three keep the destination's alpha. `Premultiplied` uses the shader entries that take a texture's colour as it is (`fs_*_premultiplied`).
 - **Pipelines** are made on first use per `(BatchShader, BlendMode, Stream, format)`; a custom shader gets one per blend it is drawn with, and another for the mesh stream if a mesh is drawn with it, each checked without blocking. A new version of a custom shader already drawn is made on a thread of the batch's own for every blend its old version has, while the old one draws, and swapped in at the start of a frame.

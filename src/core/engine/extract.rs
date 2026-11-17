@@ -222,9 +222,9 @@ impl Engine {
 
       // The list, and the streams its triangle and mesh items are ranges
       // of: the entity drawer adds the meshes, and trails, lines and debug
-      // shapes the triangles
+      // shapes the line stream
       self.draw_list.clear();
-      batch.triangles().clear();
+      batch.lines().clear();
       batch.meshes().clear();
       self.batch_collector.push_to(
         &mut self.draw_list,
@@ -345,8 +345,9 @@ impl Engine {
         emit_world_text(&mut self.world, &self.text, &text_frame, &mut text_targets);
       }
       // Trails (world-space points), lines (at their entity) and the debug
-      // overlays become triangles, one draw-list item each
-      let triangles = batch.triangles();
+      // overlays join the line stream as their points, one draw-list item
+      // each; the GPU builds their triangles
+      let line_stream = batch.lines();
       // The shadowed lights the lit cameras see, each with its casting edges
       // from the occluder index, read where they are drawn and on their
       // floors (the atlas is drawn before the camera passes); then every
@@ -407,7 +408,7 @@ impl Engine {
           layers: layers.copied().unwrap_or_default(),
           only_camera: None,
         };
-        push_polyline(&mut self.draw_list, triangles, &points, &style, look);
+        push_polyline(&mut self.draw_list, line_stream, &points, &style, look);
       }
       let line_look = |line: &Line2D, layers: Option<&RenderLayers>| LineLook {
         lit: line.lighting(),
@@ -431,7 +432,7 @@ impl Engine {
         let at = render_global(global, previous, alpha).translation();
         if let Some(style) = line_points(line, at, &mut points) {
           let look = line_look(line, layers);
-          push_polyline(&mut self.draw_list, triangles, &points, &style, look);
+          push_polyline(&mut self.draw_list, line_stream, &points, &style, look);
         }
       }
       // The overlays join the debug shapes, which each camera builds in its
@@ -449,7 +450,7 @@ impl Engine {
         });
       let debug = self.world.resource::<DebugDraw>();
       for camera in &self.camera_draws {
-        debug.push_for_camera(camera, &mut self.draw_list, triangles, &mut points);
+        debug.push_for_camera(camera, &mut self.draw_list, line_stream, &mut points);
       }
       self.poly_points = points;
       // The UI, last: the frame's UI commands through the UI camera. On the

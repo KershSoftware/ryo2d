@@ -43,7 +43,7 @@ Renderers are engine-owned, not resources. `GpuRenderContext` is the only GPU ac
 
 ## Camera Uniforms and Shader Time
 
-Every camera has one uniform buffer (`camera_gpu.rs`: `CameraGlobals { view_proj, resolution, game_time, real_time, snap }`, 96 bytes), bound as group 0 by sprites, trails, lights and shadows, so all of them move, zoom, turn and shake together. `resolution` is the camera's image size; `snap` turns on pixel snapping of axis-aligned sprites (pixel art). Sprite effects and custom sprite shaders (`in.time`) animate on `game_time`, so they freeze under pause and slow under slow motion; post-process effects, lighting and trails use real time.
+Every camera has one uniform buffer (`camera_gpu.rs`: `CameraGlobals { view_proj, resolution, game_time, real_time, snap, px_per_unit }`, 96 bytes; `px_per_unit` is the image's pixels per world unit, `pixels_per_unit`: lines push their fringe a pixel by it and measure their edges in pixels), bound as group 0 by sprites, trails, lights and shadows, so all of them move, zoom, turn and shake together. `resolution` is the camera's image size; `snap` turns on pixel snapping of axis-aligned sprites (pixel art). Sprite effects and custom sprite shaders (`in.time`) animate on `game_time`, so they freeze under pause and slow under slow motion; post-process effects, lighting and trails use real time.
 
 ## GPU Sprite Batching
 

@@ -1,9 +1,37 @@
 //! Trails and lines as polylines: their points, widths, colours and texture
-//! coordinates, and the draw-list item each one becomes.
+//! coordinates, the draw-list item each one becomes, and the stream the GPU
+//! builds world lines from.
+//!
+//! - **The GPU builds world lines from their points** (`LineStream`). A line
+//!   is copied as its filtered points (`LinePoint`: place, half width, `u`,
+//!   sRGB colour and its line) and its entry in the line table (`LineInfo`:
+//!   style, effect, emission, first point, count, join, cap, closed, edge
+//!   and miter limit); then one 32-bit code a triangle names its piece's
+//!   point, the piece's kind and the triangle within it, in the order the
+//!   pieces draw (`piece_list`, `piece_triangles`). Nothing is tessellated
+//!   on the CPU. A draw covers `3 × triangles` vertices of the code stream,
+//!   and the vertex stage finds its triangle's code by `vertex_index ÷ 3`
+//!   (`line.wgsl`), so draws merge as index ranges did and z-order holds.
+//!   The GPU's vertices equal the CPU builder's (`polyline.rs`, the
+//!   reference), triangle for triangle
+//!   (`the_gpu_builds_the_reference_s_vertices`), and its pushed mesh covers
+//!   every pixel of a translucent line once
+//!   (`a_translucent_line_drawn_on_the_gpu_counts_every_pixel_once`).
+//! - **Culling** grows a line's box by `MITER_LIMIT` times its widest half
+//!   width (a miter's tip, a square cap's corner) and its effect's reach,
+//!   and each camera grows it by one of its pixels for the fringe
+//!   (`a_miter_tip_reaching_into_view_is_drawn`, e2e).
+//! - **Limit:** the stream holds `MAX_POINTS` points a frame; a line past it
+//!   draws nothing (warned once a run).
+
+use std::ops::Range;
 
 use glam::Vec2;
 
-use super::polyline::{PolyPoint, PolyStyle, Triangles};
+use super::polyline::{
+  LineInfo, MAX_LINES, MITER_LIMIT, Piece, PieceKind, PolyPoint, PolyStyle, Triangles, along_half,
+  filter_points, piece_list, piece_triangles,
+};
 use super::{BlendMode, Filter};
 use crate::core::ecs::Entity;
 use crate::core::graphics::{RenderLayers, TextureId};
@@ -102,18 +130,147 @@ pub(crate) fn line_points(line: &Line2D, at: Vec2, out: &mut Vec<PolyPoint>) -> 
   })
 }
 
-/// Build `points` into `triangles` and add the result to `list` as one
-/// item, seen by cameras whose view meets its points' box grown by its
-/// widest half width and how far its effect moves it.
+/// A point of a world line as the GPU's line pieces read it (`LinePoint`
+/// in `line_pieces.wgsl`, 24 bytes).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+pub(crate) struct LinePoint {
+  pub(crate) pos: [f32; 2],
+  pub(crate) half_width: f32,
+  pub(crate) u: f32,
+  /// sRGB, straight alpha
+  pub(crate) color: [u8; 4],
+  /// Its line's entry in the line table
+  pub(crate) line: u32,
+}
+
+/// The stream holds this many points a frame; a line past them draws
+/// nothing. A triangle code keeps 25 bits for its point.
+pub(crate) const MAX_POINTS: usize = 1 << 25;
+
+/// A triangle's code: its piece's point (in the point buffer), the piece's
+/// kind and the triangle within it (`line.wgsl` reads it back).
+pub(crate) fn triangle_code(point: u32, kind: PieceKind, triangle: u32) -> u32 {
+  let kind = match kind {
+    PieceKind::Segment => 0,
+    PieceKind::Join => 1,
+    PieceKind::StartCap => 2,
+    PieceKind::EndCap => 3,
+  };
+  (point << 7) | (kind << 5) | triangle
+}
+
+/// The frame's world lines as the GPU builds them: their points, the line
+/// table and one code a triangle.
+#[derive(Default)]
+pub(crate) struct LineStream {
+  pub(crate) points: Vec<LinePoint>,
+  pub(crate) lines: Vec<LineInfo>,
+  pub(crate) codes: Vec<u32>,
+  /// Room kept from line to line
+  filtered: Vec<PolyPoint>,
+  pieces: Vec<Piece>,
+  /// Whether the log has been told the stream is full
+  warned: bool,
+}
+
+impl LineStream {
+  /// Forget every line, keeping the allocations.
+  pub(crate) fn clear(&mut self) {
+    self.points.clear();
+    self.lines.clear();
+    self.codes.clear();
+  }
+
+  /// Add the line through `points`: its filtered points, its entry in the
+  /// line table and its triangles' codes; the vertices they draw, three a
+  /// triangle (empty when nothing is drawn).
+  pub(crate) fn polyline(&mut self, points: &[PolyPoint], style: &PolyStyle) -> Range<u32> {
+    let start = 3 * self.codes.len() as u32;
+    let Some(closed) = filter_points(points, style.closed, &mut self.filtered) else {
+      return start..start;
+    };
+    let count = self.filtered.len();
+    if self.lines.len() >= MAX_LINES || self.points.len() + count > MAX_POINTS {
+      if !self.warned {
+        self.warned = true;
+        log::warn!(
+          "more than {MAX_LINES} lines and trails, or {MAX_POINTS} of their points, in one frame: the rest draw nothing"
+        );
+      }
+      return start..start;
+    }
+    let line = self.lines.len() as u32;
+    let first = self.points.len() as u32;
+    let along = along_half(&self.filtered, closed, style.cap);
+    self
+      .lines
+      .push(LineInfo::of(style, closed, along, first, count as u32));
+    self.points.extend(self.filtered.iter().map(|point| {
+      let crate::core::ui::Color { r, g, b, a } = point.color;
+      LinePoint {
+        pos: point.pos.into(),
+        half_width: point.half_width,
+        u: point.u,
+        color: [r, g, b, a],
+        line,
+      }
+    }));
+    piece_list(count, closed, style.cap, &mut self.pieces);
+    for piece in &self.pieces {
+      let code = triangle_code(first + piece.point, piece.kind, 0);
+      let triangles = piece_triangles(piece.kind, style.join, style.cap);
+      self
+        .codes
+        .extend((0..triangles).map(|triangle| code | triangle));
+    }
+    start..3 * self.codes.len() as u32
+  }
+}
+
+/// Where a line's triangles go: the GPU's stream (world lines) or the CPU
+/// builder (the UI's lines, and the reference).
+pub(crate) trait LineSink {
+  /// The line table entry the next line takes
+  fn next_line(&self) -> u32;
+  /// Add the line through `points`; the range its triangles' corners take,
+  /// three a triangle (empty when nothing is drawn)
+  fn add_line(&mut self, points: &[PolyPoint], style: &PolyStyle) -> Range<u32>;
+}
+
+impl LineSink for LineStream {
+  fn next_line(&self) -> u32 {
+    self.lines.len() as u32
+  }
+
+  fn add_line(&mut self, points: &[PolyPoint], style: &PolyStyle) -> Range<u32> {
+    self.polyline(points, style)
+  }
+}
+
+impl LineSink for Triangles {
+  fn next_line(&self) -> u32 {
+    self.lines.len() as u32
+  }
+
+  fn add_line(&mut self, points: &[PolyPoint], style: &PolyStyle) -> Range<u32> {
+    self.polyline(points, style)
+  }
+}
+
+/// Add the line through `points` to `sink` and to `list` as one item, seen
+/// by the cameras whose view meets its points' box grown by `MITER_LIMIT`
+/// times its widest half width and how far its effect moves it (each
+/// camera grows it by one of its pixels more, for the fringe).
 pub(crate) fn push_polyline(
   list: &mut DrawList,
-  triangles: &mut Triangles,
+  sink: &mut impl LineSink,
   points: &[PolyPoint],
   style: &PolyStyle,
   look: LineLook,
 ) {
-  let line = triangles.lines.len() as u32;
-  let indices = triangles.polyline(points, style);
+  let line = sink.next_line();
+  let indices = sink.add_line(points, style);
   if indices.is_empty() {
     return;
   }
@@ -122,9 +279,11 @@ pub(crate) fn push_polyline(
   for point in points.iter().filter(|point| point.pos.is_finite()) {
     min = min.min(point.pos);
     max = max.max(point.pos);
-    reach = reach.max(point.half_width);
+    if point.half_width.is_finite() {
+      reach = reach.max(point.half_width);
+    }
   }
-  let reach = Vec2::splat(reach + effect_reach(&style.params));
+  let reach = Vec2::splat(MITER_LIMIT * reach + effect_reach(&style.params));
   list.push_triangles(
     look.lit,
     look.z,

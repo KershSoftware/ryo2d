@@ -7,7 +7,7 @@ use std::ops::Range;
 
 use glam::Vec2;
 
-use super::batch::{LineLook, PolyPoint, PolyStyle, Triangles, push_polyline};
+use super::batch::{LineLook, LineStream, PolyPoint, PolyStyle, push_polyline};
 use super::{CameraDraw, DrawList};
 use crate::core::ecs::{ResMut, Resource};
 use crate::core::graphics::RenderLayers;
@@ -199,13 +199,14 @@ impl DebugDraw {
     self.each().map(|(shape, _)| shape)
   }
 
-  /// Build the shapes `camera` sees into `triangles` and add them to `list`
-  /// for that camera alone, `scratch` holding the points.
+  /// Add the shapes `camera` sees to `lines` and to `list` for that camera
+  /// alone, `scratch` holding the points: their points snapped to its
+  /// pixels before they are sent.
   pub(crate) fn push_for_camera(
     &self,
     camera: &CameraDraw,
     list: &mut DrawList,
-    triangles: &mut Triangles,
+    lines: &mut LineStream,
     scratch: &mut Vec<PolyPoint>,
   ) {
     let view = &camera.view;
@@ -237,28 +238,32 @@ impl DebugDraw {
         layers: shape.layers,
         only_camera: Some(camera.entity),
       };
-      let mut add = |path: &[Vec2], closed: bool| {
+      // An odd width's points sit on pixel centres (but a circle's) and its
+      // open ends reach half a pixel past them (square caps), so its pixels
+      // are whole: lines cover pixels by their area, and a pixel-wide line
+      // between two rows would show as two faint ones
+      let mut add = |path: &[Vec2], closed: bool, snap: bool| {
         scratch.clear();
         let last = path.len().saturating_sub(1).max(1) as f32;
         scratch.extend(path.iter().enumerate().map(|(i, &pos)| PolyPoint {
-          pos,
+          pos: if snap { centre(pos) } else { pos },
           half_width,
           color: shape.color,
           u: i as f32 / last,
         }));
         let style = PolyStyle {
           join: LineJoin::Miter,
-          cap: LineCap::Butt,
+          cap: if odd { LineCap::Square } else { LineCap::Butt },
           closed,
           // Solid, no effect
           params: [0.0; 4],
           emission: 1.0,
         };
-        push_polyline(list, triangles, scratch, &style, look);
+        push_polyline(list, lines, scratch, &style, look);
       };
       match (shape.kind, points) {
-        (ShapeKind::Line, &[a, b]) => add(&[centre(a), centre(b)], false),
-        (ShapeKind::Polyline, points) => add(points, false),
+        (ShapeKind::Line, &[a, b]) => add(&[centre(a), centre(b)], false, true),
+        (ShapeKind::Polyline, points) => add(points, false, true),
         (ShapeKind::Rect, &[middle, size]) => {
           let half = size.abs() / 2.0;
           let corners = [
@@ -283,7 +288,7 @@ impl DebugDraw {
             };
             view.screen_to_world(Vec2::new(snap(at.x, mid.x), snap(at.y, mid.y)))
           };
-          add(&corners.map(inside), true);
+          add(&corners.map(inside), true, true);
         }
         (ShapeKind::Circle, &[middle, radius]) => {
           let radius = radius.x.abs();
@@ -293,11 +298,11 @@ impl DebugDraw {
             let angle = std::f32::consts::TAU * i as f32 / segments as f32;
             *point = middle + Vec2::from_angle(angle) * radius;
           }
-          add(&ring[..segments], true);
+          add(&ring[..segments], true, false);
         }
         (ShapeKind::Arrow, &[from, to]) => {
           let (from, to) = (centre(from), centre(to));
-          add(&[from, to], false);
+          add(&[from, to], false, true);
           // A head of two 6-pixel barbs, at most a third of the shaft
           let shaft = to - from;
           let length = shaft.length();
@@ -306,7 +311,7 @@ impl DebugDraw {
             let back = -shaft / length * barb;
             let left = to + Vec2::from_angle(0.45).rotate(back);
             let right = to + Vec2::from_angle(-0.45).rotate(back);
-            add(&[left, to, right], false);
+            add(&[left, to, right], false, true);
           }
         }
         (ShapeKind::Cross, &[at, size]) => {
@@ -314,10 +319,12 @@ impl DebugDraw {
           add(
             &[centre(at - Vec2::X * arm), centre(at + Vec2::X * arm)],
             false,
+            true,
           );
           add(
             &[centre(at - Vec2::Y * arm), centre(at + Vec2::Y * arm)],
             false,
+            true,
           );
         }
         _ => {}

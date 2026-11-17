@@ -3,7 +3,6 @@
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 
-use super::polyline::Vertex2D;
 use super::{BatchShader, BlendMode, LightStep, PageKind, Sampling, Stream};
 use crate::core::graphics::SpriteInstance;
 use crate::core::render::UI_FORMAT;
@@ -107,9 +106,9 @@ enum Groups {
   Textured,
   /// Camera, texture, then the tile slot (tile chunks)
   Tile,
-  /// Camera, nothing, then the line table (untextured lines)
+  /// Camera, nothing, then the line stream (untextured lines)
   Line,
-  /// Camera, texture, then the line table (textured lines)
+  /// Camera, texture, then the line stream (textured lines)
   LineTextured,
   /// Camera, then the shadow atlas (lights)
   Light,
@@ -249,22 +248,32 @@ pub(crate) fn camera_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
   })
 }
 
-/// The layout the triangle stream's line table is bound with (group 2 of
-/// the line pipelines): one storage array of `LineInfo`, read by the vertex
-/// stage at each vertex's line.
+/// The layout the line stream is bound with (group 2 of the line
+/// pipelines), three storage arrays the vertex stage reads: the line table
+/// (`LineInfo`), the points (`LinePoint`) and one code a triangle.
 pub(crate) fn line_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+  line_layout_for(device, wgpu::ShaderStages::VERTEX)
+}
+
+/// [`line_layout`] for the stages `visibility` names (tests read the line
+/// stream in a compute stage too)
+pub(crate) fn line_layout_for(
+  device: &wgpu::Device,
+  visibility: wgpu::ShaderStages,
+) -> wgpu::BindGroupLayout {
+  let entry = |binding| wgpu::BindGroupLayoutEntry {
+    binding,
+    visibility,
+    ty: wgpu::BindingType::Buffer {
+      ty: wgpu::BufferBindingType::Storage { read_only: true },
+      has_dynamic_offset: false,
+      min_binding_size: None,
+    },
+    count: None,
+  };
   device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-    label: Some("Batch Line Table Layout"),
-    entries: &[wgpu::BindGroupLayoutEntry {
-      binding: 0,
-      visibility: wgpu::ShaderStages::VERTEX,
-      ty: wgpu::BindingType::Buffer {
-        ty: wgpu::BufferBindingType::Storage { read_only: true },
-        has_dynamic_offset: false,
-        min_binding_size: None,
-      },
-      count: None,
-    }],
+    label: Some("Batch Line Stream Layout"),
+    entries: &[entry(0), entry(1), entry(2)],
   })
 }
 
@@ -295,42 +304,6 @@ const INSTANCE_LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLay
   attributes: &INSTANCE_ATTRIBUTES,
 };
 
-/// The parts of a [`Vertex2D`] the line shader reads: position, UV, sRGB
-/// colour, its direction across and its line.
-const VERTEX2D_ATTRIBUTES: [wgpu::VertexAttribute; 5] = [
-  wgpu::VertexAttribute {
-    format: wgpu::VertexFormat::Float32x2,
-    offset: std::mem::offset_of!(Vertex2D, position) as u64,
-    shader_location: 0,
-  },
-  wgpu::VertexAttribute {
-    format: wgpu::VertexFormat::Float32x2,
-    offset: std::mem::offset_of!(Vertex2D, uv) as u64,
-    shader_location: 1,
-  },
-  wgpu::VertexAttribute {
-    format: wgpu::VertexFormat::Unorm8x4,
-    offset: std::mem::offset_of!(Vertex2D, color) as u64,
-    shader_location: 2,
-  },
-  wgpu::VertexAttribute {
-    format: wgpu::VertexFormat::Float32x2,
-    offset: std::mem::offset_of!(Vertex2D, across) as u64,
-    shader_location: 6,
-  },
-  wgpu::VertexAttribute {
-    format: wgpu::VertexFormat::Uint32,
-    offset: std::mem::offset_of!(Vertex2D, line) as u64,
-    shader_location: 7,
-  },
-];
-
-const VERTEX2D_LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLayout {
-  array_stride: std::mem::size_of::<Vertex2D>() as u64,
-  step_mode: wgpu::VertexStepMode::Vertex,
-  attributes: &VERTEX2D_ATTRIBUTES,
-};
-
 /// A pipeline and what to report if the GPU rejects it.
 struct Built {
   state: Checked<wgpu::RenderPipeline>,
@@ -345,9 +318,9 @@ pub(crate) struct Pipelines {
   layout: wgpu::PipelineLayout,
   /// Camera, texture, then the tile slot (tile chunks)
   tile_layout: wgpu::PipelineLayout,
-  /// Camera, nothing, then the line table (untextured lines)
+  /// Camera, nothing, then the line stream (untextured lines)
   line_layout: wgpu::PipelineLayout,
-  /// Camera, texture, then the line table (textured lines)
+  /// Camera, texture, then the line stream (textured lines)
   line_textured_layout: wgpu::PipelineLayout,
   /// Camera, then the shadow atlas (lights)
   light_layout: wgpu::PipelineLayout,
@@ -570,8 +543,9 @@ pub(crate) fn custom_pipeline(
   batch_pipeline(device, layout, name, module, fragment, key)
 }
 
-/// A pipeline drawing `key`'s stream (instanced quads, indexed triangles, or
-/// a mesh's indexed triangles with a quad's instance) with `module`'s
+/// A pipeline drawing `key`'s stream (instanced quads, lines' triangles
+/// built from the line stream, or a mesh's indexed triangles with a quad's
+/// instance) with `module`'s
 /// `vs_main` (`vs_tile` for tile chunks, `vs_mesh` for meshes) and
 /// `fragment`, blended and formatted for `key`.
 fn batch_pipeline(
@@ -605,10 +579,11 @@ fn batch_pipeline(
         _ => "vs_main",
       }),
       // A mesh's vertex is laid out as the unit quad's corner is, and it
-      // takes one instance as a quad does
+      // takes one instance as a quad does; a line's vertices are built from
+      // the line stream
       buffers: match key.stream {
         Stream::Quads | Stream::Meshes => &[Some(QUAD_LAYOUT), Some(INSTANCE_LAYOUT)],
-        Stream::Triangles => &[Some(VERTEX2D_LAYOUT)],
+        Stream::Triangles => &[],
       },
       compilation_options: Default::default(),
     },

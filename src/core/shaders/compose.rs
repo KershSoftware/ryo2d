@@ -85,6 +85,8 @@ pub(crate) const LINE: &str = concat!(
   "\n",
   include_str!("include/line_style.wgsl"),
   "\n",
+  include_str!("include/line_pieces.wgsl"),
+  "\n",
   include_str!("core/line.wgsl"),
 );
 

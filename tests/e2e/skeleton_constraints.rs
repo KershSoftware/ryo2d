@@ -379,7 +379,12 @@ fn the_overlay_draws_its_marks_at_the_target_and_the_tip() {
   let off = settled(&mut engine);
   // `colors::SKELETON_CONSTRAINT`, which the crate does not export
   let mark = [0xff, 0x50, 0xa0, 0xff];
-  let marked = |frame: &image::RgbaImage, x: u32, y: u32| frame.get_pixel(x, y).0 == mark;
+  // Near it: the bones beside the marks anti-alias their edges outward a
+  // little over them
+  let marked = |frame: &image::RgbaImage, x: u32, y: u32| {
+    let pixel = frame.get_pixel(x, y).0;
+    pixel.iter().zip(mark).all(|(&p, m)| p.abs_diff(m) <= 16)
+  };
   assert!(
     off.pixels().all(|pixel| pixel.0 != mark),
     "nothing while it is off"
