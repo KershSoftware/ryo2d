@@ -90,10 +90,11 @@ impl ClipRect {
   }
 }
 
-/// Where a line instance's piece kind and pair sit in its bits word, above
-/// the window's present and seam bits (`ui.wgsl`'s line path)
+/// Where a line instance's piece kind, pair and edge sit in its bits word,
+/// above the window's present and seam bits (`ui.wgsl`'s line path)
 const LINE_KIND_SHIFT: u32 = 12;
 const LINE_PAIR_SHIFT: u32 = 14;
+const LINE_EDGE_SHIFT: u32 = 18;
 
 /// The points a line instance carries: the six about its piece's point
 /// (slot 2 the point itself, slot k the point k - 2 along the line from
@@ -109,7 +110,8 @@ pub(crate) struct UiLineWindow {
 /// What every piece of a UI line shares: the offset its points are moved
 /// by (the GPU adds it, with a scroll slot's), one half width and one
 /// colour (sRGB, straight alpha), the half length between a two-point
-/// line's caps, its params and its miter limit
+/// line's caps, its params, its miter limit and its edge (as the line
+/// table numbers it, `edge_code`)
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct UiLine {
   pub(crate) at: Vec2,
@@ -118,6 +120,7 @@ pub(crate) struct UiLine {
   pub(crate) color: Color,
   pub(crate) params: [f32; 4],
   pub(crate) miter_limit: f32,
+  pub(crate) edge: u32,
 }
 
 /// A UI draw item: eight vec4 lanes (a quad's are a `SpriteInstance`'s, in
@@ -163,8 +166,8 @@ impl UiInstance {
   /// positions (a0-a2), their `u` (a3, a4.xy), the half width and a
   /// two-point line's half length between its caps (a4.zw), the line's
   /// params (a5), then its sRGB colour as two exact 16-bit halves, the miter
-  /// limit and the window's bits (a6), and the offset added to every point
-  /// (a7.xy)
+  /// limit and the window's bits with its edge (a6), and the offset added
+  /// to every point (a7.xy)
   pub(crate) fn line_piece(
     window: &UiLineWindow,
     piece: PieceKind,
@@ -182,7 +185,8 @@ impl UiInstance {
     let bits = (window.present & 0x3F)
       | (window.seam & 0x3F) << 6
       | kind << LINE_KIND_SHIFT
-      | (pair & 0xF) << LINE_PAIR_SHIFT;
+      | (pair & 0xF) << LINE_PAIR_SHIFT
+      | (line.edge & 0x3) << LINE_EDGE_SHIFT;
     let Color { r, g, b, a } = line.color;
     let half = |low: u8, high: u8| f32::from(u16::from(low) | u16::from(high) << 8);
     UiInstance {

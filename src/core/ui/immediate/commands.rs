@@ -12,6 +12,7 @@ use crate::core::asset::Handle;
 use crate::core::graphics::Image;
 use crate::core::render::batch::Filter;
 use crate::core::text::TextLayout;
+use crate::core::trail::LineEdge;
 use crate::core::ui::{Color, Rect, UiId};
 
 /// One UI draw, in UI units
@@ -43,6 +44,8 @@ pub(crate) enum UiCommand {
     width: f32,
     color: Color,
     closed: bool,
+    /// How its edges meet the pixels (`None`: its target's)
+    edge: Option<LineEdge>,
     clip: Option<Rect>,
     layer: u8,
   },
@@ -128,6 +131,7 @@ impl UiCommand {
           width,
           color,
           closed,
+          edge,
           clip,
           layer,
         },
@@ -137,6 +141,7 @@ impl UiCommand {
           width: width_b,
           color: color_b,
           closed: closed_b,
+          edge: edge_b,
           clip: clip_b,
           layer: layer_b,
         },
@@ -151,6 +156,7 @@ impl UiCommand {
           && width.to_bits() == width_b.to_bits()
           && color == color_b
           && closed == closed_b
+          && edge == edge_b
           && clips(clip, clip_b)
           && layer == layer_b
       }
@@ -276,6 +282,7 @@ impl UiCommand {
         width,
         color,
         closed,
+        edge,
         clip,
         layer,
       } => Self::Line {
@@ -284,6 +291,7 @@ impl UiCommand {
         width: *width,
         color: *color,
         closed: *closed,
+        edge: *edge,
         clip: *clip,
         layer: *layer,
       },
@@ -824,12 +832,38 @@ mod tests {
       width: 1.0,
       color: Color::WHITE,
       closed: false,
+      edge: None,
       clip: Some(Rect::new(300.0, 300.0, 10.0, 10.0)),
       layer: 0,
     };
     commands.push(7, 0, line);
     let visible: Vec<u32> = commands.visible().map(|draw| draw.order).collect();
     assert_eq!(visible, [2, 5, 7]);
+  }
+
+  #[test]
+  fn a_line_draws_as_another_only_with_its_edge_and_keeps_it_when_moved() {
+    let line = |edge| UiCommand::Line {
+      points: Arc::from([Vec2::ZERO, Vec2::new(5.0, 2.0)]),
+      at: Vec2::ZERO,
+      width: 1.0,
+      color: Color::WHITE,
+      closed: false,
+      edge,
+      clip: None,
+      layer: 0,
+    };
+    let edges = [None, Some(LineEdge::Smooth), Some(LineEdge::Hard)];
+    for a in edges {
+      for b in edges {
+        assert_eq!(line(a).draws_as(&line(b)), a == b, "{a:?} and {b:?}");
+      }
+      let moved = line(a).moved(Vec2::new(3.0, 1.0));
+      assert!(
+        matches!(moved, UiCommand::Line { edge, .. } if edge == a),
+        "{a:?} moved"
+      );
+    }
   }
 
   /// A pass of a loose draw, then fragment 1's run (version 5, base 10,

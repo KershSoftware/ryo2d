@@ -173,5 +173,6 @@ mod trail;
 
 pub use line::Line2D;
 pub use trail::{
-  LineCap, LineJoin, MAX_TRAIL_POINTS, TextureMode, Trail2D, TrailEffect, TrailPoint, TrailStyle,
+  LineCap, LineEdge, LineJoin, MAX_TRAIL_POINTS, TextureMode, Trail2D, TrailEffect, TrailPoint,
+  TrailStyle,
 };

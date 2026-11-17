@@ -78,6 +78,7 @@ impl TestLine {
       closed: self.closed,
       params: [0.0; 4],
       emission: 1.0,
+      edge: None,
     }
   }
 

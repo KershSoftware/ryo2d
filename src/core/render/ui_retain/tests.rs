@@ -7,6 +7,7 @@ use crate::core::asset::Assets;
 use crate::core::graphics::{Image, no_images};
 use crate::core::render::UiSpace;
 use crate::core::text::{GlyphStyle, Icon, PlacedIcon, TextIcons, TextLayout};
+use crate::core::trail::LineEdge;
 use crate::core::ui::immediate::{FragmentRun, ScrollSlot, UiCommand, UiCommands};
 use crate::core::ui::{Color, Rect, UiId};
 
@@ -43,6 +44,7 @@ fn line(points: &[Vec2]) -> UiCommand {
     width: 2.0,
     color: Color::WHITE,
     closed: false,
+    edge: None,
     clip: None,
     layer: 0,
   }
@@ -254,6 +256,27 @@ fn lines_with_equal_points_keep_and_a_moved_point_redraws() {
   assert!(retain.keep(&commands(&[line(&points)]), none(), env(), 7));
   let moved = [Vec2::new(1.0, 2.0), Vec2::new(30.0, 41.0)];
   assert!(!retain.keep(&commands(&[line(&moved)]), none(), env(), 7));
+}
+
+#[test]
+fn a_line_s_edge_is_kept_with_it_and_another_edge_redraws() {
+  let points = [Vec2::new(1.0, 2.0), Vec2::new(30.0, 40.0)];
+  let edged = |edge| {
+    let mut command = line(&points);
+    if let UiCommand::Line { edge: set, .. } = &mut command {
+      *set = edge;
+    }
+    command
+  };
+  let mut retain = drawn(&[edged(Some(LineEdge::Hard))]);
+  assert!(retain.keep(&commands(&[edged(Some(LineEdge::Hard))]), none(), env(), 7));
+  for other in [None, Some(LineEdge::Smooth)] {
+    assert!(
+      !retain.keep(&commands(&[edged(other)]), none(), env(), 7),
+      "{other:?} after Hard"
+    );
+    retain.presented(false, true, 7);
+  }
 }
 
 #[test]

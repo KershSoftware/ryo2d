@@ -30,7 +30,7 @@
 //! );
 //! ```
 
-use super::{LineCap, LineJoin, TrailStyle};
+use super::{LineCap, LineEdge, LineJoin, TrailStyle};
 use crate::core::ecs::Component;
 use crate::core::ecs::Vec2;
 use crate::core::render::batch::BlendMode;
@@ -64,6 +64,8 @@ pub struct Line2D {
   cap: LineCap,
   /// How segments connect at corners
   join: LineJoin,
+  /// How its edges meet the pixels (`None`: its target's)
+  edge: Option<LineEdge>,
   /// How it combines with what is below
   blend: BlendMode,
   /// Whether scene lighting applies (false: full brightness over the lit scene)
@@ -92,6 +94,7 @@ impl Line2D {
       style: TrailStyle::Solid,
       cap: LineCap::Butt,
       join: LineJoin::Miter,
+      edge: None,
       blend: BlendMode::Alpha,
       lighting: true,
       emission: 1.0,
@@ -383,6 +386,23 @@ impl Line2D {
   pub fn with_join(mut self, join: LineJoin) -> Self {
     self.join = join;
     self
+  }
+
+  /// Set how the line's edges meet the pixels (default: its target's,
+  /// `Hard` on a pixel-art target and `Smooth` elsewhere).
+  pub fn with_edge(mut self, edge: LineEdge) -> Self {
+    self.edge = Some(edge);
+    self
+  }
+
+  /// How the line's edges meet the pixels (`None`: its target's).
+  pub fn edge(&self) -> Option<LineEdge> {
+    self.edge
+  }
+
+  /// Set how the line's edges meet the pixels (`None`: its target's).
+  pub fn set_edge(&mut self, edge: Option<LineEdge>) {
+    self.edge = edge;
   }
 
   /// Get the rendering style.

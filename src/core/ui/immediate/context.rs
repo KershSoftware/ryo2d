@@ -47,6 +47,7 @@ use crate::core::text::{
   RichText, TextAlign, TextEngine, TextIcons, TextKey, TextLayout, TextLayoutOptions, TextOverflow,
   TextReveal, TextStyle,
 };
+use crate::core::trail::LineEdge;
 use crate::core::ui::env::UiEnv;
 use crate::core::ui::fragment::Role;
 use crate::core::ui::id::{UiId, key_hash};
@@ -2221,8 +2222,20 @@ impl<'a> UiContext<'a> {
     }
   }
 
-  /// Draw a polyline through `points`, `width` UI units wide.
+  /// Draw a polyline through `points`, `width` UI units wide, its edges
+  /// as its target's (`Hard` for UI drawn on a pixel-art target, `Smooth`
+  /// at window resolution).
   pub fn draw_line(&mut self, points: &[Vec2], width: f32, color: Color) {
+    self.record_line(points, width, color, None);
+  }
+
+  /// Draw a polyline through `points`, `width` UI units wide, with `edge`
+  /// wherever it is drawn.
+  pub fn draw_line_with_edge(&mut self, points: &[Vec2], width: f32, color: Color, edge: LineEdge) {
+    self.record_line(points, width, color, Some(edge));
+  }
+
+  fn record_line(&mut self, points: &[Vec2], width: f32, color: Color, edge: Option<LineEdge>) {
     self.taint();
     if points.len() < 2 || !width.is_finite() || width <= 0.0 {
       return;
@@ -2237,6 +2250,7 @@ impl<'a> UiContext<'a> {
         width,
         color,
         closed: false,
+        edge,
         clip: self.current_clip,
         layer: self.layer,
       },

@@ -201,7 +201,7 @@ pub mod prelude {
 
   // Trail and line rendering
   pub use crate::core::trail::{
-    Line2D, LineCap, LineJoin, TextureMode, Trail2D, TrailEffect, TrailPoint, TrailStyle,
+    Line2D, LineCap, LineEdge, LineJoin, TextureMode, Trail2D, TrailEffect, TrailPoint, TrailStyle,
   };
 
   // Particles

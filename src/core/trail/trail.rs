@@ -71,6 +71,21 @@ pub enum LineJoin {
   Round,
 }
 
+/// How a trail's or line's edges meet the pixels. Left unset, a line takes
+/// its target's: `Hard` on a pixel-art target (the window's
+/// `Presentation::PixelArt` image, and UI drawn on it), `Smooth` elsewhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineEdge {
+  /// Each pixel covered by how much of it the line covers: smooth edges
+  Smooth,
+  /// Each pixel drawn whole or not at all, by its centre: a line of one
+  /// pixel is one pixel in each column (or row, where it runs steeper than
+  /// 45 degrees), like a line drawn in pixel art, and one narrower than a
+  /// pixel still draws one wide. Soft and Glow keep their shape across the
+  /// line
+  Hard,
+}
+
 /// GPU-driven trail/line effects applied in the vertex/fragment shader.
 ///
 /// Effects are composable with any `TrailStyle` and work on both
@@ -163,6 +178,8 @@ pub struct Trail2D {
   cap: LineCap,
   /// How the trail turns its corners
   join: LineJoin,
+  /// How its edges meet the pixels (`None`: its target's)
+  edge: Option<LineEdge>,
   /// How it combines with what is below
   blend: BlendMode,
   /// How its texture is sampled
@@ -222,6 +239,7 @@ impl Trail2D {
       effect: None,
       cap: LineCap::Butt,
       join: LineJoin::Miter,
+      edge: None,
       blend: BlendMode::Alpha,
       filter: Filter::Default,
       lighting: true,
@@ -860,6 +878,23 @@ impl Trail2D {
   /// Set how the trail turns its corners.
   pub fn set_join(&mut self, join: LineJoin) {
     self.join = join;
+  }
+
+  /// Set how the trail's edges meet the pixels (default: its target's,
+  /// `Hard` on a pixel-art target and `Smooth` elsewhere).
+  pub fn with_edge(mut self, edge: LineEdge) -> Self {
+    self.edge = Some(edge);
+    self
+  }
+
+  /// How the trail's edges meet the pixels (`None`: its target's).
+  pub fn edge(&self) -> Option<LineEdge> {
+    self.edge
+  }
+
+  /// Set how the trail's edges meet the pixels (`None`: its target's).
+  pub fn set_edge(&mut self, edge: Option<LineEdge>) {
+    self.edge = edge;
   }
 
   /// Set how the trail combines with what is below (default `Alpha`;

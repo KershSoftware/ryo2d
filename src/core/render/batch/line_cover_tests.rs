@@ -17,7 +17,7 @@ use crate::core::graphics::camera_gpu::{CameraGlobals, pixels_per_unit};
 use crate::core::graphics::{Camera2d, CameraView};
 use crate::core::render::UI_FORMAT;
 use crate::core::shaders::compose::LINE;
-use crate::core::trail::{LineCap, LineJoin};
+use crate::core::trail::{LineCap, LineEdge, LineJoin};
 use crate::core::ui::Color;
 
 const JOINS: [LineJoin; 3] = [LineJoin::Miter, LineJoin::Bevel, LineJoin::Round];
@@ -130,6 +130,21 @@ impl Painter {
     size: (u32, u32),
     texture: Option<&wgpu::Texture>,
   ) -> image::RgbaImage {
+    self.paint_on(device, queue, stream, (centre, ppu), size, texture, false)
+  }
+
+  /// [`paint`](Self::paint) into a pixel-art target when `pixel_art`
+  #[allow(clippy::too_many_arguments)]
+  fn paint_on(
+    &self,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    stream: &LineStream,
+    (centre, ppu): (Vec2, f32),
+    size: (u32, u32),
+    texture: Option<&wgpu::Texture>,
+    pixel_art: bool,
+  ) -> image::RgbaImage {
     let full = Vec2::new(size.0 as f32, size.1 as f32);
     let camera = Camera2d {
       zoom: ppu,
@@ -137,7 +152,7 @@ impl Painter {
     };
     let view = CameraView::compute(centre, 0.0, &camera, Vec2::ZERO, full);
     assert_eq!(pixels_per_unit(&view, size), ppu);
-    let globals = CameraGlobals::new(&view, size, 0.0, 0.0, false);
+    let globals = CameraGlobals::new(&view, size, 0.0, 0.0, pixel_art);
     let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
       label: Some("Line Cover Camera"),
       contents: bytemuck::bytes_of(&globals),
@@ -295,6 +310,7 @@ fn style(join: LineJoin, cap: LineCap, closed: bool, look: f32) -> PolyStyle {
     closed,
     params: [look, 0.0, 0.0, 0.0],
     emission: 1.0,
+    edge: None,
   }
 }
 
@@ -1278,4 +1294,255 @@ fn a_textured_line_s_texture_runs_on_across_the_fringe() {
   assert!(error.is_none(), "{error:?}");
   eprintln!("worst {:.2} ({})", worst.0, worst.1);
   assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// Straight lines `width` pixels wide at `angles` (degrees from the x
+/// axis), each in a cell of its own and moved by `offset`, drawn with
+/// `edge` into a pixel-art target or not: the image and each line's cell,
+/// middle and direction
+struct Straight {
+  image: image::RgbaImage,
+  placed: Vec<(Vec2, Vec2, Vec2)>,
+}
+
+const STRAIGHT_CELL: u32 = 48;
+const STRAIGHT_HALF_LENGTH: f32 = 16.0;
+
+impl Straight {
+  #[allow(clippy::too_many_arguments)]
+  fn paint(
+    painter: &Painter,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    width: f32,
+    angles: &[f32],
+    offset: Vec2,
+    edge: Option<LineEdge>,
+    pixel_art: bool,
+  ) -> Self {
+    const ACROSS: u32 = 8;
+    let rows = (angles.len() as u32).div_ceil(ACROSS);
+    let size = (ACROSS * STRAIGHT_CELL, rows * STRAIGHT_CELL);
+    let centre = Vec2::new(size.0 as f32, size.1 as f32) / 2.0;
+    let mut stream = LineStream::default();
+    let mut placed = Vec::new();
+    for (i, &angle) in (0u32..).zip(angles) {
+      let dir = Vec2::from_angle(angle.to_radians());
+      let cell = Vec2::new(
+        (i % ACROSS * STRAIGHT_CELL) as f32,
+        (i / ACROSS * STRAIGHT_CELL) as f32,
+      );
+      let middle = cell + Vec2::splat(STRAIGHT_CELL as f32 / 2.0) + offset;
+      let ends = [
+        middle - dir * STRAIGHT_HALF_LENGTH,
+        middle + dir * STRAIGHT_HALF_LENGTH,
+      ];
+      let points = points_of(&ends, width / 2.0, Color::WHITE);
+      let style = PolyStyle {
+        edge,
+        ..style(LineJoin::Miter, LineCap::Butt, false, SOLID)
+      };
+      stream.polyline(&points, &style);
+      placed.push((cell, middle, dir));
+    }
+    let image = painter.paint_on(device, queue, &stream, (centre, 1.0), size, None, pixel_art);
+    Self { image, placed }
+  }
+
+  /// Where each line's drawn pixels per column (per row where it runs
+  /// steeper than 45 degrees) are not `per`, away from its ends
+  fn miscounted(&self, per: usize) -> Vec<String> {
+    let mut wrong = Vec::new();
+    for &(cell, middle, dir) in &self.placed {
+      let steep = dir.y.abs() > dir.x.abs();
+      let (x0, y0) = (cell.x as u32, cell.y as u32);
+      for line in 0..STRAIGHT_CELL {
+        // The column's (or row's) centre against the middle, along the
+        // major axis
+        let along = if steep {
+          (y0 + line) as f32 + 0.5 - middle.y
+        } else {
+          (x0 + line) as f32 + 0.5 - middle.x
+        };
+        let major = if steep { dir.y } else { dir.x };
+        if (along / major).abs() > STRAIGHT_HALF_LENGTH - 2.0 {
+          continue;
+        }
+        let drawn = (0..STRAIGHT_CELL)
+          .filter(|&k| {
+            let (x, y) = if steep {
+              (x0 + k, y0 + line)
+            } else {
+              (x0 + line, y0 + k)
+            };
+            self.image.get_pixel(x, y).0[3] > 0
+          })
+          .count();
+        if drawn != per {
+          let angle = dir.y.atan2(dir.x).to_degrees();
+          wrong.push(format!(
+            "angle {angle:.1}, middle {middle}: {} {line} has {drawn}",
+            if steep { "row" } else { "column" }
+          ));
+        }
+      }
+    }
+    wrong
+  }
+
+  /// How many pixels are drawn only partly
+  fn partial(&self) -> usize {
+    self
+      .image
+      .pixels()
+      .filter(|pixel| pixel.0[3] != 0 && pixel.0[3] != 255)
+      .count()
+  }
+}
+
+/// Sixteen places on a quarter-pixel grid (whole and half pixels among
+/// them, where a band's edge falls on pixel centres) and two off it
+fn straight_offsets() -> Vec<Vec2> {
+  let mut offsets: Vec<Vec2> = (0..16u16)
+    .map(|k| Vec2::new(f32::from(k % 4) * 0.25, f32::from(k / 4) * 0.25))
+    .collect();
+  offsets.extend([Vec2::new(0.1, 0.37), Vec2::new(0.63, 0.06)]);
+  offsets
+}
+
+#[test]
+fn a_hard_line_is_one_pixel_per_column_at_any_angle() {
+  // A pixel wide line on a pixel-art target, every 1.5 degrees from 0 to
+  // 90 at 18 places: one whole pixel in each column (each row past 45
+  // degrees), with no gap or double, as a line drawn in pixel art
+  let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+    return;
+  };
+  let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+  let painter = Painter::new(&device, &queue);
+  let angles: Vec<f32> = (0..=60u16).map(|i| f32::from(i) * 1.5).collect();
+  let mut wrong = Vec::new();
+  for offset in straight_offsets() {
+    let lines = Straight::paint(&painter, &device, &queue, 1.0, &angles, offset, None, true);
+    wrong.extend(lines.miscounted(1));
+    assert_eq!(lines.partial(), 0, "offset {offset}: pixels partly drawn");
+  }
+  let error = pollster::block_on(scope.pop());
+  assert!(error.is_none(), "{error:?}");
+  assert!(
+    wrong.is_empty(),
+    "{} columns or rows miscounted:\n{}",
+    wrong.len(),
+    wrong[..wrong.len().min(30)].join("\n")
+  );
+}
+
+#[test]
+fn a_hard_line_is_its_width_in_pixels_per_column() {
+  // Hard set on a smooth target: lines of 2 and 3 pixels are 2 and 3
+  // pixels a column (or row), and ones narrower than a pixel one
+  let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+    return;
+  };
+  let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+  let painter = Painter::new(&device, &queue);
+  let angles: Vec<f32> = (0..=12u16).map(|i| f32::from(i) * 7.5).collect();
+  let mut wrong = Vec::new();
+  for (width, per) in [(0.25, 1), (0.5, 1), (2.0, 2), (3.0, 3)] {
+    for offset in straight_offsets() {
+      let edge = Some(LineEdge::Hard);
+      let lines = Straight::paint(
+        &painter, &device, &queue, width, &angles, offset, edge, false,
+      );
+      wrong.extend(
+        lines
+          .miscounted(per)
+          .into_iter()
+          .map(|what| format!("width {width}, {what}")),
+      );
+      assert_eq!(lines.partial(), 0, "width {width}, offset {offset}");
+    }
+  }
+  let error = pollster::block_on(scope.pop());
+  assert!(error.is_none(), "{error:?}");
+  assert!(
+    wrong.is_empty(),
+    "{} columns or rows miscounted:\n{}",
+    wrong.len(),
+    wrong[..wrong.len().min(30)].join("\n")
+  );
+}
+
+#[test]
+fn a_line_on_a_pixel_art_target_draws_whole_pixels_unless_smooth() {
+  // Zigzags of every join and cap at three widths: on a pixel-art target
+  // every pixel is drawn whole or not at all, unless the line is Smooth;
+  // elsewhere pixels are partly covered, unless the line is Hard
+  let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+    return;
+  };
+  let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+  let painter = Painter::new(&device, &queue);
+  let size = (240u32, 240u32);
+  let centre = Vec2::new(size.0 as f32, size.1 as f32) / 2.0;
+  let stream_of = |edge: Option<LineEdge>| {
+    let mut stream = LineStream::default();
+    for (i, (join, cap)) in JOINS
+      .iter()
+      .flat_map(|&join| CAPS.iter().map(move |&cap| (join, cap)))
+      .enumerate()
+    {
+      for (j, width) in [1.0f32, 2.5, 5.0].into_iter().enumerate() {
+        let at = Vec2::new(12.3 + 76.0 * j as f32, 10.6 + 25.0 * i as f32);
+        let zigzag = [
+          at,
+          at + Vec2::new(14.2, 13.1),
+          at + Vec2::new(30.7, 1.4),
+          at + Vec2::new(52.1, 15.8),
+        ];
+        let style = PolyStyle {
+          edge,
+          ..style(join, cap, false, SOLID)
+        };
+        stream.polyline(&points_of(&zigzag, width / 2.0, Color::WHITE), &style);
+      }
+    }
+    stream
+  };
+  for (edge, pixel_art, whole) in [
+    (None, true, true),
+    (Some(LineEdge::Smooth), true, false),
+    (None, false, false),
+    (Some(LineEdge::Hard), false, true),
+  ] {
+    let image = painter.paint_on(
+      &device,
+      &queue,
+      &stream_of(edge),
+      (centre, 1.0),
+      size,
+      None,
+      pixel_art,
+    );
+    let drawn = image.pixels().filter(|pixel| pixel.0[3] != 0).count();
+    let partial = image
+      .pixels()
+      .filter(|pixel| pixel.0[3] != 0 && pixel.0[3] != 255)
+      .count();
+    let what = format!("{edge:?} on a pixel-art target {pixel_art}");
+    assert!(drawn > 2000, "{what}: {drawn} pixels drawn");
+    if whole {
+      assert_eq!(
+        partial, 0,
+        "{what}: {partial} of {drawn} pixels partly drawn"
+      );
+    } else {
+      assert!(
+        partial > 500,
+        "{what}: {partial} of {drawn} pixels partly drawn"
+      );
+    }
+  }
+  let error = pollster::block_on(scope.pop());
+  assert!(error.is_none(), "{error:?}");
 }

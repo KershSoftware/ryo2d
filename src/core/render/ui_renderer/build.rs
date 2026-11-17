@@ -23,8 +23,8 @@ use crate::core::graphics::{
   place_in_slot,
 };
 use crate::core::render::batch::{
-  Filter, MITER_LIMIT, PageKind, Piece, PieceKind, PolyPoint, Sampling, along_half, filter_points,
-  piece_list, piece_triangles,
+  Filter, MITER_LIMIT, PageKind, Piece, PieceKind, PolyPoint, Sampling, along_half, edge_code,
+  filter_points, piece_list, piece_triangles,
 };
 use crate::core::render::text::{TextPlacement, TextSources, TextTargets};
 use crate::core::render::ui::{
@@ -1358,6 +1358,7 @@ fn build_line(build: &mut UiBuild, seen: &Seen, placed: &Placed<'_>) {
     color: first.color,
     params: style.params,
     miter_limit: MITER_LIMIT,
+    edge: edge_code(style.edge),
   };
   let reach = Vec2::splat(ui_line_reach(&line, seen.scale.x));
   piece_list(filtered.len(), closed, style.cap, pieces);

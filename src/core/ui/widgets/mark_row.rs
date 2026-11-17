@@ -109,6 +109,7 @@ impl UiContext<'_> {
               width: 2.0,
               color: ink,
               closed: false,
+              edge: None,
               clip: None,
               layer: 0,
             }),

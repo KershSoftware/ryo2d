@@ -15,8 +15,10 @@
 // alpha of every style, and Soft and Glow shape by the distance over the
 // half width, averaged over the pixel; a Soft or Glow line under half a
 // pixel in half width covers as one of half a pixel, dimmed
-// (`batch/line_cover_tests.rs`). The fringe and the coverage are
-// `line_cover.wgsl`'s, which the UI's lines use too.
+// (`batch/line_cover_tests.rs`). A Hard line (its own edge, or its
+// target's on a pixel-art camera, whose `snap` is set) draws each pixel
+// whole or not at all. The fringe and the coverage are `line_cover.wgsl`'s,
+// which the UI's lines use too.
 
 @group(1) @binding(0) var line_texture: texture_2d<f32>;
 @group(1) @binding(1) var line_sampler: sampler;
@@ -67,6 +69,10 @@ struct VertexOutput {
     @location(5) @interpolate(flat) flags: u32,
     @location(6) @interpolate(flat) k: f32,
     @location(7) @interpolate(flat) along_half: f32,
+    // Across over the normal's component on the image's nearest axis
+    // (`line_axis`), in world units
+    @location(8) across_axis: f32,
+    @location(9) @interpolate(flat) hard: u32,
 };
 
 struct WorldVertex {
@@ -199,9 +205,17 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VertexOutput {
 
     // The fringe: a pixel of the camera's image out, as far as the vertex
     // may go, its distances grown by the push (`line_cover.wgsl`)
-    let fringe = line_fringe(vertex, pos, globals.px_per_unit);
-
+    // A Hard line's vertex on the rasteriser's grid, its distances moved
+    // with it (`line_on_grid`)
+    let hard = line_hard(line.edge, globals.snap);
+    let axis = line_axis(vertex.normal, globals.view_proj, globals.resolution);
+    var fringe = line_fringe(vertex, pos, globals.px_per_unit, axis.major);
     out.position = globals.view_proj * vec4<f32>(fringe.pos, 0.0, 1.0);
+    if hard {
+        let gridded = line_on_grid(out.position, globals.resolution);
+        out.position = gridded.clip;
+        fringe = line_moved(fringe, vertex.flags, gridded.moved, axis, globals.view_proj, globals.resolution, globals.px_per_unit);
+    }
     out.color = vec4<f32>(srgb_to_linear(vertex.color.rgb) * line.emission, vertex.color.a);
     out.uv = fringe.uv;
     out.params = params;
@@ -210,6 +224,8 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VertexOutput {
     out.flags = vertex.flags;
     out.k = vertex.k;
     out.along_half = line.along_half;
+    out.across_axis = fringe.across_axis;
+    out.hard = u32(hard);
     if effect_type == 3u {
         out.uv.x += globals.real_time * params[1];
     }
@@ -220,7 +236,7 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VertexOutput {
 
 // What the fragment's line measures (`line_cover.wgsl`)
 fn line_measure(in: VertexOutput) -> LineMeasure {
-    return LineMeasure(in.measure, in.flags, in.k, in.along_half);
+    return LineMeasure(in.measure, in.across_axis, in.flags, in.k, in.along_half, in.hard == 1u);
 }
 
 @fragment

@@ -10,6 +10,7 @@ use crate::core::asset::Handle;
 use crate::core::graphics::Image;
 use crate::core::render::batch::Filter;
 use crate::core::text::{RichText, TextEngine, TextKey, TextLayoutOptions, TextStyle};
+use crate::core::trail::LineEdge;
 use crate::core::ui::immediate::{PromptContext, UiCommand, UiContext};
 use crate::core::ui::layout::{Length, Measure};
 use crate::core::ui::memory::Flags;
@@ -303,8 +304,20 @@ impl Painter<'_> {
     });
   }
 
-  /// Draw a line through `points` (at least two, all finite), `width` wide
+  /// Draw a line through `points` (at least two, all finite), `width`
+  /// wide, its edges as its target's (`Hard` for UI drawn on a pixel-art
+  /// target, `Smooth` at window resolution)
   pub fn line(&mut self, points: &[Vec2], width: f32, color: Color) {
+    self.line_edged(points, width, color, None);
+  }
+
+  /// Draw a line through `points` (at least two, all finite), `width`
+  /// wide, with `edge` wherever it is drawn
+  pub fn line_with_edge(&mut self, points: &[Vec2], width: f32, color: Color, edge: LineEdge) {
+    self.line_edged(points, width, color, Some(edge));
+  }
+
+  fn line_edged(&mut self, points: &[Vec2], width: f32, color: Color, edge: Option<LineEdge>) {
     if points.len() < 2
       || !width.is_finite()
       || width <= 0.0
@@ -318,6 +331,7 @@ impl Painter<'_> {
       width,
       color,
       closed: false,
+      edge,
       clip: None,
       layer: 0,
     });

@@ -27,6 +27,6 @@ pub(crate) use mesh::MeshStream;
 pub(crate) use pipelines::{QUAD_LAYOUT, shadow_layout, texture_layout};
 pub(crate) use plan::{Draw, DrawSource, Placed, plan_draws};
 pub(crate) use polyline::{
-  MITER_LIMIT, Piece, PieceKind, PolyPoint, PolyStyle, along_half, filter_points, piece_list,
-  piece_triangles,
+  MITER_LIMIT, Piece, PieceKind, PolyPoint, PolyStyle, along_half, edge_code, filter_points,
+  piece_list, piece_triangles,
 };

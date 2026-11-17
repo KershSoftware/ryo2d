@@ -2,7 +2,115 @@
 // and the UI's (`ui.wgsl`), so both push and cover alike: each vertex is
 // pushed a pixel of its image out as far as its limit lets it, its
 // distances grown by the push, and each pixel is covered by its distances
-// to the line's edges in the image's pixels (no derivative).
+// to the line's edges in the image's pixels (no derivative). A Hard edge
+// draws a pixel whole when its centre lies inside the line, its distance
+// across taken along the image's axis nearest the line's normal, so a
+// line of a pixel is one pixel a column
+// (`a_hard_line_is_one_pixel_per_column_at_any_angle`,
+// `a_hard_line_is_its_width_in_pixels_per_column`,
+// `a_line_on_a_pixel_art_target_draws_whole_pixels_unless_smooth`).
+
+// A line's edge as the line table numbers it (`edge_code`)
+const LINE_EDGE_TARGET: u32 = 0u;
+const LINE_EDGE_SMOOTH: u32 = 1u;
+const LINE_EDGE_HARD: u32 = 2u;
+
+// How far a Hard band is moved up (or left) in pixels, so a pixel centre
+// on its edge, as a line on whole or half pixels puts them, falls inside
+// on the upper side and outside on the lower however the interpolation
+// rounds
+const LINE_HARD_NUDGE: f32 = 1.0 / 64.0;
+
+// Whether a line of `edge` draws Hard through a camera whose `snap` is set
+// on a pixel-art target
+fn line_hard(edge: u32, snap: f32) -> bool {
+    return edge == LINE_EDGE_HARD || (edge == LINE_EDGE_TARGET && snap > 0.5);
+}
+
+// `v`, a direction in the line's units, in the image's pixels (x right, y
+// down) through `to_clip` into an image of `resolution` pixels
+fn line_image_dir(v: vec2<f32>, to_clip: mat4x4<f32>, resolution: vec2<f32>) -> vec2<f32> {
+    let clip = (to_clip * vec4<f32>(v, 0.0, 0.0)).xy;
+    return clip * vec2<f32>(0.5, -0.5) * resolution;
+}
+
+// A vertex's normal in the image (unit, zero for none) and its component
+// along the image's axis nearest it, signed so that a distance over it
+// runs down (or right) in the image (0 for no normal)
+struct LineAxis {
+    normal: vec2<f32>,
+    major: f32,
+};
+
+fn line_axis(normal: vec2<f32>, to_clip: mat4x4<f32>, resolution: vec2<f32>) -> LineAxis {
+    let image = line_image_dir(normal, to_clip, resolution);
+    let len = length(image);
+    if len <= 0.0 {
+        return LineAxis(vec2<f32>(0.0), 0.0);
+    }
+    let n = image / len;
+    if abs(n.y) >= abs(n.x) {
+        return LineAxis(n, n.y);
+    }
+    return LineAxis(n, n.x);
+}
+
+// A Hard line's vertex is put on a 1/256 pixel grid, which the rasteriser's
+// fixed-point grid holds exactly, so the rasteriser does not move it, and
+// its distances are moved with it (`line_moved`): each triangle's
+// distances are then those of its pixels' true places, and two triangles
+// agree to within a float's rounding on which pixels a column draws. Left
+// to the rasteriser, a vertex moves up to 1/512 of a pixel while its
+// distances stay, and two triangles meeting in a column could disagree
+// about a pixel centre that near a band's edge, drawing it twice or not at
+// all. Copies of a place move alike, as they are alike
+const LINE_GRID: f32 = 256.0;
+
+// Where `clip` lands on the grid of an image of `resolution` pixels, and
+// how far it moved in its pixels
+struct LineGridded {
+    clip: vec4<f32>,
+    moved: vec2<f32>,
+};
+
+fn line_on_grid(clip: vec4<f32>, resolution: vec2<f32>) -> LineGridded {
+    let w = select(1.0, clip.w, clip.w != 0.0);
+    let pixel = (clip.xy / w * vec2<f32>(0.5, -0.5) + 0.5) * resolution;
+    let on = round(pixel * LINE_GRID) / LINE_GRID;
+    let back = (on / resolution - 0.5) * vec2<f32>(2.0, -2.0) * w;
+    return LineGridded(vec4<f32>(back, clip.zw), on - pixel);
+}
+
+// `fringe`, of a vertex of `flags`, moved `moved` image pixels: its
+// distance across over the axis moved with it, or a round piece's offset
+// (`ppu` pixels a unit, the image's axes in the line's units from
+// `to_clip` and `resolution`). A second edge's distance stays, off by
+// no more than the rasteriser's own move would leave it
+fn line_moved(
+    fringe: LineFringe,
+    flags: u32,
+    moved: vec2<f32>,
+    axis: LineAxis,
+    to_clip: mat4x4<f32>,
+    resolution: vec2<f32>,
+    ppu: f32,
+) -> LineFringe {
+    var out = fringe;
+    if ppu <= 0.0 {
+        return out;
+    }
+    if (flags & LINE_FLAG_ROUND) != 0u {
+        let x = line_image_dir(vec2<f32>(1.0, 0.0), to_clip, resolution);
+        let y = line_image_dir(vec2<f32>(0.0, 1.0), to_clip, resolution);
+        out.measure = vec3<f32>(
+            out.measure.xy + vec2<f32>(dot(moved, x), dot(moved, y)) / (ppu * ppu),
+            out.measure.z,
+        );
+    } else if axis.major != 0.0 {
+        out.across_axis += dot(moved, axis.normal) / (ppu * axis.major);
+    }
+    return out;
+}
 
 // A vertex pushed out by the fringe: where it is, what it measures (across,
 // inside the second edge and the half width; a round piece's offset in the
@@ -11,11 +119,15 @@ struct LineFringe {
     pos: vec2<f32>,
     measure: vec3<f32>,
     uv: vec2<f32>,
+    // The distance across over `axis` (`line_axis`): along the image's
+    // axis nearest the normal, in the line's units
+    across_axis: f32,
 };
 
 // `vertex`, placed at `at` (its position moved by effects or a scroll
-// slot), pushed a pixel out at `ppu` pixels per unit
-fn line_fringe(vertex: PieceVertex, at: vec2<f32>, ppu: f32) -> LineFringe {
+// slot), pushed a pixel out at `ppu` pixels per unit, its normal's
+// component along its image's nearest axis `axis`
+fn line_fringe(vertex: PieceVertex, at: vec2<f32>, ppu: f32, axis: f32) -> LineFringe {
     var push = 0.0;
     if ppu > 0.0 {
         push = min(1.0 / ppu, vertex.limit);
@@ -40,17 +152,24 @@ fn line_fringe(vertex: PieceVertex, at: vec2<f32>, ppu: f32) -> LineFringe {
     } else if vertex.half > 0.0 {
         uv.y -= 0.5 * vertex.dist_rate * push / vertex.half;
     }
-    return LineFringe(pos, measure, uv);
+    // A vertex without a normal is on its centre line
+    var across_axis = 0.0;
+    if axis != 0.0 && (vertex.flags & LINE_FLAG_ROUND) == 0u {
+        across_axis = measure.x / axis;
+    }
+    return LineFringe(pos, measure, uv, across_axis);
 }
 
 // What a line's fragment is given: its measures (as `LineFringe`'s), its
-// vertex's flags and `k`, and a two-point capped line's half length
-// between its caps
+// vertex's flags and `k`, a two-point capped line's half length between
+// its caps, and whether it draws Hard
 struct LineMeasure {
     measure: vec3<f32>,
+    across_axis: f32,
     flags: u32,
     k: f32,
     along_half: f32,
+    hard: bool,
 };
 
 // How much of the pixel a line of half width `half` covers: each edge's
@@ -88,6 +207,41 @@ fn line_cover(m: LineMeasure, half: f32, ppu: f32) -> f32 {
     return product + (toward - product) * m.k * m.k;
 }
 
+// Whether a pixel `d` pixels across lies in the half-open band of half
+// width `hw` pixels about a centre line, moved up by the nudge
+fn line_in_band(d: f32, hw: f32) -> bool {
+    return d >= -hw - LINE_HARD_NUDGE && d < hw - LINE_HARD_NUDGE;
+}
+
+// A Hard line's coverage: 1 where the pixel's centre lies inside the line,
+// 0 elsewhere. Across, the distance and the half width are taken along the
+// image's axis nearest the normal (the distance over the normal's
+// component on it), the half width at least half a pixel, so a line of a
+// pixel is one pixel in each column (or row), and one narrower one wide; a
+// second edge takes the centre inside it, and a round piece the centre
+// within its half width of its corner point
+fn line_hard_cover(m: LineMeasure, ppu: f32) -> f32 {
+    if ppu <= 0.0 {
+        return 1.0;
+    }
+    let hw = max(m.measure.z * ppu, 0.5);
+    if (m.flags & LINE_FLAG_ROUND) != 0u {
+        return select(0.0, 1.0, length(m.measure.xy) * ppu < hw);
+    }
+    var inside = true;
+    if m.measure.z < LINE_NO_EDGE * 0.5 {
+        inside = line_in_band(m.across_axis * ppu, hw);
+    }
+    if (m.flags & LINE_FLAG_SECOND) != 0u {
+        if (m.flags & LINE_FLAG_ALONG) != 0u {
+            inside = inside && line_in_band(m.measure.y * ppu, max(m.along_half * ppu, 0.5));
+        } else {
+            inside = inside && m.measure.y * ppu >= -LINE_HARD_NUDGE;
+        }
+    }
+    return select(0.0, 1.0, inside);
+}
+
 // The pixel's distance from the centre line over the half width, which
 // Soft and Glow shape by (a round piece's from its corner point)
 fn line_edge(m: LineMeasure) -> f32 {
@@ -106,6 +260,22 @@ struct LinePixel {
     shape: vec2<f32>,
 };
 
+// A Hard line's pixel: whole or nothing (`line_hard_cover`), Soft and Glow
+// keeping their shape across it, as a Smooth line of its drawn half width
+// shapes it
+fn line_hard_pixel(m: LineMeasure, style: u32, ppu: f32) -> LinePixel {
+    let cover = line_hard_cover(m, ppu);
+    let half = m.measure.z;
+    if style == LINE_SOLID || ppu <= 0.0 || half <= 0.0 || half >= LINE_NO_EDGE * 0.5 {
+        return LinePixel(cover, style_shape_at(style, line_edge(m)));
+    }
+    var d = abs(m.measure.x) * ppu;
+    if (m.flags & LINE_FLAG_ROUND) != 0u {
+        d = length(m.measure.xy) * ppu;
+    }
+    return LinePixel(cover, style_shape(style, d, max(half * ppu, 0.5)));
+}
+
 // A Soft or Glow line under half a pixel in half width covers the pixels
 // one of half a pixel would, dimmed by the ratio of their widths, so it
 // stays whole wherever it lies, and its shape is averaged over each pixel
@@ -113,6 +283,9 @@ struct LinePixel {
 fn line_pixel(m: LineMeasure, params: vec4<f32>, ppu: f32) -> LinePixel {
     let style = line_style(params);
     let half = m.measure.z;
+    if m.hard {
+        return line_hard_pixel(m, style, ppu);
+    }
     if style == LINE_SOLID || ppu <= 0.0 || half <= 0.0 || half >= LINE_NO_EDGE * 0.5 {
         return LinePixel(line_cover(m, half, ppu), style_shape_at(style, line_edge(m)));
     }

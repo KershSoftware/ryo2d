@@ -74,6 +74,9 @@ struct PieceVertex {
     k: f32,
     // Across from its piece's centre line (a round piece: its offset's x)
     dist: f32,
+    // The normal of the centre line `dist` is measured from (zero where
+    // `dist` is: a corner point, a round piece)
+    normal: vec2<f32>,
     // Inside its second edge (a round piece: its offset's y)
     second: f32,
     half: f32,
@@ -416,6 +419,7 @@ fn lp_assemble(corner: LinePt, m: LpPlace) -> PieceVertex {
     v.flags = 0u;
     v.k = 0.0;
     v.dist = m.dist;
+    v.normal = m.normal;
     v.second = LINE_NO_EDGE;
     v.half = m.half;
     v.push = m.push;
@@ -427,6 +431,7 @@ fn lp_assemble(corner: LinePt, m: LpPlace) -> PieceVertex {
         v.dist = m.offset.x;
         v.second = m.offset.y;
         v.dist_rate = 0.0;
+        v.normal = vec2<f32>(0.0);
         v.flags = LINE_FLAG_ROUND;
     } else if m.second.kind == LP_SECOND_EDGE {
         v.second = dot(m.second.point - v.position, m.second.dir);

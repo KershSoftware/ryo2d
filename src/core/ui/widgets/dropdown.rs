@@ -247,6 +247,7 @@ impl Dropdown<'_, '_> {
         width: 1.5,
         color: look.text,
         closed: false,
+        edge: None,
         clip: None,
         layer: 0,
       }),

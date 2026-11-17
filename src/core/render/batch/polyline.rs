@@ -178,7 +178,7 @@ use std::ops::Range;
 
 use glam::Vec2;
 
-use crate::core::trail::{LineCap, LineJoin};
+use crate::core::trail::{LineCap, LineEdge, LineJoin};
 use crate::core::ui::Color;
 
 /// One vertex of the triangle stream: 76 bytes, every number an f32.
@@ -277,7 +277,8 @@ pub(crate) struct LineInfo {
   pub(crate) cap: u32,
   /// 1 when its last point joins its first
   pub(crate) closed: u32,
-  /// How its edges draw: 0 smooth
+  /// How its edges meet the pixels: `EDGE_TARGET`, `EDGE_SMOOTH` or
+  /// `EDGE_HARD`
   pub(crate) edge: u32,
   /// A miter longer than this many half widths is bevelled
   pub(crate) miter_limit: f32,
@@ -291,6 +292,20 @@ pub(crate) const JOIN_ROUND: u32 = 2;
 pub(crate) const CAP_BUTT: u32 = 0;
 pub(crate) const CAP_SQUARE: u32 = 1;
 pub(crate) const CAP_ROUND: u32 = 2;
+/// A line's edge as the line table and the UI's line instances number it:
+/// its target's (Hard on a pixel-art target, Smooth elsewhere), or its own
+pub(crate) const EDGE_TARGET: u32 = 0;
+pub(crate) const EDGE_SMOOTH: u32 = 1;
+pub(crate) const EDGE_HARD: u32 = 2;
+
+/// `edge` as the line table numbers it
+pub(crate) fn edge_code(edge: Option<LineEdge>) -> u32 {
+  match edge {
+    None => EDGE_TARGET,
+    Some(LineEdge::Smooth) => EDGE_SMOOTH,
+    Some(LineEdge::Hard) => EDGE_HARD,
+  }
+}
 
 impl LineInfo {
   /// The entry of a line drawn in `style`, its `count` points from `first`
@@ -319,7 +334,7 @@ impl LineInfo {
         LineCap::Round => CAP_ROUND,
       },
       closed: u32::from(closed),
-      edge: 0,
+      edge: edge_code(style.edge),
       miter_limit: MITER_LIMIT,
       _pad: [0; 3],
     }
@@ -361,6 +376,8 @@ pub(crate) struct PolyStyle {
   pub(crate) params: [f32; 4],
   /// What its colours' light is multiplied by
   pub(crate) emission: f32,
+  /// How its edges meet the pixels (`None`: its target's)
+  pub(crate) edge: Option<LineEdge>,
 }
 
 /// A miter longer than this many times the line's width becomes a bevel.
@@ -1767,6 +1784,7 @@ mod tests {
         closed,
         params: [0.0; 4],
         emission: 1.0,
+        edge: None,
       },
     );
     t
@@ -1905,6 +1923,7 @@ mod tests {
       closed: false,
       params: [0.0; 4],
       emission: 1.0,
+      edge: None,
     };
     let points = [(0.0, 0.0), (5.0, 0.0)].map(|(x, y)| PolyPoint {
       pos: Vec2::new(x, y),
@@ -3031,6 +3050,7 @@ mod tests {
       closed,
       params: [0.0; 4],
       emission: 1.0,
+      edge: None,
     }
   }
 

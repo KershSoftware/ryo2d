@@ -50,8 +50,8 @@ struct QuadVertex {
 // and the points they are built from: the window's six positions (a0-a2),
 // their `u` (a3, a4.xy), the half width and a two-point line's half length
 // between its caps (a4.zw), the line's params (a5), its sRGB colour as two
-// exact 16-bit halves, the miter limit and the window's bits (a6), and the
-// offset every point is moved by (a7.xy).
+// exact 16-bit halves, the miter limit and the window's bits with the
+// line's edge (a6), and the offset every point is moved by (a7.xy).
 struct UiInstanceIn {
     @location(2) a0: vec4<f32>,
     @location(3) a1: vec4<f32>,
@@ -82,9 +82,10 @@ struct UiOut {
     @location(7) @interpolate(flat) clip: vec4<u32>,
     @location(8) @interpolate(flat) kind: u32,
     @location(9) @interpolate(flat) flags: u32,
-    // A line's measures (`LineFringe`); its `k`, half length between caps
-    // and vertex flags ride in `extra`
+    // A line's measures (`LineFringe`); its `k`, half length between caps,
+    // vertex flags and whether it draws Hard ride in `extra`
     @location(10) measure: vec3<f32>,
+    @location(11) across_axis: f32,
 }
 
 // The clip an instance draws under: its own in slot 0; in a slot the
@@ -113,9 +114,10 @@ fn outside_clip(lo: vec2<f32>, hi: vec2<f32>, clip: vec4<u32>) -> bool {
 
 // A line instance's window bits: bits 0-5 the slots holding a point, 6-11
 // those holding a closed line's first point (its seam), then the piece's
-// kind and which pair of its triangles
+// kind, which pair of its triangles and the line's edge
 const LINE_KIND_SHIFT: u32 = 12u;
 const LINE_PAIR_SHIFT: u32 = 14u;
+const LINE_EDGE_SHIFT: u32 = 18u;
 
 // A line instance's points about its piece's point, from slot `first` (the
 // window about a vertex's own point starts where `line_piece_corner` says),
@@ -144,7 +146,8 @@ fn ui_line_window(instance: UiInstanceIn, first: i32, offset: vec2<f32>) -> Line
 // and its slot's (`at + by`, as the CPU moves a line placed absolute, so
 // both build from the same points), pushed a pixel of the UI image out and
 // measured as the world's are (`line_pieces.wgsl`, `line_cover.wgsl`: no
-// displacement, no snap). An instance wholly outside its clip, its points'
+// displacement, no snap; Hard by its edge or, as its target's, on the
+// pixel-art target, where the UI camera's `snap` is set). An instance wholly outside its clip, its points'
 // box grown by how far a vertex reaches from them (`ui_line_reach` on the
 // CPU), is collapsed
 fn ui_line(instance: UiInstanceIn, index: u32, by: vec2<f32>, clip: vec4<u32>, base: UiOut) -> UiOut {
@@ -188,13 +191,21 @@ fn ui_line(instance: UiInstanceIn, index: u32, by: vec2<f32>, clip: vec4<u32>, b
     let w = ui_line_window(instance, line_piece_corner(kind, tri, corner), offset);
     let look = LineLook(JOIN_MITER, CAP_BUTT, miter_limit);
     let vertex = line_piece_vertex(w, look, kind, tri, corner);
-    let fringe = line_fringe(vertex, vertex.position, ppu);
+    let hard = line_hard((bits >> LINE_EDGE_SHIFT) & 3u, globals.snap);
+    let axis = line_axis(vertex.normal, globals.view_proj, globals.resolution);
+    var fringe = line_fringe(vertex, vertex.position, ppu, axis.major);
     out.position = globals.view_proj * vec4<f32>(fringe.pos, 0.0, 1.0);
+    if hard {
+        let gridded = line_on_grid(out.position, globals.resolution);
+        out.position = gridded.clip;
+        fringe = line_moved(fringe, vertex.flags, gridded.moved, axis, globals.view_proj, globals.resolution, ppu);
+    }
     out.color = vec4<f32>(srgb_to_linear(vertex.color.rgb), vertex.color.a);
     out.uv = fringe.uv;
     out.params = instance.a5;
     out.measure = fringe.measure;
-    out.extra = vec4<f32>(vertex.k, instance.a4.w, f32(vertex.flags), 0.0);
+    out.extra = vec4<f32>(vertex.k, instance.a4.w, f32(vertex.flags), select(0.0, 1.0, hard));
+    out.across_axis = fringe.across_axis;
     return out;
 }
 
@@ -319,7 +330,7 @@ fn fs_ui(in: UiOut) -> @location(0) vec4<f32> {
         }
         // line.wgsl's fs_main: covered by its distances in pixels
         case KIND_LINE: {
-            let m = LineMeasure(in.measure, u32(in.extra.z), in.extra.x, in.extra.y);
+            let m = LineMeasure(in.measure, in.across_axis, u32(in.extra.z), in.extra.x, in.extra.y, in.extra.w > 0.5);
             let pixel = line_pixel(m, in.params, globals.px_per_unit);
             color = styled(in.color, pixel.shape, in.params, pixel.cover);
         }

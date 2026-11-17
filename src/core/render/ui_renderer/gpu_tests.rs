@@ -287,6 +287,7 @@ fn a_line_whose_offset_or_points_are_not_finite_builds_nothing() {
     width: 2.0,
     color: Color::WHITE,
     closed: false,
+    edge: None,
     clip: None,
     layer: 0,
   };
@@ -365,6 +366,7 @@ fn every_kind_draws_inside_its_clip() {
     width: 3.2,
     color: Color::new(250, 240, 90, 200),
     closed: false,
+    edge: None,
     clip: Some(Rect::new(7.0, 5.0, 34.0, 38.0)),
     layer: 0,
   };
@@ -804,6 +806,7 @@ mod lines {
 
   use super::*;
   use crate::core::render::ui::{UI_CAMERA, line_of, ui_view};
+  use crate::core::trail::LineEdge;
 
   /// The line images' size
   const IMAGE: (u32, u32) = (200, 150);
@@ -881,6 +884,7 @@ mod lines {
         width: width / px_scale,
         color: Color::new(240, 236, 250, 230),
         closed,
+        edge: None,
         clip: None,
         layer: 0,
       })
@@ -895,6 +899,17 @@ mod lines {
     queue: &wgpu::Queue,
     lines: &[UiCommand],
     px_scale: f32,
+  ) -> (image::RgbaImage, image::RgbaImage) {
+    drawn_on(device, queue, lines, px_scale, false)
+  }
+
+  /// [`drawn`], the UI image the pixel-art target when `on_target`
+  fn drawn_on(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    lines: &[UiCommand],
+    px_scale: f32,
+    on_target: bool,
   ) -> (image::RgbaImage, image::RgbaImage) {
     let (width, height) = IMAGE;
     let space = UiSpace {
@@ -927,7 +942,7 @@ mod lines {
     }
     list.sorted();
     let mut uniforms = CameraUniforms::default();
-    let globals = CameraGlobals::new(&view, IMAGE, 0.0, 0.0, false);
+    let globals = CameraGlobals::new(&view, IMAGE, 0.0, 0.0, on_target);
     uniforms.sync(device, queue, &[(UI_CAMERA, globals)]);
     batch.sync_cameras(device, &uniforms);
     batch.prepare(device, queue, &list, &cameras, &mut sprites, &[]);
@@ -1032,6 +1047,76 @@ mod lines {
     assert!(error.is_none(), "{error:?}");
   }
 
+  /// A UI line takes its target's edge: whole pixels on the pixel-art
+  /// target, smooth ones at window resolution; one given an edge keeps it
+  /// on either; and every one draws as the world line of its points does
+  #[test]
+  fn ui_lines_take_their_target_s_edge_unless_given_one() {
+    let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+      return;
+    };
+    let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let lines = |edge: Option<LineEdge>, px_scale: f32| -> Vec<UiCommand> {
+      let shapes: [(&[(f32, f32)], f32); 4] = [
+        (&[(6.3, 6.3), (90.6, 31.4)], 1.0),
+        (&[(10.2, 50.6), (40.7, 120.1), (80.4, 60.3)], 2.0),
+        (&[(110.5, 10.2), (190.3, 30.8), (120.1, 100.6)], 3.0),
+        (&[(120.6, 120.2), (196.1, 141.7)], 0.5),
+      ];
+      shapes
+        .into_iter()
+        .map(|(points, width)| UiCommand::Line {
+          points: points
+            .iter()
+            .map(|&(x, y)| Vec2::new(x, y) / px_scale)
+            .collect::<Vec<_>>()
+            .into(),
+          at: Vec2::ZERO,
+          width: width / px_scale,
+          color: Color::WHITE,
+          closed: false,
+          edge,
+          clip: None,
+          layer: 0,
+        })
+        .collect()
+    };
+    let white = [255, 255, 255, 255];
+    for px_scale in [1.0, 2.0] {
+      for (edge, on_target, whole) in [
+        (None, true, true),
+        (None, false, false),
+        (Some(LineEdge::Smooth), true, false),
+        (Some(LineEdge::Hard), false, true),
+        (Some(LineEdge::Hard), true, true),
+      ] {
+        let what = format!("scale {px_scale}, {edge:?}, on target {on_target}");
+        let (world, ui) = drawn_on(&device, &queue, &lines(edge, px_scale), px_scale, on_target);
+        let (count, first) = differ(&world, &ui);
+        assert_eq!(count, 0, "{what}: pixels (world, UI) differ: {first:?}");
+        let painted = ui.pixels().filter(|pixel| pixel.0 != CLEARED).count();
+        let partial = ui
+          .pixels()
+          .filter(|pixel| pixel.0 != CLEARED && pixel.0 != white)
+          .count();
+        assert!(painted > 400, "{what}: {painted} pixels drawn");
+        if whole {
+          assert_eq!(
+            partial, 0,
+            "{what}: {partial} of {painted} pixels partly covered"
+          );
+        } else {
+          assert!(
+            partial > 100,
+            "{what}: {partial} of {painted} pixels partly covered"
+          );
+        }
+      }
+    }
+    let error = pollster::block_on(scope.pop());
+    assert!(error.is_none(), "{error:?}");
+  }
+
   /// A UI line is kept wherever its miter's tip or its fringe reaches into
   /// its clip or the view, though its points lie outside them: built on the
   /// CPU (`build_line`'s cull) and not collapsed by the vertex stage
@@ -1074,6 +1159,7 @@ mod lines {
         width: 8.8 / px_scale,
         color: Color::new(240, 236, 250, 230),
         closed: false,
+        edge: None,
         clip,
         layer: 0,
       };
@@ -1269,6 +1355,7 @@ mod bound {
         width: 3.0,
         color: Color::new(250, 220, 40, 255),
         closed: false,
+        edge: None,
         clip: None,
         layer: 0,
       };
@@ -1508,6 +1595,7 @@ mod building {
       width: 3.0,
       color: Color::new(250, 240, 90, 200),
       closed: false,
+      edge: None,
       clip,
       layer: 0,
     }
@@ -1748,6 +1836,7 @@ mod building {
           width: 3.0,
           color: Color::WHITE,
           closed: false,
+          edge: None,
           clip: clip(None),
           layer: 0,
         },
@@ -1872,6 +1961,7 @@ mod building {
       color: Color::new(250, 240, 90, 200),
       params: [0.0; 4],
       miter_limit: MITER_LIMIT,
+      edge: 0,
     };
     // The first segment, the join at the middle point, the second segment
     let pieces = [
@@ -2802,6 +2892,7 @@ mod building {
           width: 2.0,
           color: Color::WHITE,
           closed: false,
+          edge: None,
           clip: None,
           layer: 0,
         };

@@ -116,6 +116,7 @@ pub(crate) fn trail_points(trail: &Trail2D, out: &mut Vec<PolyPoint>) -> Option<
     closed: false,
     params: build_effect_params(trail.effect(), trail.style()),
     emission: trail.emission(),
+    edge: trail.edge(),
   })
 }
 
@@ -142,6 +143,7 @@ pub(crate) fn line_points(line: &Line2D, at: Vec2, out: &mut Vec<PolyPoint>) -> 
     closed: line.is_closed(),
     params: build_effect_params(None, line.style()),
     emission: line.emission(),
+    edge: line.edge(),
   })
 }
 
@@ -438,7 +440,7 @@ fn build_effect_params(effect: Option<&TrailEffect>, style: TrailStyle) -> [f32;
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::core::trail::LineJoin;
+  use crate::core::trail::{LineEdge, LineJoin};
 
   #[test]
   fn effect_and_style_share_one_float() {
@@ -544,6 +546,7 @@ mod tests {
       closed: false,
       params: [0.0; 4],
       emission: 1.0,
+      edge: None,
     };
     let (round, miter) = (style(LineJoin::Round), style(LineJoin::Miter));
     // Three lines of three points and 26 triangles each
@@ -605,5 +608,40 @@ mod tests {
     assert!(trail_points(&trail, &mut points).is_some());
     let last = points.last().map(|point| point.u);
     assert_eq!(last, Some(4.0), "20 units over tiles of 5");
+  }
+
+  #[test]
+  fn a_line_s_or_trail_s_edge_reaches_its_line_table_entry() {
+    use super::super::polyline::{EDGE_HARD, EDGE_SMOOTH, EDGE_TARGET};
+    let ends = vec![Vec2::ZERO, Vec2::new(10.0, 0.0)];
+    let mut points = Vec::new();
+    for (edge, code) in [
+      (None, EDGE_TARGET),
+      (Some(LineEdge::Smooth), EDGE_SMOOTH),
+      (Some(LineEdge::Hard), EDGE_HARD),
+    ] {
+      let mut line = Line2D::new(ends.clone(), Color::WHITE, 2.0);
+      line.set_edge(edge);
+      let mut trail = Trail2D::new(Color::WHITE, 2.0);
+      trail.set_edge(edge);
+      trail.populate_line(0.0, 0.0, 20.0, 0.0, 5);
+      let styles = [
+        line_points(&line, Vec2::ZERO, &mut points),
+        trail_points(&trail, &mut points),
+      ];
+      for style in styles {
+        let style = style.expect("drawn");
+        assert_eq!(style.edge, edge);
+        assert_eq!(
+          LineInfo::of(&style, false, 0.0, 0, 2).edge,
+          code,
+          "{edge:?}"
+        );
+      }
+    }
+    let hard = Line2D::new(ends, Color::WHITE, 2.0).with_edge(LineEdge::Hard);
+    assert_eq!(hard.edge(), Some(LineEdge::Hard));
+    let trail = Trail2D::new(Color::WHITE, 2.0).with_edge(LineEdge::Smooth);
+    assert_eq!(trail.edge(), Some(LineEdge::Smooth));
   }
 }

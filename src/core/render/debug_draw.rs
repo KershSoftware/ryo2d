@@ -12,7 +12,7 @@ use super::{CameraDraw, DrawList};
 use crate::core::ecs::{ResMut, Resource};
 use crate::core::graphics::RenderLayers;
 use crate::core::render::batch::{BlendMode, Filter};
-use crate::core::trail::{LineCap, LineJoin};
+use crate::core::trail::{LineCap, LineEdge, LineJoin};
 use crate::core::ui::Color;
 
 /// What a debug shape is.
@@ -33,13 +33,15 @@ pub(crate) enum ShapeKind {
 }
 
 /// One debug shape: its points in its list's buffer, colour, width in
-/// screen pixels and the layers of the cameras that draw it.
+/// screen pixels, edge and the layers of the cameras that draw it.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct DebugShape {
   pub(crate) kind: ShapeKind,
   pub(crate) points: Range<usize>,
   pub(crate) color: Color,
   pub(crate) width: f32,
+  /// How its edges meet the pixels (`None`: its target's)
+  pub(crate) edge: Option<LineEdge>,
   pub(crate) layers: RenderLayers,
 }
 
@@ -79,11 +81,12 @@ pub struct DebugDraw {
   in_fixed_step: bool,
 }
 
-/// A [`DebugDraw`] with a width or layers of its own (from
-/// [`DebugDraw::width`] or [`DebugDraw::layers`]).
+/// A [`DebugDraw`] with a width, an edge or layers of its own (from
+/// [`DebugDraw::width`], [`DebugDraw::edge`] or [`DebugDraw::layers`]).
 pub struct DebugPen<'a> {
   debug: &'a mut DebugDraw,
   width: f32,
+  edge: Option<LineEdge>,
   layers: RenderLayers,
 }
 
@@ -91,6 +94,12 @@ impl DebugDraw {
   /// A pen drawing `pixels` screen pixels wide.
   pub fn width(&mut self, pixels: f32) -> DebugPen<'_> {
     self.pen().width(pixels)
+  }
+
+  /// A pen drawing with `edge` (shapes take their camera's target's
+  /// otherwise: `Hard` on a pixel-art target, `Smooth` elsewhere).
+  pub fn edge(&mut self, edge: LineEdge) -> DebugPen<'_> {
+    self.pen().edge(edge)
   }
 
   /// A pen drawing for the cameras on `layers`.
@@ -132,6 +141,7 @@ impl DebugDraw {
     DebugPen {
       debug: self,
       width: 1.0,
+      edge: None,
       layers: RenderLayers::default(),
     }
   }
@@ -141,7 +151,7 @@ impl DebugDraw {
     kind: ShapeKind,
     points: &[Vec2],
     color: Color,
-    width: f32,
+    (width, edge): (f32, Option<LineEdge>),
     layers: RenderLayers,
   ) {
     let list = if self.in_fixed_step {
@@ -156,6 +166,7 @@ impl DebugDraw {
       points: start..list.points.len(),
       color,
       width,
+      edge,
       layers,
     });
   }
@@ -258,6 +269,7 @@ impl DebugDraw {
           // Solid, no effect
           params: [0.0; 4],
           emission: 1.0,
+          edge: shape.edge,
         };
         push_polyline(list, lines, scratch, &style, look);
       };
@@ -350,6 +362,13 @@ impl DebugPen<'_> {
     self
   }
 
+  /// Draw with `edge` (otherwise each camera's target's: `Hard` on a
+  /// pixel-art target, `Smooth` elsewhere).
+  pub fn edge(mut self, edge: LineEdge) -> Self {
+    self.edge = Some(edge);
+    self
+  }
+
   /// Draw for the cameras on `layers`.
   pub fn layers(mut self, layers: RenderLayers) -> Self {
     self.layers = layers;
@@ -387,8 +406,8 @@ impl DebugPen<'_> {
   }
 
   fn push(&mut self, kind: ShapeKind, points: &[Vec2], color: Color) {
-    let (width, layers) = (self.width, self.layers);
-    self.debug.push(kind, points, color, width, layers);
+    let (width, edge, layers) = (self.width, self.edge, self.layers);
+    self.debug.push(kind, points, color, (width, edge), layers);
   }
 }
 
@@ -427,5 +446,20 @@ mod tests {
       .rect(Vec2::ZERO, Vec2::ONE, Color::WHITE);
     let shape = debug.shapes().next().unwrap();
     assert_eq!((shape.width, shape.layers), (3.0, RenderLayers::layer(2)));
+  }
+
+  #[test]
+  fn a_pen_sets_its_edge_and_shapes_take_their_target_s_otherwise() {
+    let mut debug = DebugDraw::default();
+    debug.line(Vec2::ZERO, Vec2::X, Color::WHITE);
+    debug
+      .edge(LineEdge::Hard)
+      .circle(Vec2::ZERO, 4.0, Color::WHITE);
+    debug
+      .width(2.0)
+      .edge(LineEdge::Smooth)
+      .cross(Vec2::ZERO, 4.0, Color::WHITE);
+    let edges: Vec<_> = debug.shapes().map(|shape| shape.edge).collect();
+    assert_eq!(edges, [None, Some(LineEdge::Hard), Some(LineEdge::Smooth)]);
   }
 }

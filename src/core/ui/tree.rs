@@ -2275,6 +2275,7 @@ fn command_of(
           width,
           color,
           closed,
+          edge,
           ..
         } => {
           // The points are shared, moved where they are drawn; never culled
@@ -2284,6 +2285,7 @@ fn command_of(
             width,
             color,
             closed,
+            edge,
             clip,
             layer,
           };
@@ -2777,6 +2779,7 @@ mod tests {
         width: 1.0,
         color: Color::WHITE,
         closed: false,
+        edge: None,
         clip: None,
         layer: 0,
       }),
@@ -2995,6 +2998,7 @@ mod clone_tests {
       width: 1.0,
       color: Color::WHITE,
       closed: false,
+      edge: None,
       clip: None,
       layer: 0,
     });
