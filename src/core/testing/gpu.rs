@@ -35,10 +35,12 @@ async fn create() -> Option<Gpu> {
     })
     .await
     .ok()?;
+  // Timestamps where the adapter has them, for the benches' GPU times
+  let features = adapter.features() & wgpu::Features::TIMESTAMP_QUERY;
   let (device, queue) = adapter
     .request_device(&wgpu::DeviceDescriptor {
       label: Some("Ryo2D Headless Device"),
-      required_features: wgpu::Features::empty(),
+      required_features: features,
       required_limits: wgpu::Limits::default(),
       memory_hints: Default::default(),
       experimental_features: wgpu::ExperimentalFeatures::disabled(),

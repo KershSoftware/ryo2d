@@ -384,55 +384,59 @@ impl Engine {
         }
       }
       let mut points = std::mem::take(&mut self.poly_points);
-      let mut trails = self.world.query::<(&Trail2D, Option<&RenderLayers>)>();
-      let images = images_of(&self.world);
-      for (trail, layers) in trails.iter(&self.world) {
-        // A texture that is not loaded draws the checker (debug builds), or
-        // no trail
-        let texture = match trail.texture() {
-          Some(image) => match gpu.texture_of(image.id(), images) {
-            Some(texture) => Some(texture),
-            None => continue,
-          },
-          None => None,
-        };
-        let Some(style) = trail_points(trail, &mut points) else {
-          continue;
-        };
-        let look = LineLook {
-          lit: trail.lighting(),
-          z: trail.z_order(),
-          texture,
-          blend: trail.blend(),
-          filter: trail.filter(),
+      // Trails and lines copied into the line stream as their points
+      {
+        profile_scope!("cpu:render:lines");
+        let mut trails = self.world.query::<(&Trail2D, Option<&RenderLayers>)>();
+        let images = images_of(&self.world);
+        for (trail, layers) in trails.iter(&self.world) {
+          // A texture that is not loaded draws the checker (debug builds), or
+          // no trail
+          let texture = match trail.texture() {
+            Some(image) => match gpu.texture_of(image.id(), images) {
+              Some(texture) => Some(texture),
+              None => continue,
+            },
+            None => None,
+          };
+          let Some(style) = trail_points(trail, &mut points) else {
+            continue;
+          };
+          let look = LineLook {
+            lit: trail.lighting(),
+            z: trail.z_order(),
+            texture,
+            blend: trail.blend(),
+            filter: trail.filter(),
+            layers: layers.copied().unwrap_or_default(),
+            only_camera: None,
+          };
+          push_polyline(&mut self.draw_list, line_stream, &points, &style, look);
+        }
+        let line_look = |line: &Line2D, layers: Option<&RenderLayers>| LineLook {
+          lit: line.lighting(),
+          z: line.z_order(),
+          texture: None,
+          blend: line.blend(),
+          filter: Filter::Default,
           layers: layers.copied().unwrap_or_default(),
           only_camera: None,
         };
-        push_polyline(&mut self.draw_list, line_stream, &points, &style, look);
-      }
-      let line_look = |line: &Line2D, layers: Option<&RenderLayers>| LineLook {
-        lit: line.lighting(),
-        z: line.z_order(),
-        texture: None,
-        blend: line.blend(),
-        filter: Filter::Default,
-        layers: layers.copied().unwrap_or_default(),
-        only_camera: None,
-      };
-      for (global, previous, line, layers) in self
-        .world
-        .query::<(
-          &GlobalTransform,
-          Option<&PreviousGlobalTransform>,
-          &Line2D,
-          Option<&RenderLayers>,
-        )>()
-        .iter(&self.world)
-      {
-        let at = render_global(global, previous, alpha).translation();
-        if let Some(style) = line_points(line, at, &mut points) {
-          let look = line_look(line, layers);
-          push_polyline(&mut self.draw_list, line_stream, &points, &style, look);
+        for (global, previous, line, layers) in self
+          .world
+          .query::<(
+            &GlobalTransform,
+            Option<&PreviousGlobalTransform>,
+            &Line2D,
+            Option<&RenderLayers>,
+          )>()
+          .iter(&self.world)
+        {
+          let at = render_global(global, previous, alpha).translation();
+          if let Some(style) = line_points(line, at, &mut points) {
+            let look = line_look(line, layers);
+            push_polyline(&mut self.draw_list, line_stream, &points, &style, look);
+          }
         }
       }
       // The overlays join the debug shapes, which each camera builds in its
