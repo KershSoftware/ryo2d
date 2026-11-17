@@ -112,3 +112,14 @@ Measured after packing (48-byte vertex, a per-line table): the upload is 4% unde
 - **UI lines** use the same piece functions (an include that takes points as arguments), with their points carried inline in the UI instance (one instance per two triangles), so retention (kept fragments, in-place uploads, the bitwise compare) works unchanged. World lines load points from the storage buffer.
 - **The CPU builder becomes the reference,** restructured into the same self-contained pieces in the same triangle order, in f32: the GPU's vertex outputs are compared with it through a test-only compute entry that calls the same piece-vertex function and writes the results. After the GPU path lands the reference is test-only.
 - **Speed** is measured on the CPU (the line bench) and on the GPU (timestamp queries, native only, in the line bench): both within the owner's ~15% of main on the lines-only bench.
+
+## A compute pre-pass (owner, 2026-11-17)
+
+Measured with the vertex shader building every corner: CPU 65–88% under main, GPU 2.2–3.6 times main (each vertex evaluates up to three corners, and a non-indexed draw shares no vertex). The owner chose a compute pre-pass to bring GPU time down.
+
+- **Corners once.** Before the world passes, a compute pass runs one thread per point of every line drawn this frame. It evaluates that point's corner with the one corner function (miter or bevel, shared or split, straight-on, U-turn, the pushes, limits and k) and writes a corner record to a storage buffer.
+- **Vertices once.** A second dispatch (or the same, by a thread per piece) builds each piece's vertices from the corner records, all attributes as the vertex shader builds them today, into a vertex storage buffer laid out per triangle code; the draw then reads its vertex by `vertex_index` with no further corner work (the vertex shader keeps only the per-camera push, effects and the fringe, which depend on the camera).
+- **Bit for bit.** The corner records are computed once and read by every piece that shares the corner, so watertightness no longer rests on identical recomputation; `@invariant` stays for the pushed position.
+- **The UI** keeps building in its vertex shader (its lines are few and its instances carry their points for retention), unless the measurement shows the UI benefits too.
+- **Testing.** The equality test compares the pre-pass's vertex records with the CPU reference; the count draw and every coverage test stay.
+- **Speed target:** GPU time near main's or under, with the CPU savings kept.
