@@ -9,6 +9,11 @@
 // line repeats, emission, its points, join and cap) is its entry in the
 // line table. The textured entry samples the atlas slot in `bounds` (raw
 // sRGB bytes), repeating it along the line.
+//
+// Every pixel is covered by its distances to the line's edges in the
+// image's pixels (no derivative); the coverage multiplies the straight
+// alpha of every style, and Soft and Glow shape by the distance over the
+// half width (`batch/line_cover_tests.rs`).
 
 @group(1) @binding(0) var line_texture: texture_2d<f32>;
 @group(1) @binding(1) var line_sampler: sampler;
@@ -199,13 +204,23 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VertexOutput {
         vertex.second - vertex.second_rate * push,
         vertex.half,
     );
+    // The texture across runs on over the fringe as the distance does
+    // (`uv.y` is 0.5 - 0.5 × dist ÷ half), so it is not squeezed inside
+    var uv = vertex.uv;
     if (vertex.flags & LINE_FLAG_ROUND) != 0u {
-        measure = vec3<f32>(vec2<f32>(vertex.dist, vertex.second) + vertex.push * push, vertex.half);
+        let offset = vec2<f32>(vertex.dist, vertex.second);
+        measure = vec3<f32>(offset + vertex.push * push, vertex.half);
+        let radius = length(offset);
+        if radius > 0.0 {
+            uv.y = 0.5 + (uv.y - 0.5) * length(measure.xy) / radius;
+        }
+    } else if vertex.half > 0.0 {
+        uv.y -= 0.5 * vertex.dist_rate * push / vertex.half;
     }
 
     out.position = globals.view_proj * vec4<f32>(pos, 0.0, 1.0);
     out.color = vec4<f32>(srgb_to_linear(vertex.color.rgb) * line.emission, vertex.color.a);
-    out.uv = vertex.uv;
+    out.uv = uv;
     out.params = params;
     out.bounds = line.bounds;
     out.measure = measure;
@@ -255,9 +270,21 @@ fn line_cover(in: VertexOutput) -> f32 {
     return product + (toward - product) * in.k * in.k;
 }
 
+// The pixel's distance from the centre line over the half width, which
+// Soft and Glow shape by (a round piece's from its corner point)
+fn line_edge(in: VertexOutput) -> f32 {
+    if in.measure.z <= 0.0 || in.measure.z >= LINE_NO_EDGE * 0.5 {
+        return 0.0;
+    }
+    if (in.flags & LINE_FLAG_ROUND) != 0u {
+        return length(in.measure.xy) / in.measure.z;
+    }
+    return abs(in.measure.x) / in.measure.z;
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    return ui_out(styled(in.color, in.uv, in.params, line_cover(in)));
+    return ui_out(styled(in.color, line_edge(in), in.params, line_cover(in)));
 }
 
 @fragment
@@ -267,7 +294,7 @@ fn fs_textured(in: VertexOutput) -> @location(0) vec4<f32> {
     let ddy = dpdy(in.uv);
     let texel = sample_wrapped(line_texture, line_sampler, in.uv, in.bounds, ddx, ddy);
     let texture = vec4<f32>(srgb_to_linear(texel.rgb), texel.a);
-    return ui_out(styled(texture * in.color, in.uv, in.params, line_cover(in)));
+    return ui_out(styled(texture * in.color, line_edge(in), in.params, line_cover(in)));
 }
 
 // ========== Tests ==========

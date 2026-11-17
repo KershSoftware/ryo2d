@@ -6,6 +6,8 @@ mod coverage;
 mod gpu;
 mod key;
 #[cfg(test)]
+mod line_cover_tests;
+#[cfg(test)]
 mod line_gpu_tests;
 mod lines;
 mod mesh;

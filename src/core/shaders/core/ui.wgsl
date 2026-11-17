@@ -249,12 +249,14 @@ fn fs_ui(in: UiOut) -> @location(0) vec4<f32> {
             let texel = sprite_texel(in.uv, in.bounds, uv_ddx, uv_ddy, nearest);
             color = finish_linear(texel, in.tint, in.emission);
         }
-        // The line style, its edge ramped by the derivative
+        // The line style, its edge ramped by the derivative until UI lines
+        // are built by the world's pieces
         case KIND_LINE: {
             // Ramping over the pixel its edge crosses (`line_aa` is the
             // distance from the centre per pixel)
-            let to_edge = (1.0 - abs(in.uv.y - 0.5) * 2.0) / max(line_aa, 1e-4);
-            color = styled(in.color, in.uv, in.params, clamp(to_edge + 0.5, 0.0, 1.0));
+            let edge_dist = abs(in.uv.y - 0.5) * 2.0;
+            let to_edge = (1.0 - edge_dist) / max(line_aa, 1e-4);
+            color = styled(in.color, edge_dist, in.params, clamp(to_edge + 0.5, 0.0, 1.0));
         }
         default: {}
     }

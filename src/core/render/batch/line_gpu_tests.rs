@@ -203,7 +203,7 @@ fn storage(device: &wgpu::Device, label: &str, bytes: &[u8]) -> wgpu::Buffer {
 }
 
 /// `stream`'s buffers and their bind group, in `layout`
-fn stream_group(
+pub(super) fn stream_group(
   device: &wgpu::Device,
   layout: &wgpu::BindGroupLayout,
   stream: &LineStream,

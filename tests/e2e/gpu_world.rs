@@ -1654,7 +1654,9 @@ fn a_glowing_line_over_white_keeps_its_look() {
       .with_style(TrailStyle::Glow)
       .with_fade(false)
       .with_lighting(false);
-    trail.populate_line(4.0, 32.0, 60.0, 32.0, 8);
+    // Through the centres of pixel row 31, where the glow's core is whole
+    // (it shapes by the true distance from the centre line)
+    trail.populate_line(4.0, 31.5, 60.0, 31.5, 8);
     ctx.world.spawn((Transform::from_xy(0.0, 0.0), trail));
   });
   let Some(frame) = frame_of(scene, (64, 64)) else {
