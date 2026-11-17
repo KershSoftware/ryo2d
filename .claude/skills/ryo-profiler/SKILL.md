@@ -2,7 +2,7 @@
 name: ryo-profiler
 description: Profiling Ryo2D games and the engine - profile_scope! and profile_function! (puffin, with the engine's profiler feature, recorded while scopes are on), ryo2d dev -p and the profiler window (F10), the engine's own scopes, the frame timing overlay and FrameCost, and performance analysis.
 metadata:
-  version: 1.3.0
+  version: 1.4.0
 ---
 
 # Ryo2D Profiler Specialist
@@ -98,6 +98,7 @@ The engine's own scopes, recorded under the same conditions. The `cpu:` and `gpu
 | `cpu:particles` | One step of the engine's particle emitters (the game-time step, and the real-time step of unscaled emitters) |
 | `cpu:render` | `Scene::render` hooks and collecting the world (entities, trails, lights, particles) into the GPU draw list |
 | `cpu:render:particles` | Inside `cpu:render`: collecting the particles the cameras see |
+| `cpu:render:lines` | Inside `cpu:render`: copying the trails' and lines' points into the line stream (the GPU builds their triangles) |
 | `cpu:render:submit` | Submitting the frame's GPU work |
 | `cpu:atlas:spread texture`, `cpu:atlas:spread first band` | Making an image's own texture, and writing its first band, when a big image is spread over frames |
 | `gpu:present` | Running the render pipeline and presenting |

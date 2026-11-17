@@ -2,7 +2,7 @@
 name: ryo-ui
 description: Build game UI - widgets as builders in the Scene::ui hook, or node trees (UiNode) spawned once as entities - laid out in rows, columns and grids, with focus scopes for keyboard and gamepad navigation, scroll areas, popups and modals, drag and drop, themes, UI events and the input the UI consumes. Use when creating HUDs, menus, settings screens, inventories, dialogue or any in-game interface.
 metadata:
-  version: 4.10.0
+  version: 4.11.0
 ---
 
 # Ryo2D UI Specialist
@@ -170,7 +170,7 @@ let gauge = ui.custom(120.0, 24.0).sense(Sense::click()).paint(|p, response| {
 });
 ```
 
-`Painter`: `size()`, `rect`, `rounded_rect`, `bordered_rect(rect, fill, radius, border_width, border_color)`, `text(text, x, y, &style)`, `sprite(&sprite, rect, tint)`, `line(&points, width, color)`. `Sense::hover()` (the default: clicks pass through to what is under it), `click()`, `drag()`, `click_and_drag()`. A custom widget is not focusable unless `.focusable(true)`; then `.takes_vertical()` / `.takes_horizontal()` keep those directions for it, read with `ui.nav_step(response.id)`, and `.takes_confirm(false)` leaves Space, Enter and A to gameplay while it is focused.
+`Painter`: `size()`, `rect`, `rounded_rect`, `bordered_rect(rect, fill, radius, border_width, border_color)`, `text(text, x, y, &style)`, `sprite(&sprite, rect, tint)`, `line(&points, width, color)`, `line_with_edge(&points, width, color, edge)`. `Sense::hover()` (the default: clicks pass through to what is under it), `click()`, `drag()`, `click_and_drag()`. A custom widget is not focusable unless `.focusable(true)`; then `.takes_vertical()` / `.takes_horizontal()` keep those directions for it, read with `ui.nav_step(response.id)`, and `.takes_confirm(false)` leaves Space, Enter and A to gameplay while it is focused.
 
 <!-- given: ui: &mut UiContext -->
 <!-- self: rows: Vec<String>, row: usize -->
@@ -382,6 +382,7 @@ ui.draw_progress_bar(rect, 0.75, Color::HEALTH_RED, Color::DARK_GRAY);
 ui.draw_sprite(&handle, x, y);                                          // a Handle<Image>, one UI unit per texel; _scaled, _rect
 ui.draw_nine_slice(&handle, rect, [8.0, 8.0, 8.0, 8.0], Color::WHITE);  // insets left, top, right, bottom in texels
 ui.draw_line(&[Vec2::new(10.0, 10.0), Vec2::new(90.0, 40.0)], 2.0, Color::WHITE);
+ui.draw_line_with_edge(&[Vec2::new(10.0, 50.0), Vec2::new(90.0, 80.0)], 1.0, Color::WHITE, LineEdge::Hard); // whole pixels; draw_line takes the target's edge
 ui.draw_modal_overlay(Color::new(0, 0, 0, 160));                        // dims the whole UI, ignoring clips
 
 ui.draw_text("Hello", x, y, Color::WHITE);                              // default style (FontRole::Ui, 14 px)

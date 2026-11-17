@@ -1049,7 +1049,6 @@ Items from 4f on were copied from their execution records. Items from earlier su
 
 ## UI renderer (4h)
 
-- Analytic, derivative-free line anti-aliasing for UI and world lines (owner decision, 2026-10-20): its own small sub-project with a visual review; see `docs/backlog/ui-retained-nodes.md`. Until then UI line pixels on Apple GPUs differ from the pre-4h path only by the indexed-mesh `fwidth` (text demo page 5: 34 px at miter tips, at most 67/255).
 - A moved text whose x changes by a fraction of a pixel is rebuilt (exact; vertical and whole-pixel moves reuse the cache).
 - `GlyphSeed` is about 152 B and keeps a full `SpriteInstance` whose transform rows are always identity; a slimmer seed would cut the cache's memory.
 - `plan_runs` allocates a fresh `Vec<Run>` every drawn frame.

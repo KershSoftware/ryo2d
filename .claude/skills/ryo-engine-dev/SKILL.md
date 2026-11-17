@@ -2,7 +2,7 @@
 name: ryo-engine-dev
 description: Working on the Ryo2D engine - the frame's phases, module map, resources, public API, crates, the dev_tools build condition, logging in engine code, profiling scopes and testing (the build without tools included).
 metadata:
-  version: 2.11.0
+  version: 2.12.0
 ---
 
 # Ryo2D Engine Developer
@@ -85,7 +85,7 @@ Engine::frame
 ├─ render             present_frame (engine/extract.rs): Scene::render (GPU batches), queries
 │                     the world into the draw list (world space, sorted once: sprites, particle runs, entities,
 │                     tile maps' visible chunks, built into the batch's chunk store when changed,
-│                     trails and lines as polylines, world text; parallax and debug shapes per camera),
+│                     trails' and lines' points (the GPU builds them), world text; parallax and debug shapes per camera),
 │                     the UI: UI commands, then the UI renderer (its own instances), then the UI image,
 │                     then the composite,
 │                     plans the cameras, lays each camera's items into the 2D batch's draws
@@ -125,7 +125,7 @@ Engine::frame
 | `systems/` | The built-in systems (juice, physics, trails) |
 | `messages/` | Engine message types, registration, per-scene cursors |
 | `scene/` | `Scene`, `SceneAction`, `SceneContext`, `SceneManager`, cleanup |
-| `render/` | `RenderPipeline` of `RenderPass`es (camera and frame scopes), the draw list, entity extraction, the frame's camera plan, the 2D batch (`batch/`: keys, planning, pipelines, polylines), `DebugDraw` |
+| `render/` | `RenderPipeline` of `RenderPass`es (camera and frame scopes), the draw list, entity extraction, the frame's camera plan, the 2D batch (`batch/`: keys, planning, pipelines, the line stream the GPU builds lines from), `DebugDraw` |
 | `graphics/` | `Image`, the wgpu renderer, sprite textures (by image id) and game shader sources, cameras and render targets, the screen mapping, texture registry and mipmapped atlas, bind-group helper, compositor, sprite animation, tiles, `ParallaxLayer` |
 | `shaders/` | Post-process effects (`EffectsManager`) and sprite shaders |
 | `lighting/` | 2D lights, occluders, `LightingSettings` |
