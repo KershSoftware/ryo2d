@@ -90,6 +90,27 @@ pub(crate) const LINE: &str = concat!(
   include_str!("core/line.wgsl"),
 );
 
+/// The line module with the tests' own entries: `fs_count`, counting each
+/// fragment, and `cs_line_dump`, writing every vertex the pieces build
+/// through a read-write binding in group 3. Built for tests alone, so none
+/// of it ships.
+#[cfg(test)]
+pub(crate) const LINE_TEST: &str = concat!(
+  include_str!("include/camera.wgsl"),
+  "\n",
+  include_str!("include/color.wgsl"),
+  "\n",
+  include_str!("include/sample.wgsl"),
+  "\n",
+  include_str!("include/line_style.wgsl"),
+  "\n",
+  include_str!("include/line_pieces.wgsl"),
+  "\n",
+  include_str!("core/line.wgsl"),
+  "\n",
+  include_str!("core/line_test.wgsl"),
+);
+
 /// The lit scene composed from the light buffer
 pub(crate) const LIGHTING_COMPOSE: &str = concat!(
   include_str!("include/fullscreen.wgsl"),
@@ -213,6 +234,7 @@ pub(crate) fn built_in() -> Vec<(&'static str, String)> {
     ("light", LIGHT),
     ("shadow_map", SHADOW_MAP),
     ("line", LINE),
+    ("line_test", LINE_TEST),
     ("lighting_compose", LIGHTING_COMPOSE),
     ("transition", TRANSITION),
     ("composite", COMPOSITE),
@@ -312,6 +334,18 @@ mod tests {
       assert!(!body.contains("fn view_of"), "{name} repeats view_of");
     }
     assert!(include_str!("core/light.wgsl").contains("view_of("));
+  }
+
+  #[test]
+  fn the_line_module_ships_no_test_entry() {
+    for test_only in ["fs_count", "cs_line_dump", "read_write", "@group(3)"] {
+      assert!(!LINE.contains(test_only), "the line module has {test_only}");
+      assert!(
+        LINE_TEST.contains(test_only),
+        "the test module lacks {test_only}"
+      );
+    }
+    assert!(LINE_TEST.starts_with(LINE));
   }
 
   #[test]

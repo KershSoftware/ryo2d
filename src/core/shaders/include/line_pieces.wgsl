@@ -81,8 +81,9 @@ struct PieceVertex {
     limit: f32,
     dist_rate: f32,
     second_rate: f32,
-    // The `u` displacement effects move it by: at a corner point the
-    // point's own, so every piece's copy there moves alike
+    // The `u` displacement effects move it by: at a corner point, and at a
+    // vertex both segments share, the point's own, so every piece's copy
+    // there moves alike
     effect_u: f32,
 };
 
@@ -151,6 +152,9 @@ struct LpPlace {
     second: LpSecond,
     round: bool,
     offset: vec2<f32>,
+    // Effects move it by its point's own `u`: a vertex both segments at a
+    // corner share
+    point_u: bool,
 };
 
 fn lp_has(w: LineWindow, j: i32) -> bool {
@@ -387,6 +391,13 @@ fn lp_with_second(measure: LpPlace, second: LpSecond) -> LpPlace {
     return m;
 }
 
+// Moved by effects as its point is: a vertex both segments share
+fn lp_shared(measure: LpPlace) -> LpPlace {
+    var m = measure;
+    m.point_u = true;
+    return m;
+}
+
 fn lp_with_round(measure: LpPlace, offset: vec2<f32>) -> LpPlace {
     var m = measure;
     m.round = true;
@@ -411,7 +422,7 @@ fn lp_assemble(corner: LinePt, m: LpPlace) -> PieceVertex {
     v.limit = select(0.0, min(m.limit, LINE_NO_EDGE), m.limit > 0.0);
     v.dist_rate = dot(m.push, m.normal);
     v.second_rate = 0.0;
-    v.effect_u = select(m.uv.x, corner.u, all(v.position == corner.pos));
+    v.effect_u = select(m.uv.x, corner.u, m.point_u || all(v.position == corner.pos));
     if m.round {
         v.dist = m.offset.x;
         v.second = m.offset.y;
@@ -502,7 +513,7 @@ fn lp_end(w: LineWindow, look: LineLook, joints: array<LpJoint, 3>, start: bool,
         let normal = joint.normal;
         let left = which == LP_LEFT;
         let side = select(-1.0, 1.0, left);
-        let m = lp_with_second(lp_edge(side, hw, normal, side * normal, both), second);
+        let m = lp_shared(lp_with_second(lp_edge(side, hw, normal, side * normal, both), second));
         return lp_placed(m, side * normal, hw, vec2<f32>(u, select(1.0, 0.0, left)), normal);
     }
     let turn = joint.turn;
@@ -528,7 +539,7 @@ fn lp_end(w: LineWindow, look: LineLook, joints: array<LpJoint, 3>, start: bool,
     }
     if turn.shares_inside {
         let both = lp_both(w, joints);
-        let edge = lp_with_second(lp_edge(-side, hw, n, -side * turn.miter, both), second);
+        let edge = lp_shared(lp_with_second(lp_edge(-side, hw, n, -side * turn.miter, both), second));
         return lp_placed(edge, -(side * turn.miter), hw, vec2<f32>(u, v_in), turn.bisector);
     }
     let edge = lp_with_second(lp_edge(-side, hw, n, -push, limit), second);
@@ -717,8 +728,8 @@ fn lp_join_vertex(w: LineWindow, look: LineLook, joints: array<LpJoint, 3>, tri:
     let role = lp_join_role(look, turn, tri, corner);
     let outer_end = lp_placed(lp_edge(side, hw, n0, turn.push0, limit0), m0, hw, vec2<f32>(u_end, v_out), n0);
     let outer_start = lp_placed(lp_edge(side, hw, n1, turn.push1, limit1), m1, hw, vec2<f32>(u, v_out), n1);
-    let inner_end = lp_placed(lp_edge(-side, hw, n0, -side * miter, both), -(side * miter), hw, vec2<f32>(u_end, v_in), bisector);
-    let inner_start = lp_placed(lp_edge(-side, hw, n1, -side * miter, both), -(side * miter), hw, vec2<f32>(u, v_in), bisector);
+    let inner_end = lp_placed(lp_shared(lp_edge(-side, hw, n0, -side * miter, both)), -(side * miter), hw, vec2<f32>(u_end, v_in), bisector);
+    let inner_start = lp_placed(lp_shared(lp_edge(-side, hw, n1, -side * miter, both)), -(side * miter), hw, vec2<f32>(u, v_in), bisector);
     // A miter's point measures the other segment's outer edge; a bevel's
     // fans the bevel's edge
     let other0 = lp_edge_second(p + m1 * hw, m1, turn.cos);

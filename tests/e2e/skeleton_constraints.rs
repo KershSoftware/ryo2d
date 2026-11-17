@@ -386,7 +386,7 @@ fn the_overlay_draws_its_marks_at_the_target_and_the_tip() {
     pixel.iter().zip(mark).all(|(&p, m)| p.abs_diff(m) <= 16)
   };
   assert!(
-    off.pixels().all(|pixel| pixel.0 != mark),
+    (0..off.height()).all(|y| (0..off.width()).all(|x| !marked(&off, x, y))),
     "nothing while it is off"
   );
 

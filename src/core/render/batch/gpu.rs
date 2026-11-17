@@ -117,11 +117,13 @@ struct SpriteCompiled {
   pipelines: Result<Vec<(PipelineKey, wgpu::RenderPipeline)>, String>,
 }
 
-/// A GPU buffer that doubles when a frame needs more.
+/// A GPU buffer that doubles when a frame needs more, up to its cap.
 struct GrowingBuffer {
   buffer: wgpu::Buffer,
   /// In elements
   capacity: usize,
+  /// The most elements it grows to (a write never asks for more)
+  max: usize,
   element: usize,
   usage: wgpu::BufferUsages,
   label: &'static str,
@@ -137,10 +139,16 @@ impl GrowingBuffer {
     Self {
       buffer: buffer(device, label, FIRST_CAPACITY * element, usage),
       capacity: FIRST_CAPACITY,
+      max: usize::MAX,
       element,
       usage,
       label,
     }
+  }
+
+  /// Never grown past `max` elements: one storage binding holds no more
+  fn capped(self, max: usize) -> Self {
+    Self { max, ..self }
   }
 
   /// Upload `bytes`, growing to the next power of two elements if need be;
@@ -149,7 +157,7 @@ impl GrowingBuffer {
     let needed = bytes.len() / self.element;
     let grows = needed > self.capacity;
     if grows {
-      self.capacity = needed.next_power_of_two();
+      self.capacity = needed.next_power_of_two().min(self.max).max(needed);
       self.buffer = buffer(device, self.label, self.capacity * self.element, self.usage);
     }
     if !bytes.is_empty() {
@@ -196,9 +204,13 @@ impl Batch2D {
         wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
       )
     };
-    let line_table = storage("Batch Line Table", std::mem::size_of::<LineInfo>());
-    let line_points = storage("Batch Line Points", std::mem::size_of::<LinePoint>());
-    let line_codes = storage("Batch Line Codes", std::mem::size_of::<u32>());
+    // The stream holds what one storage binding of the device holds
+    let lines = LineStream::for_device(&device.limits());
+    let cap = lines.cap();
+    let line_table = storage("Batch Line Table", std::mem::size_of::<LineInfo>()).capped(cap.lines);
+    let line_points =
+      storage("Batch Line Points", std::mem::size_of::<LinePoint>()).capped(cap.points);
+    let line_codes = storage("Batch Line Codes", std::mem::size_of::<u32>()).capped(cap.codes);
     let line_group = line_group(
       device,
       &line_layout,
@@ -226,7 +238,7 @@ impl Batch2D {
       capacity: FIRST_CAPACITY,
       placed: Vec::new(),
       draws: Vec::new(),
-      lines: LineStream::default(),
+      lines,
       meshes: MeshStream::default(),
       // The arena holds no more than the device's largest buffer
       chunks: ChunkStore::for_device(device.limits().max_buffer_size),

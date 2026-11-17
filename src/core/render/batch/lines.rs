@@ -21,8 +21,21 @@
 //!   width (a miter's tip, a square cap's corner) and its effect's reach,
 //!   and each camera grows it by one of its pixels for the fringe
 //!   (`a_miter_tip_reaching_into_view_is_drawn`, e2e).
-//! - **Limit:** the stream holds `MAX_POINTS` points a frame; a line past it
-//!   draws nothing (warned once a run).
+//! - **Limit: a miter's tip can reach a little past the box.** Its coverage
+//!   reaches `m · (hw + 0.5 px)` from the corner point (`m` the miter's
+//!   length, at most `MITER_LIMIT`), while the box grows by `4 hw + 1 px`, so
+//!   where the tip of a line just outside the view points into it, a sliver
+//!   of coverage under 0.1 can be culled at the view's edge.
+//! - **Limit: the stream holds what the device binds.** Its points, codes
+//!   and line table are each one storage binding, so each holds as many as
+//!   the device's `max_storage_buffer_binding_size` (and `max_buffer_size`)
+//!   fits, the points never past the 2^25 a code can name and the table
+//!   never past `MAX_LINES` (`StreamCap`, `LineStream::for_device`: under
+//!   the `Limits::default()` the engine asks for, 128 MiB each, so 5,592,405
+//!   points, 33,554,432 triangles and 1,048,576 lines); a line that would
+//!   take any past it draws nothing, and the log is warned once a run
+//!   (`a_line_past_the_stream_s_cap_draws_nothing_and_warns_once`). Past it
+//!   the bind group would fail validation, which ends the run.
 
 use std::ops::Range;
 
@@ -144,9 +157,41 @@ pub(crate) struct LinePoint {
   pub(crate) line: u32,
 }
 
-/// The stream holds this many points a frame; a line past them draws
-/// nothing. A triangle code keeps 25 bits for its point.
-pub(crate) const MAX_POINTS: usize = 1 << 25;
+/// A triangle code keeps 25 bits for its point, so the stream never holds
+/// more points than this
+const CODE_POINTS: usize = 1 << 25;
+
+/// The most the stream holds a frame, each of its buffers being one storage
+/// binding: as many as the device binds and makes in one buffer
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct StreamCap {
+  pub(crate) points: usize,
+  /// Triangles, one code each
+  pub(crate) codes: usize,
+  pub(crate) lines: usize,
+}
+
+impl StreamCap {
+  /// The cap of a device with `limits`
+  pub(crate) fn of(limits: &wgpu::Limits) -> Self {
+    let bytes = limits
+      .max_storage_buffer_binding_size
+      .min(limits.max_buffer_size);
+    let fits = |element: usize| usize::try_from(bytes / element as u64).unwrap_or(usize::MAX);
+    Self {
+      points: fits(std::mem::size_of::<LinePoint>()).min(CODE_POINTS),
+      codes: fits(std::mem::size_of::<u32>()),
+      lines: fits(std::mem::size_of::<LineInfo>()).min(MAX_LINES),
+    }
+  }
+}
+
+impl Default for StreamCap {
+  /// The limits the engine asks its device for
+  fn default() -> Self {
+    Self::of(&wgpu::Limits::default())
+  }
+}
 
 /// A triangle's code: its piece's point (in the point buffer), the piece's
 /// kind and the triangle within it (`line.wgsl` reads it back).
@@ -170,11 +215,25 @@ pub(crate) struct LineStream {
   /// Room kept from line to line
   filtered: Vec<PolyPoint>,
   pieces: Vec<Piece>,
+  cap: StreamCap,
   /// Whether the log has been told the stream is full
   warned: bool,
 }
 
 impl LineStream {
+  /// The stream of a device with `limits`
+  pub(crate) fn for_device(limits: &wgpu::Limits) -> Self {
+    Self {
+      cap: StreamCap::of(limits),
+      ..Self::default()
+    }
+  }
+
+  /// The most it holds a frame
+  pub(crate) fn cap(&self) -> StreamCap {
+    self.cap
+  }
+
   /// Forget every line, keeping the allocations.
   pub(crate) fn clear(&mut self) {
     self.points.clear();
@@ -191,11 +250,24 @@ impl LineStream {
       return start..start;
     };
     let count = self.filtered.len();
-    if self.lines.len() >= MAX_LINES || self.points.len() + count > MAX_POINTS {
+    piece_list(count, closed, style.cap, &mut self.pieces);
+    let triangles: usize = self
+      .pieces
+      .iter()
+      .map(|piece| piece_triangles(piece.kind, style.join, style.cap) as usize)
+      .sum();
+    let cap = self.cap;
+    if self.lines.len() >= cap.lines
+      || self.points.len() + count > cap.points
+      || self.codes.len() + triangles > cap.codes
+    {
       if !self.warned {
         self.warned = true;
         log::warn!(
-          "more than {MAX_LINES} lines and trails, or {MAX_POINTS} of their points, in one frame: the rest draw nothing"
+          "more than {} lines and trails, {} of their points or {} of their triangles in one frame: the rest draw nothing",
+          cap.lines,
+          cap.points,
+          cap.codes
         );
       }
       return start..start;
@@ -216,7 +288,6 @@ impl LineStream {
         line,
       }
     }));
-    piece_list(count, closed, style.cap, &mut self.pieces);
     for piece in &self.pieces {
       let code = triangle_code(first + piece.point, piece.kind, 0);
       let triangles = piece_triangles(piece.kind, style.join, style.cap);
@@ -364,6 +435,7 @@ fn build_effect_params(effect: Option<&TrailEffect>, style: TrailStyle) -> [f32;
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::core::trail::LineJoin;
 
   #[test]
   fn effect_and_style_share_one_float() {
@@ -427,6 +499,70 @@ mod tests {
       effect_reach(&build_effect_params(None, TrailStyle::Glow)),
       0.0
     );
+  }
+
+  #[test]
+  fn a_line_past_the_stream_s_cap_draws_nothing_and_warns_once() {
+    // Each buffer holds what one storage binding of the device does
+    assert_eq!(
+      StreamCap::default(),
+      StreamCap {
+        points: 5_592_405,
+        codes: 33_554_432,
+        lines: 1_048_576,
+      }
+    );
+    let limits = wgpu::Limits {
+      max_storage_buffer_binding_size: 400,
+      ..wgpu::Limits::default()
+    };
+    let mut stream = LineStream::for_device(&limits);
+    assert_eq!(
+      stream.cap(),
+      StreamCap {
+        points: 16,
+        codes: 100,
+        lines: 5,
+      }
+    );
+    let line = |count: usize| -> Vec<PolyPoint> {
+      (0..count)
+        .map(|i| PolyPoint {
+          pos: Vec2::new(i as f32 * 10.0, (i % 2) as f32 * 10.0),
+          half_width: 1.0,
+          color: Color::WHITE,
+          u: i as f32,
+        })
+        .collect()
+    };
+    let style = |join| PolyStyle {
+      join,
+      cap: crate::core::trail::LineCap::Butt,
+      closed: false,
+      params: [0.0; 4],
+      emission: 1.0,
+    };
+    let (round, miter) = (style(LineJoin::Round), style(LineJoin::Miter));
+    // Three lines of three points and 26 triangles each
+    for _ in 0..3 {
+      assert_eq!(stream.polyline(&line(3), &round).len(), 78);
+    }
+    assert!(!stream.warned);
+    // A fourth would take 104 triangles
+    assert!(stream.polyline(&line(3), &round).is_empty());
+    assert!(stream.warned, "warned");
+    assert!(!stream.polyline(&line(2), &miter).is_empty());
+    // Eight more points would take 19
+    assert!(stream.polyline(&line(8), &miter).is_empty());
+    assert!(!stream.polyline(&line(2), &miter).is_empty());
+    // A sixth line
+    assert!(stream.polyline(&line(2), &miter).is_empty());
+    let cap = stream.cap();
+    assert_eq!(
+      (stream.points.len(), stream.codes.len(), stream.lines.len()),
+      (13, 86, 5)
+    );
+    assert!(stream.points.len() <= cap.points && stream.codes.len() <= cap.codes);
   }
 
   #[test]

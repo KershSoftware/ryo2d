@@ -12,7 +12,7 @@ use super::polyline::{PolyPoint, PolyStyle, Triangles, Vertex2D};
 use crate::core::graphics::bind_groups;
 use crate::core::graphics::camera_gpu::{CameraGlobals, pixels_per_unit};
 use crate::core::graphics::{Camera2d, CameraView};
-use crate::core::shaders::compose::LINE;
+use crate::core::shaders::compose::LINE_TEST;
 use crate::core::trail::{LineCap, LineJoin};
 use crate::core::ui::Color;
 
@@ -108,8 +108,9 @@ impl TestLine {
 
 /// The lines the tests build: corners both ways, gentle and sharp, inner
 /// sides that split (short segments), a U-turn and one nearly, closed
-/// outlines, single segments, tapered lines, a long wandering line, and one
-/// far from the origin
+/// outlines, single segments, tapered lines, a long wandering line, one far
+/// from the origin, and lines running straight on through a point (along
+/// an axis, diagonally, and turning by about 1e-7)
 fn lines() -> Vec<TestLine> {
   let zigzag = [(0.0, 0.0), (10.0, 3.0), (20.0, 0.0), (30.0, 3.0)];
   let mut wander = Vec::new();
@@ -164,10 +165,25 @@ fn lines() -> Vec<TestLine> {
       1.0,
       false,
     ),
+    TestLine::even(
+      &[(0.0, 0.0), (5.0, 0.0), (10.0, 0.0), (10.0, 5.0)],
+      1.0,
+      false,
+    ),
+    TestLine::even(
+      &[(0.0, 0.0), (3.0, 3.0), (7.0, 7.0), (12.0, 4.0)],
+      1.0,
+      false,
+    ),
+    TestLine::even(
+      &[(0.0, 0.0), (5.0, 0.0), (10.0, 5.0e-7), (10.0, 5.0)],
+      1.0,
+      false,
+    ),
   ]
 }
 
-/// A vertex as `cs_line_dump` writes it (`LineDump` in `line.wgsl`)
+/// A vertex as `cs_line_dump` writes it (`LineDump` in `line_test.wgsl`)
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct Dumped {
@@ -229,7 +245,7 @@ pub(super) fn stream_group(
 fn module(device: &wgpu::Device) -> wgpu::ShaderModule {
   device.create_shader_module(wgpu::ShaderModuleDescriptor {
     label: Some("Line Test Shader"),
-    source: wgpu::ShaderSource::Wgsl(LINE.into()),
+    source: wgpu::ShaderSource::Wgsl(LINE_TEST.into()),
   })
 }
 
@@ -404,6 +420,53 @@ fn the_gpu_builds_the_reference_s_vertices() {
     "{} fields differ:\n{}",
     failures.len(),
     failures[..failures.len().min(30)].join("\n")
+  );
+  // The GPU's copies of each of the reference's vertices (a line's
+  // vertices of some width that agree bit for bit in place, push, limit and
+  // what effects move them by) agree bit for bit too. A split corner's
+  // elbows, where the reference's copies push two ways, are two vertices
+  // here, and so are vertices of two pieces that only meet (a U-turn's)
+  type Bits = ([u32; 2], [u32; 2], u32, [u32; 2], u32);
+  let bits = |position: [f32; 2], push: [f32; 2], limit: f32, across: [f32; 2], u: f32| -> Bits {
+    (
+      position.map(f32::to_bits),
+      push.map(f32::to_bits),
+      limit.to_bits(),
+      across.map(f32::to_bits),
+      u.to_bits(),
+    )
+  };
+  let mut copies: std::collections::HashMap<(u32, Bits), Vec<Bits>> =
+    std::collections::HashMap::new();
+  for (&index, d) in reference.indices.iter().zip(&dumped) {
+    let v = &reference.vertices[index as usize];
+    if v.half <= 0.0 {
+      continue;
+    }
+    let cpu = bits(v.position, v.push, v.limit, v.across, v.effect_u);
+    let gpu = bits(d.position, d.push, d.limit, d.across, d.effect_u);
+    let list = copies.entry((v.line, cpu)).or_default();
+    if !list.contains(&gpu) {
+      list.push(gpu);
+    }
+  }
+  let shared = copies.values().filter(|gpu| !gpu.is_empty()).count();
+  let apart: Vec<String> = copies
+    .iter()
+    .filter(|(_, gpu)| gpu.len() > 1)
+    .map(|((line, cpu), gpu)| {
+      format!(
+        "line entry {line} at {:?}: the GPU's copies differ: {gpu:?}",
+        cpu.0.map(f32::from_bits)
+      )
+    })
+    .collect();
+  eprintln!("{shared} places");
+  assert!(
+    apart.is_empty(),
+    "{} places:\n{}",
+    apart.len(),
+    apart[..apart.len().min(30)].join("\n")
   );
 }
 
@@ -589,11 +652,11 @@ fn a_translucent_line_drawn_on_the_gpu_counts_every_pixel_once() {
   let (mut drawn, mut doubled, mut cracks) = (0usize, 0usize, 0usize);
   let mut failures = Vec::new();
   let all = lines();
-  // The wandering line and the circle are long; the far one is the zigzag
+  // The wandering line and the circle are long
   let chosen = all
     .iter()
     .enumerate()
-    .filter(|(i, _)| ![13, 14, 15].contains(i));
+    .filter(|(i, _)| ![13, 14].contains(i));
   for (index, line) in chosen {
     for join in JOINS {
       for cap in CAPS {

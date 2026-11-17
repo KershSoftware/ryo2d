@@ -45,7 +45,8 @@
 //!   flag, never an infinity). It also gives the corner's pushes and the
 //!   limits it sets the segments beside it (`copies_at_one_place_push_alike`).
 //!   A round piece's angle is the `acos` of its edges' normals, signed by
-//!   their turn.
+//!   their turn (`the_gpu_builds_the_reference_s_vertices`: with `atan2`,
+//!   Metal gave the opposite sign at exact right angles).
 //! - **Distances are true over every triangle.** Each triangle belongs to
 //!   one straight piece and measures across from its centre line (`dist`,
 //!   with `half` the half width there), a second edge where it lies against
@@ -90,12 +91,17 @@
 //!   out, the fan's elbow pushed along the corner), measuring what the fan
 //!   measures. These elbows are the one place copies push two ways, and the
 //!   fringe triangle joins them (`copies_at_one_place_push_alike`).
-//! - **Effects move every copy at a corner point alike.** Each vertex
-//!   carries the `u` displacement effects move it by (`effect_u`): its
-//!   texture `u`, but at a corner point the point's own, and the `across`
-//!   it moves along there is the corner's bisector (a round cap's centre:
-//!   its segment's normal), for every piece, so no crack opens under an
-//!   effect.
+//! - **Effects move every copy alike**
+//!   (`copies_at_one_place_move_alike_under_effects`). Each vertex carries
+//!   the `u` displacement effects move it by (`effect_u`): its texture `u`,
+//!   but at a corner point, and at a vertex both segments at a corner share
+//!   (the shared inner vertex, a straight-on pair), the point's own; and the
+//!   `across` it moves along at a corner point and a shared inner vertex is
+//!   the corner's bisector (a round cap's centre: its segment's normal), for
+//!   every piece. So the copies of a place agree bit for bit in both, at a
+//!   closed line's seam too, where the arriving segment's texture `u` runs on
+//!   past the last point while point 0's starts again, and no crack or notch
+//!   opens under an effect.
 //! - **A bevel is a fan each side.** From the corner point through copies of
 //!   the shared inner vertex (when the segments share it) and of the strip's
 //!   elbow, to the bevel's middle: every triangle touching the elbow
@@ -137,9 +143,11 @@
 //! - **Limit: a split corner.** Near its corner point, where the segments'
 //!   ends and the fan meet and the bevel (or the arc) cuts close past them,
 //!   a pixel lies against edges its triangle does not measure: off by up to
-//!   0.09 at a 60 degree turn, 0.13 at 90, 0.21 at 120, 0.32 at 150 and 0.37
-//!   at 165 (0.98 before its ends pushed straight out), and within a pixel
-//!   of the point, or near it within a pixel of both ends, by the inner
+//!   0.09 at a 60 degree turn, 0.15 at 90, 0.22 at 120, 0.32 at 150 and 0.37
+//!   at 165 (0.13 at 90 and 0.21 at 120 while its segments are at least
+//!   `miter · hw` long; measured with segments of 0.5, 1.0 and 1.9 times
+//!   that; 0.98 before its ends pushed straight out), and within a pixel of
+//!   the point, or near it within a pixel of both ends, by the inner
 //!   corner's figure (`the_pushed_mesh_gives_every_pixel_its_coverage`).
 //! - **Limit:** on a tapered line a push that runs along the segment keeps
 //!   the vertex's `half`, which the taper would change by its slope times
@@ -197,8 +205,9 @@ pub(crate) struct Vertex2D {
   /// How much `second` falls per unit of push
   pub(crate) second_rate: f32,
   /// The `u` displacement effects move it by: its `uv`'s, but at a corner
-  /// point the point's own, so every piece's copy there moves alike (a
-  /// closed line's seam runs a segment's texture `u` on past its last point)
+  /// point and at a vertex both segments share the point's own, so every
+  /// piece's copy there moves alike (a closed line's seam runs a segment's
+  /// texture `u` on past its last point)
   pub(crate) effect_u: f32,
 }
 
@@ -841,6 +850,9 @@ struct Measure {
   round: Option<Vec2>,
   push: Vec2,
   limit: f32,
+  /// Effects move it by its point's own `u`: a vertex both segments at a
+  /// corner share, whatever `u` its texture takes
+  point_u: bool,
 }
 
 impl Measure {
@@ -856,6 +868,7 @@ impl Measure {
       round: None,
       push,
       limit,
+      point_u: false,
     }
   }
 
@@ -874,6 +887,14 @@ impl Measure {
 
   fn with(self, second: Option<Second>) -> Self {
     Self { second, ..self }
+  }
+
+  /// Moved by effects as its point is: a vertex both segments share
+  fn shared(self) -> Self {
+    Self {
+      point_u: true,
+      ..self
+    }
   }
 }
 
@@ -1065,7 +1086,11 @@ impl Builder<'_> {
       limit,
       dist_rate: m.push.dot(m.normal),
       second_rate: 0.0,
-      effect_u: if at == point.pos { point.u } else { uv[0] },
+      effect_u: if m.point_u || at == point.pos {
+        point.u
+      } else {
+        uv[0]
+      },
     };
     if let Some(offset) = m.round {
       set_round(&mut vertex, offset);
@@ -1175,7 +1200,11 @@ impl Builder<'_> {
       }
       Shape::Straight { normal } => {
         let both = w.both(j, join);
-        let pair = |side: f32| Measure::edge(side, hw, normal, side * normal, both).with(second);
+        let pair = |side: f32| {
+          Measure::edge(side, hw, normal, side * normal, both)
+            .with(second)
+            .shared()
+        };
         End {
           left: self.vertex(p + normal * hw, &point, [u, 0.0], normal, pair(1.0)),
           right: self.vertex(p - normal * hw, &point, [u, 1.0], normal, pair(-1.0)),
@@ -1203,7 +1232,9 @@ impl Builder<'_> {
         );
         let (inner, split) = if turn.shares_inside {
           let both = w.both(j, join);
-          let measure = Measure::edge(-side, hw, n, -side * turn.miter, both).with(second);
+          let measure = Measure::edge(-side, hw, n, -side * turn.miter, both)
+            .with(second)
+            .shared();
           let at = p - side * turn.miter * hw;
           (
             self.vertex(at, &point, [u, v_in], turn.bisector, measure),
@@ -1324,14 +1355,14 @@ impl Builder<'_> {
         &point,
         [u_end, v_in],
         bisector,
-        Measure::edge(-side, hw, n0, -side * miter, both),
+        Measure::edge(-side, hw, n0, -side * miter, both).shared(),
       );
       let start = self.vertex(
         at,
         &point,
         [u, v_in],
         bisector,
-        Measure::edge(-side, hw, n1, -side * miter, both),
+        Measure::edge(-side, hw, n1, -side * miter, both).shared(),
       );
       (end, start)
     });
@@ -1542,6 +1573,7 @@ impl Builder<'_> {
         round: None,
         push: bevel,
         limit: NO_EDGE,
+        point_u: false,
       },
     );
     // Where the inner side splits, a fringe triangle each side from the
@@ -2715,15 +2747,16 @@ mod tests {
     const INNER: f32 = 0.45;
     // A split corner, near its corner point (its segments' ends and the
     // fan meet there, and the bevel or the arc cuts close past them): the
-    // recorded figure, by turn
-    const SPLIT: [(f32, f32); 5] = [
-      (60.0, 0.12),
-      (90.0, 0.13),
-      (120.0, 0.22),
-      (150.0, 0.33),
-      (165.0, 0.38),
+    // recorded figure, by turn, for segments of 0.5, 1.0 and 1.9 times the
+    // miter's reach (`miter · hw`; a corner splits below twice it)
+    const SPLIT_LENGTHS: [f32; 3] = [0.5, 1.0, 1.9];
+    const SPLIT_TURNS: [f32; 5] = [60.0, 90.0, 120.0, 150.0, 165.0];
+    const SPLIT: [[f32; 5]; 3] = [
+      [0.12, 0.16, 0.23, 0.33, 0.38],
+      [0.12, 0.13, 0.22, 0.33, 0.38],
+      [0.12, 0.13, 0.22, 0.33, 0.38],
     ];
-    let mut split_worst = SPLIT.map(|(degrees, _)| (degrees, 0.0f32, String::new()));
+    let mut split_worst: [[(f32, String); 5]; 3] = Default::default();
     let mut split_inner = (0.0f32, String::new());
     let offsets = [
       Vec2::ZERO,
@@ -2772,41 +2805,43 @@ mod tests {
           }
           // Corners whose inner side splits: segments shorter than twice
           // the miter's reach, their overlap inside the corner unmeasured
-          for degrees in [60.0f32, 90.0, 120.0, 150.0, 165.0] {
-            for turn in [1.0f32, -1.0] {
-              let d1 = Vec2::from_angle(turn * degrees.to_radians()).rotate(d0);
-              let miter = (d0.perp() + d1.perp()) / (1.0 + d0.perp().dot(d1.perp()));
-              let short = 1.9 * miter.length() * hw;
-              let (a, b) = (p - d0 * short, p + d1 * short);
-              let points = [a, p, b].map(|q| (q.x, q.y));
-              let out = if d0.perp_dot(d1) > 0.0 { -miter } else { miter };
-              let overlap = [Overlap {
-                at: p,
-                out,
-                segments: [(a, p), (p, b)],
-                hw,
-              }];
-              // Within a pixel of the corner point, or near it within a
-              // pixel of both segments' ends (which meet there), a pixel lies
-              // across both strips: the inner corner's zone, as at a shared
-              // vertex
-              let inner = [Inner {
-                at: p,
-                edges: [(p, d0), (p, d1)],
-              }];
-              for join in JOINS {
-                let t = build(&points, 2.0 * hw, join, LineCap::Butt, false);
-                let what =
-                  format!("split {join:?} {degrees}° {turn} hw {hw} rot {rotation} {offset}");
-                let ((error, at), (near, near_at)) =
-                  worst_coverage(&t, &[p], 3.0 * hw + 3.0, &inner, &overlap);
-                if let Some(worst) = split_worst.iter_mut().find(|w| w.0 == degrees)
-                  && error > worst.1
-                {
-                  *worst = (degrees, error, format!("{what} at {at}"));
-                }
-                if near > split_inner.0 {
-                  split_inner = (near, format!("{what} at {near_at}"));
+          for (length_index, &ratio) in SPLIT_LENGTHS.iter().enumerate() {
+            for (turn_index, &degrees) in SPLIT_TURNS.iter().enumerate() {
+              for turn in [1.0f32, -1.0] {
+                let d1 = Vec2::from_angle(turn * degrees.to_radians()).rotate(d0);
+                let miter = (d0.perp() + d1.perp()) / (1.0 + d0.perp().dot(d1.perp()));
+                let short = ratio * miter.length() * hw;
+                let (a, b) = (p - d0 * short, p + d1 * short);
+                let points = [a, p, b].map(|q| (q.x, q.y));
+                let out = if d0.perp_dot(d1) > 0.0 { -miter } else { miter };
+                let overlap = [Overlap {
+                  at: p,
+                  out,
+                  segments: [(a, p), (p, b)],
+                  hw,
+                }];
+                // Within a pixel of the corner point, or near it within a
+                // pixel of both segments' ends (which meet there), a pixel lies
+                // across both strips: the inner corner's zone, as at a shared
+                // vertex
+                let inner = [Inner {
+                  at: p,
+                  edges: [(p, d0), (p, d1)],
+                }];
+                for join in JOINS {
+                  let t = build(&points, 2.0 * hw, join, LineCap::Butt, false);
+                  let what = format!(
+                    "split {ratio} {join:?} {degrees}° {turn} hw {hw} rot {rotation} {offset}"
+                  );
+                  let ((error, at), (near, near_at)) =
+                    worst_coverage(&t, &[p], 3.0 * hw + 3.0, &inner, &overlap);
+                  let worst = &mut split_worst[length_index][turn_index];
+                  if error > worst.0 {
+                    *worst = (error, format!("{what} at {at}"));
+                  }
+                  if near > split_inner.0 {
+                    split_inner = (near, format!("{what} at {near_at}"));
+                  }
                 }
               }
             }
@@ -2862,12 +2897,16 @@ mod tests {
       split_inner.0 <= INNER,
       "a split corner's point is off by {split_inner:?}"
     );
-    for ((degrees, limit), (_, error, at)) in SPLIT.iter().zip(&split_worst) {
-      eprintln!("worst at a split {degrees}° corner: {error:.3} ({at})");
-      assert!(
-        error <= limit,
-        "a split {degrees}° corner is off by {error}: {at}"
-      );
+    for (length_index, ratio) in SPLIT_LENGTHS.iter().enumerate() {
+      for (turn_index, degrees) in SPLIT_TURNS.iter().enumerate() {
+        let (error, at) = &split_worst[length_index][turn_index];
+        let limit = SPLIT[length_index][turn_index];
+        eprintln!("worst at a split {degrees}° corner, segments {ratio} miters: {error:.3} ({at})");
+        assert!(
+          *error <= limit,
+          "a split {degrees}° corner, segments {ratio} miters, is off by {error}: {at}"
+        );
+      }
     }
     assert!(
       failures.is_empty(),
@@ -3213,13 +3252,10 @@ mod tests {
     }
   }
 
-  #[test]
-  fn copies_at_one_place_push_alike() {
-    // Every piece works a shared place out with the one corner function, so
-    // its copies of it push the same way, as far, bit for bit (but at a
-    // point of no width, where a line's two edges meet). A split corner's
-    // elbow is the one place copies push two ways (the strip's straight
-    // out, the fan's along the corner), and a fringe triangle joins them
+  /// The shapes the copy tests build: the attribute tests' shapes, short
+  /// segments whose corners split, a small closed square, and a closed line
+  /// whose seam runs straight on
+  fn copy_shapes() -> Vec<Shape> {
     let mut shapes = shapes();
     shapes.push(Shape::even(
       &[(0.0, 0.0), (3.0, 0.0), (3.0, 2.5), (6.0, 2.0), (6.5, 6.0)],
@@ -3231,41 +3267,119 @@ mod tests {
       1.0,
       true,
     ));
-    type Push = ([u32; 2], u32);
-    let push_of = |v: &Vertex2D| -> Push { (v.push.map(f32::to_bits), v.limit.to_bits()) };
-    for (index, shape) in shapes.iter().enumerate() {
+    shapes.push(Shape::even(
+      &[
+        (5.0, 0.0),
+        (10.0, 0.0),
+        (10.0, 10.0),
+        (0.0, 10.0),
+        (0.0, 0.0),
+      ],
+      1.0,
+      true,
+    ));
+    shapes
+  }
+
+  type Push = ([u32; 2], u32);
+
+  fn push_of(v: &Vertex2D) -> Push {
+    (v.push.map(f32::to_bits), v.limit.to_bits())
+  }
+
+  /// `t`'s vertices of some width, by their place, bit for bit
+  fn places(t: &Triangles) -> std::collections::HashMap<[u32; 2], Vec<Vertex2D>> {
+    let mut seen: std::collections::HashMap<[u32; 2], Vec<Vertex2D>> =
+      std::collections::HashMap::new();
+    for v in t.vertices.iter().filter(|v| v.half > 0.0) {
+      seen
+        .entry(v.position.map(f32::to_bits))
+        .or_default()
+        .push(*v);
+    }
+    seen
+  }
+
+  /// The copies at `at` push alike, or two ways where a fringe triangle has
+  /// a copy pushed each way
+  fn assert_copies_push_alike(t: &Triangles, at: [u32; 2], copies: &[Vertex2D], what: &str) {
+    let mut pushes: Vec<Push> = Vec::new();
+    for v in copies {
+      if !pushes.contains(&push_of(v)) {
+        pushes.push(push_of(v));
+      }
+    }
+    match pushes.as_slice() {
+      [_] => {}
+      [a, b] => {
+        let bridged = triangles_of(t).any(|tri| {
+          let here: Vec<Push> = tri
+            .iter()
+            .filter(|v| v.position.map(f32::to_bits) == at)
+            .map(push_of)
+            .collect();
+          here.contains(a) && here.contains(b)
+        });
+        assert!(bridged, "{what}: push apart: {pushes:?}");
+      }
+      _ => panic!("{what}: push apart: {pushes:?}"),
+    }
+  }
+
+  #[test]
+  fn copies_at_one_place_push_alike() {
+    // Every piece works a shared place out with the one corner function, so
+    // its copies of it push the same way, as far, bit for bit (but at a
+    // point of no width, where a line's two edges meet). A split corner's
+    // elbow is the one place copies push two ways (the strip's straight
+    // out, the fan's along the corner), and a fringe triangle joins them
+    for (index, shape) in copy_shapes().iter().enumerate() {
       for join in JOINS {
         for cap in CAPS {
           let t = shape.build(join, cap);
-          let mut seen: std::collections::HashMap<[u32; 2], Vec<Push>> =
-            std::collections::HashMap::new();
-          for v in t.vertices.iter().filter(|v| v.half > 0.0) {
-            let pushes = seen.entry(v.position.map(f32::to_bits)).or_default();
-            if !pushes.contains(&push_of(v)) {
-              pushes.push(push_of(v));
-            }
-          }
-          for (at, pushes) in &seen {
+          for (at, copies) in places(&t) {
             let what = format!(
-              "shape {index} {join:?} {cap:?}: copies at {:?} push apart",
+              "shape {index} {join:?} {cap:?}: copies at {:?}",
               at.map(f32::from_bits)
             );
-            match pushes.as_slice() {
-              [_] => {}
-              [a, b] => {
-                // A fringe triangle has a copy pushed each way
-                let bridged = triangles_of(&t).any(|tri| {
-                  let here: Vec<Push> = tri
-                    .iter()
-                    .filter(|v| v.position.map(f32::to_bits) == *at)
-                    .map(push_of)
-                    .collect();
-                  here.contains(a) && here.contains(b)
-                });
-                assert!(bridged, "{what}: {pushes:?}");
-              }
-              _ => panic!("{what}: {pushes:?}"),
+            assert_copies_push_alike(&t, at, &copies, &what);
+          }
+        }
+      }
+    }
+  }
+
+  #[test]
+  fn copies_at_one_place_move_alike_under_effects() {
+    // Displacement effects move a vertex along its `across` by its
+    // `effect_u`, so every copy of a place carries the same two, bit for
+    // bit, as well as the same push and limit (but at a point of no width):
+    // at a closed line's seam too, where the segment arriving runs its
+    // texture `u` on past the last point while point 0 starts again, so a
+    // vertex both segments share takes its point's own `u`
+    for (index, shape) in copy_shapes().iter().enumerate() {
+      for join in JOINS {
+        for cap in CAPS {
+          let t = shape.build(join, cap);
+          for (at, copies) in places(&t) {
+            let what = format!(
+              "shape {index} {join:?} {cap:?}: copies at {:?}",
+              at.map(f32::from_bits)
+            );
+            let moved = |v: &Vertex2D| (v.across.map(f32::to_bits), v.effect_u.to_bits());
+            let first = moved(&copies[0]);
+            for v in &copies {
+              assert_eq!(
+                moved(v),
+                first,
+                "{what}: move apart: across {:?} effect_u {} against across {:?} effect_u {}",
+                v.across,
+                v.effect_u,
+                copies[0].across,
+                copies[0].effect_u
+              );
             }
+            assert_copies_push_alike(&t, at, &copies, &what);
           }
         }
       }
