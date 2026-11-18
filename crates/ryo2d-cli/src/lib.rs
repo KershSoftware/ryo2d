@@ -8,7 +8,7 @@
 //! - `ryo2d init` - Create a new Ryo2D project
 //! - `ryo2d build` - Build a production release
 //! - `ryo2d run` - Run the production build
-//! - `ryo2d dev` - Development mode with file watching
+//! - `ryo2d dev` - Development mode, with asset hot reload
 //! - `ryo2d export` - Package release into distributable zip
 //! - `ryo2d install-skills` - Install Agent Skills for AI assistants
 //! - `ryo2d netplay` - Start a signaling server for netplay testing
@@ -41,6 +41,7 @@ mod cargo;
 mod commands;
 mod error;
 mod prompt;
+mod templates;
 
 pub use commands::run_cli;
 pub use error::{CliError, CliResult};

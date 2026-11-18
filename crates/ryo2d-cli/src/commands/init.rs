@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use super::{CliError, CliResult, Output};
 use crate::args::{InitArgs, SkillsChoice};
 use crate::prompt::Prompt;
+use crate::templates;
 
 /// Execute the init command
 pub fn execute(args: &InitArgs) -> CliResult<()> {
@@ -67,7 +68,7 @@ pub fn execute(args: &InitArgs) -> CliResult<()> {
   println!("Next steps:");
   println!("  cd {}", project_name);
   println!("  cargo run         # Run in development mode");
-  println!("  ryo2d dev         # Run with hot reload (coming soon)");
+  println!("  ryo2d dev         # Run with developer tools and asset hot reload");
   println!("  ryo2d build       # Build for release");
   println!();
 
@@ -97,106 +98,77 @@ fn is_valid_project_name(name: &str) -> bool {
       .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
 }
 
+/// The files of a new project, as (path, contents), from the templates
+fn project_files(
+  project_name: &str,
+  engine_dependency: &str,
+  engine_root: &str,
+) -> CliResult<Vec<(&'static str, String)>> {
+  let title = display_name(project_name);
+  let values = [
+    ("name", project_name),
+    ("title", title.as_str()),
+    ("engine_dependency", engine_dependency),
+    ("engine_root", engine_root),
+  ];
+  Ok(vec![
+    (
+      "Cargo.toml",
+      templates::render(templates::CARGO_TOML, &values)?,
+    ),
+    ("Ryo.toml", templates::render(templates::RYO_TOML, &values)?),
+    ("main.rs", templates::render(templates::MAIN_RS, &values)?),
+    ("build.rs", templates::render(templates::BUILD_RS, &values)?),
+    ("README.md", templates::render(templates::README, &values)?),
+    (
+      ".gitignore",
+      templates::render(templates::GITIGNORE, &values)?,
+    ),
+  ])
+}
+
+/// The engine as a dependency line and the folder its crates are under
+fn engine_dependency() -> (String, String) {
+  match get_installed_engine_path() {
+    Some(engine_path) => {
+      // Forward slashes, for TOML
+      let path = engine_path.display().to_string().replace('\\', "/");
+      (format!(r#"ryo2d = {{ path = "{path}" }}"#), path)
+    }
+    None => (
+      r#"ryo2d = { path = "../path/to/ryo2d" }  # Update this path"#.to_string(),
+      "../path/to/ryo2d".to_string(),
+    ),
+  }
+}
+
 /// Create the project directory structure and files
 fn create_project_structure(project_dir: &Path, project_name: &str) -> CliResult<()> {
-  // Create directories
-  fs::create_dir_all(project_dir)
-    .map_err(|e| CliError::Other(format!("Failed to create project directory: {}", e)))?;
-
-  fs::create_dir_all(project_dir.join("assets"))
-    .map_err(|e| CliError::Other(format!("Failed to create assets directory: {}", e)))?;
-
-  fs::create_dir_all(project_dir.join("data"))
-    .map_err(|e| CliError::Other(format!("Failed to create data directory: {}", e)))?;
-
-  fs::create_dir_all(project_dir.join("src"))
-    .map_err(|e| CliError::Other(format!("Failed to create src directory: {}", e)))?;
-
-  // Create Cargo.toml
-  let cargo_toml = generate_cargo_toml(project_name);
-  fs::write(project_dir.join("Cargo.toml"), cargo_toml)
-    .map_err(|e| CliError::Other(format!("Failed to write Cargo.toml: {}", e)))?;
-
-  // Create Ryo.toml
-  let ryo_toml = generate_ryo_toml(project_name);
-  fs::write(project_dir.join("Ryo.toml"), ryo_toml)
-    .map_err(|e| CliError::Other(format!("Failed to write Ryo.toml: {}", e)))?;
-
-  // Create main.rs
-  let main_rs = generate_main_rs();
-  fs::write(project_dir.join("main.rs"), main_rs)
-    .map_err(|e| CliError::Other(format!("Failed to write main.rs: {}", e)))?;
-
-  // Create build.rs (for Windows icon embedding)
-  let build_rs = generate_build_rs();
-  fs::write(project_dir.join("build.rs"), build_rs)
-    .map_err(|e| CliError::Other(format!("Failed to write build.rs: {}", e)))?;
-
-  // Create README.md
-  let readme = generate_readme(project_name);
-  fs::write(project_dir.join("README.md"), readme)
-    .map_err(|e| CliError::Other(format!("Failed to write README.md: {}", e)))?;
-
-  // Create .gitignore
-  let gitignore = generate_gitignore();
-  fs::write(project_dir.join(".gitignore"), gitignore)
-    .map_err(|e| CliError::Other(format!("Failed to write .gitignore: {}", e)))?;
-
+  for folder in ["", "assets", "data", "src"] {
+    fs::create_dir_all(project_dir.join(folder))
+      .map_err(|e| CliError::Other(format!("Failed to create the '{folder}' folder: {e}")))?;
+  }
+  let (dependency, root) = engine_dependency();
+  for (path, contents) in project_files(project_name, &dependency, &root)? {
+    fs::write(project_dir.join(path), contents)
+      .map_err(|e| CliError::Other(format!("Failed to write {path}: {e}")))?;
+  }
   Ok(())
 }
 
-/// Generate Cargo.toml content
-fn generate_cargo_toml(project_name: &str) -> String {
-  // Detect installed engine location
-  let (ryo2d_dep, engine_root) = if let Some(engine_path) = get_installed_engine_path() {
-    // Convert backslashes to forward slashes for TOML compatibility
-    let path_str = engine_path.display().to_string().replace('\\', "/");
-    (format!(r#"ryo2d = {{ path = "{}" }}"#, path_str), path_str)
-  } else {
-    // Fallback to git dependency if engine not installed
-    (
-      r#"# ryo2d = { git = "https://github.com/your-username/ryo2d" }
-ryo2d = { path = "../path/to/ryo2d" }  # Update this path"#
-        .to_string(),
-      "../path/to/ryo2d".to_string(),
-    )
-  };
-
-  format!(
-    r#"[package]
-name = "{}"
-version = "0.1.0"
-edition = "2024"
-description = "A game built with Ryo2D engine"
-build = "build.rs"
-
-[[bin]]
-name = "{}"
-path = "main.rs"
-
-[dependencies]
-# Ryo2D engine dependency
-{}
-
-# Optional Ryo2D crates (uncomment to use; import their `prelude`)
-# ryo2d-procgen = {{ path = "{}/crates/ryo2d-procgen" }}      # dungeons, caves, noise, WFC
-# ryo2d-inventory = {{ path = "{}/crates/ryo2d-inventory" }}  # items, inventories, loot
-
-# Add your game dependencies here
-# serde = {{ version = "1.0", features = ["derive"] }}
-# rand = "0.8"
-
-[build-dependencies]
-# Windows icon embedding (used by build.rs when building via `ryo2d build`)
-winresource = "0.1"
-
-# Optimize dependencies, the engine included, in dev builds for playable performance
-# Your game code stays unoptimized for fast compile times
-[profile.dev.package."*"]
-opt-level = 2
-"#,
-    project_name, project_name, ryo2d_dep, engine_root, engine_root
-  )
+/// "my-game" as "My Game"
+fn display_name(project_name: &str) -> String {
+  project_name
+    .split('-')
+    .map(|word| {
+      let mut c = word.chars();
+      match c.next() {
+        None => String::new(),
+        Some(first) => first.to_uppercase().collect::<String>() + c.as_str(),
+      }
+    })
+    .collect::<Vec<_>>()
+    .join(" ")
 }
 
 /// Get the installed engine path
@@ -233,289 +205,42 @@ fn get_installed_engine_path() -> Option<PathBuf> {
   None
 }
 
-/// Generate Ryo.toml content
-fn generate_ryo_toml(project_name: &str) -> String {
-  let display_name = project_name
-    .split('-')
-    .map(|word| {
-      let mut c = word.chars();
-      match c.next() {
-        None => String::new(),
-        Some(first) => first.to_uppercase().collect::<String>() + c.as_str(),
-      }
-    })
-    .collect::<Vec<_>>()
-    .join(" ");
-
-  format!(
-    r#"# {} - Ryo2D Project Configuration
-
-[project]
-name = "{}"
-title = "{}"
-version = "0.0.1"
-
-[paths]
-entry_point = "main.rs"
-save_data = "data"
-assets = "assets"
-
-# =============================================================================
-# USER-FACING DEFAULTS
-# Players' changes to these are kept in system.json (only what differs from here)
-# =============================================================================
-
-[system]
-resolution = "1280x720"   # the game's canvas, scaled to fit the window
-# pixel_art = true    # render into the resolution, scaled by a whole number (crisp pixel art)
-vsync = true
-display_mode = "windowed"
-master_volume = 1.0
-music_volume = 1.0
-sfx_volume = 1.0
-ui_volume = 1.0
-voice_volume = 1.0
-ambience_volume = 1.0
-# audio_buffer_frames = 256   # the audio device's buffer: smaller is lower latency, larger safer
-show_fps = false
-
-# =============================================================================
-# DEVELOPER-ONLY SETTINGS
-# These are NOT written to system.json. A release from `ryo2d build` has no
-# developer tools and ignores them; `ryo2d build --dev-tools` keeps them.
-# =============================================================================
-
-[debug]
-show_colliders = false
-show_velocities = false
-show_origins = false
-show_frame_timing = false
-disable_debug_keys = false
-enable_profiler = false
-logger_window = false
-# console = false  # the developer console (backquote key; on by default)
-# dev_window_keys = false  # F9/F10/F12 dev windows (on by default)
-
-# =============================================================================
-# RELEASE/DISTRIBUTION SETTINGS
-# Build-time settings for `ryo2d build`
-# =============================================================================
-
-[release]
-# logo = "assets/icon.png"
-# portable = false                 # true: keep saves in data/ beside the game instead of the OS user folder
-# save_folder = "MyStudio/MyGame"  # folder under the OS user data folder (default: [project] name)
-# set save_folder before your first release - changing it later moves players' saves
-
-# =============================================================================
-# GAME SPECIFIC SETTINGS
-# Custom game configurations (not tied to engine)
-# `ryo2d build` ships these with the game - keep dev-only switches false before release
-# =============================================================================
-
-[env]
-# my_custom_variable = false
-"#,
-    display_name, display_name, display_name
-  )
-}
-
-/// Generate main.rs content
-fn generate_main_rs() -> &'static str {
-  r#"// Windows: Hide the console window in release builds.
-// In debug builds, the console remains visible for println! output.
-// Remove this line if you need console output in release builds.
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-
-//! My Ryo2D Game
-//!
-//! A game built with the Ryo2D engine.
-
-use ryo2d::prelude::*;
-
-/// Main game scene
-struct GameScene;
-
-impl Scene for GameScene {
-  fn on_enter(&mut self, ctx: &mut SceneContext) {
-    // Initialize your game here
-    // Spawn entities, load assets, etc.
-
-    // Example: Spawn a simple colored square where the camera looks
-    // (the centre of the resolution; world (0, 0) is its top-left)
-    let sprite = ctx.assets().add(Image::solid_rect(64, 64, 0, 255, 255, 255));
-    let center = ctx.camera().position();
-    // Sprites are centred on their position by default
-    ctx.world.spawn((
-      Transform::from_xy(center.x, center.y),
-      Renderable::image(sprite).with_z_order(0),
-    ));
-  }
-
-  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
-    // Game logic, at the fixed rate (`dt` is the fixed step)
-
-    // Example: Quit on Escape
-    if ctx.input.key_pressed(KeyCode::Escape) {
-      return SceneAction::Quit;
-    }
-
-    SceneAction::Continue
-  }
-
-  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
-    // Draw UI here, once a frame before the game logic
-    ui.label(
-      "My Ryo2D Game",
-      10.0,
-      10.0,
-      Color::WHITE,
-      Some(Color::new(0, 0, 0, 180)),
-    );
-    SceneAction::Continue
-  }
-}
-
-fn main() {
-  // A 1280x720 canvas, drawn at the window's resolution and scaled to fit
-  // it. For pixel art, use `.pixel_art(320, 180)` instead: a fixed target
-  // scaled by whole numbers.
-  let engine = EngineBuilder::new()
-    .resolution(1280, 720)
-    .fixed_hz(60)
-    .start_scene(GameScene)
-    .build();
-
-  if let Err(e) = engine.run() {
-    eprintln!("Engine error: {}", e);
-    std::process::exit(1);
-  }
-}
-"#
-}
-
-/// Generate README.md content
-fn generate_readme(project_name: &str) -> String {
-  let display_name = project_name
-    .split('-')
-    .map(|word| {
-      let mut c = word.chars();
-      match c.next() {
-        None => String::new(),
-        Some(first) => first.to_uppercase().collect::<String>() + c.as_str(),
-      }
-    })
-    .collect::<Vec<_>>()
-    .join(" ");
-
-  format!(
-    r#"# {}
-
-A game built with the [Ryo2D](https://github.com/your-username/ryo2d) engine.
-
-## Building and Running
-
-### Development
-
-```bash
-# Run in debug mode (faster compilation, slower runtime)
-cargo run
-
-# Or use the Ryo2D CLI
-ryo2d dev
-```
-
-### Release
-
-```bash
-# Build optimized release
-ryo2d build
-
-# Run the release build
-ryo2d run
-
-# Or distribute the ./release/ folder
-```
-
-## Project Structure
-
-```
-{}/
-├── main.rs          # Game entry point
-├── Cargo.toml       # Rust package configuration
-├── Ryo.toml         # Ryo2D project configuration
-├── assets/          # Game assets (images, audio, etc.)
-├── data/            # Save data (auto-generated)
-└── src/             # Additional source modules (optional)
-```
-
-## Controls
-
-Add your game controls here.
-
-## License
-
-Add your license here.
-"#,
-    display_name, project_name
-  )
-}
-
-/// Generate .gitignore content
-fn generate_gitignore() -> &'static str {
-  r#"/target/
-/data/
-/release/
-Cargo.lock
-*.swp
-*.swo
-*~
-.DS_Store
-"#
-}
-
-/// Generate build.rs for Windows icon embedding
-fn generate_build_rs() -> &'static str {
-  r#"//! Build script for embedding resources (e.g., Windows icon).
-//!
-//! When building via `ryo2d build`, the RYO_EMBED_ICON environment variable
-//! is set to the path of the application icon. This script uses winresource
-//! to embed it into the Windows executable.
-
-fn main() {
-    // Only embed icon on Windows
-    #[cfg(target_os = "windows")]
-    {
-        // Check if building via ryo2d CLI (which sets RYO_EMBED_ICON)
-        if let Ok(icon_path) = std::env::var("RYO_EMBED_ICON") {
-            println!("cargo:rerun-if-env-changed=RYO_EMBED_ICON");
-
-            // Check if the icon file exists and is a PNG
-            let path = std::path::Path::new(&icon_path);
-            if path.exists() {
-                // winresource can handle PNG files directly
-                let mut res = winresource::WindowsResource::new();
-                res.set_icon(&icon_path);
-
-                if let Err(e) = res.compile() {
-                    eprintln!("Warning: Failed to embed icon: {}", e);
-                }
-            }
-        }
-    }
-}
-"#
-}
-
 #[cfg(test)]
 mod tests {
-  use super::generate_ryo_toml;
+  use super::project_files;
+
+  fn ryo_toml() -> String {
+    match project_files("game", "ryo2d = { path = \"/engine\" }", "/engine") {
+      Ok(files) => files
+        .into_iter()
+        .find(|(path, _)| *path == "Ryo.toml")
+        .map(|(_, text)| text)
+        .unwrap_or_default(),
+      Err(error) => panic!("the templates render: {error}"),
+    }
+  }
+
+  #[test]
+  fn every_template_renders_with_init_s_values() {
+    let files = match project_files("my-game", "ryo2d = { path = \"/engine\" }", "/engine") {
+      Ok(files) => files,
+      Err(error) => panic!("the templates render: {error}"),
+    };
+    assert_eq!(files.len(), 6);
+    for (path, text) in &files {
+      assert!(!text.is_empty() && !text.contains("{{"), "{path}");
+    }
+    let cargo = &files[0].1;
+    assert!(cargo.contains("name = \"my-game\""));
+    assert!(cargo.contains("ryo2d = { path = \"/engine\" }"));
+    assert!(!cargo.contains("your-username") && !cargo.contains("rand"));
+  }
 
   /// A new game starts at the mix as designed: master at 1, which is the
   /// engine's own default (the engine's tests hold that)
   #[test]
   fn a_new_game_s_master_volume_is_the_mix_as_designed() {
-    let toml: toml::Value = match toml::from_str(&generate_ryo_toml("game")) {
+    let toml: toml::Value = match toml::from_str(&ryo_toml()) {
       Ok(toml) => toml,
       Err(error) => panic!("the template is TOML: {error}"),
     };
@@ -529,10 +254,8 @@ mod tests {
   #[test]
   fn a_new_game_s_ryo_toml_reads_without_a_warning() {
     let log = ryo2d::logging::capture_log();
-    let read = ryo2d::core::config::Workspace::from_toml_str(
-      &generate_ryo_toml("game"),
-      std::path::PathBuf::from("game"),
-    );
+    let read =
+      ryo2d::core::config::Workspace::from_toml_str(&ryo_toml(), std::path::PathBuf::from("game"));
     assert!(read.is_ok());
     let warnings = log.warnings();
     assert!(warnings.is_empty(), "{warnings:?}");

@@ -1,0 +1,67 @@
+# {{title}} - Ryo2D Project Configuration
+
+[project]
+name = "{{title}}"
+title = "{{title}}"
+version = "0.0.1"
+
+[paths]
+entry_point = "main.rs"
+save_data = "data"
+assets = "assets"
+
+# =============================================================================
+# USER-FACING DEFAULTS
+# Players' changes to these are kept in system.json (only what differs from here)
+# =============================================================================
+
+[system]
+resolution = "1280x720"   # the game's canvas, scaled to fit the window
+# pixel_art = true    # render into the resolution, scaled by a whole number (crisp pixel art)
+vsync = true
+display_mode = "windowed"
+master_volume = 1.0
+music_volume = 1.0
+sfx_volume = 1.0
+ui_volume = 1.0
+voice_volume = 1.0
+ambience_volume = 1.0
+# audio_buffer_frames = 256   # the audio device's buffer: smaller is lower latency, larger safer
+show_fps = false
+
+# =============================================================================
+# DEVELOPER-ONLY SETTINGS
+# These are NOT written to system.json. A release from `ryo2d build` has no
+# developer tools and ignores them; `ryo2d build --dev-tools` keeps them.
+# =============================================================================
+
+[debug]
+show_colliders = false
+show_velocities = false
+show_origins = false
+show_frame_timing = false
+disable_debug_keys = false
+enable_profiler = false
+logger_window = false
+# console = false  # the developer console (backquote key; on by default)
+# dev_window_keys = false  # F9/F10/F12 dev windows (on by default)
+
+# =============================================================================
+# RELEASE/DISTRIBUTION SETTINGS
+# Build-time settings for `ryo2d build`
+# =============================================================================
+
+[release]
+# logo = "assets/icon.png"
+# portable = false                 # true: keep saves in data/ beside the game instead of the OS user folder
+# save_folder = "MyStudio/MyGame"  # folder under the OS user data folder (default: [project] name)
+# set save_folder before your first release - changing it later moves players' saves
+
+# =============================================================================
+# GAME SPECIFIC SETTINGS
+# Custom game configurations (not tied to engine)
+# `ryo2d build` ships these with the game - keep dev-only switches false before release
+# =============================================================================
+
+[env]
+# my_custom_variable = false
