@@ -8,10 +8,10 @@ use glam::Vec2;
 use wgpu::util::DeviceExt;
 
 use super::coverage::{area_in_pixel, cover_strip};
-use super::line_gpu_tests::stream_group;
+use super::line_gpu_tests::LineGpuTest;
 use super::lines::LineStream;
-use super::pipelines::{camera_layout, line_layout, texture_layout};
 use super::lines::{PolyPoint, PolyStyle};
+use super::pipelines::{camera_layout, texture_layout};
 use super::polyline::Triangles;
 use crate::core::graphics::bind_groups;
 use crate::core::graphics::camera_gpu::{CameraGlobals, pixels_per_unit};
@@ -36,7 +36,7 @@ struct Painter {
   textured: wgpu::RenderPipeline,
   camera_layout: wgpu::BindGroupLayout,
   texture_layout: wgpu::BindGroupLayout,
-  stream_layout: wgpu::BindGroupLayout,
+  lines: LineGpuTest,
   sampler: wgpu::Sampler,
   blank: wgpu::Texture,
 }
@@ -45,13 +45,13 @@ impl Painter {
   fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
     let camera_layout = camera_layout(device);
     let texture_layout = texture_layout(device);
-    let stream_layout = line_layout(device);
+    let lines = LineGpuTest::new(device);
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
       label: Some("Line Cover Layout"),
       bind_group_layouts: &[
         Some(&camera_layout),
         Some(&texture_layout),
-        Some(&stream_layout),
+        Some(lines.layout()),
       ],
       immediate_size: 0,
     });
@@ -113,7 +113,7 @@ impl Painter {
       textured: pipeline("fs_textured"),
       camera_layout,
       texture_layout,
-      stream_layout,
+      lines,
       sampler,
       blank,
     }
@@ -192,14 +192,13 @@ impl Painter {
     );
     let mut stream_copy = LineStream::default();
     stream_copy.points.clone_from(&stream.points);
-    stream_copy.codes.clone_from(&stream.codes);
+    stream_copy.indices.clone_from(&stream.indices);
     stream_copy.lines.clone_from(&stream.lines);
     if texture.is_some() {
       for line in &mut stream_copy.lines {
         line.bounds = [0.0, 0.0, 1.0, 1.0];
       }
     }
-    let lines = stream_group(device, &self.stream_layout, &stream_copy);
     let image = device.create_texture(&wgpu::TextureDescriptor {
       label: Some("Line Cover Image"),
       size: wgpu::Extent3d {
@@ -214,36 +213,19 @@ impl Painter {
       usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
       view_formats: &[],
     });
-    let mut encoder = device.create_command_encoder(&Default::default());
-    {
-      let target = image.create_view(&Default::default());
-      let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-        label: Some("Line Cover Pass"),
-        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-          view: &target,
-          depth_slice: None,
-          resolve_target: None,
-          ops: wgpu::Operations {
-            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-            store: wgpu::StoreOp::Store,
-          },
-        })],
-        depth_stencil_attachment: None,
-        timestamp_writes: None,
-        occlusion_query_set: None,
-        multiview_mask: None,
-      });
-      pass.set_pipeline(if texture.is_some() {
-        &self.textured
-      } else {
-        &self.plain
-      });
-      pass.set_bind_group(0, &camera_group, &[]);
-      pass.set_bind_group(1, &texture_group, &[]);
-      pass.set_bind_group(2, &lines, &[]);
-      pass.draw(0..3 * stream.codes.len() as u32, 0..1);
-    }
-    queue.submit([encoder.finish()]);
+    let pipeline = if texture.is_some() {
+      &self.textured
+    } else {
+      &self.plain
+    };
+    self.lines.paint(
+      device,
+      queue,
+      &stream_copy,
+      &image,
+      pipeline,
+      (&camera_group, Some(&texture_group)),
+    );
     crate::core::capture::read_texture_rgba(device, queue, &image).expect("read back")
   }
 }

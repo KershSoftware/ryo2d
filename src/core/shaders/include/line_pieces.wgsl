@@ -2,13 +2,16 @@
 // piece at a time, mirroring the CPU builder (`render/batch/polyline.rs`,
 // the reference) function for function, in the same order, in f32.
 //
-// A vertex is asked for as a piece's kind, the triangle within it and the
-// triangle's corner (0 to 2). It lies at one of the line's points, the
-// piece's own or, for the far end of a segment, the next
-// (`line_piece_corner`); the caller hands `line_piece_vertex` the five
-// points about that one (`LineWindow`, slot 2 the point itself), so the
-// world (from its storage buffers) and the UI (from its instances) build
-// alike. Every piece that touches a point asks the one corner function
+// A vertex is asked for as a piece's kind and one of its slots: each kind
+// has fixed slots, which its triangles name (`line_piece_slot`, and
+// `piece_template` on the CPU), and what each slot holds follows the
+// corner's decisions alone, so every triangle naming a slot uses it alike
+// and the world draws a piece's vertices once each, indexed. A vertex lies
+// at one of the line's points, the piece's own or, for the far end of a
+// segment, the next (`line_piece_corner`); the caller hands
+// `line_piece_vertex` the five points about that one (`LineWindow`, slot 2
+// the point itself), so the world (from its storage buffers) and the UI
+// (from its instances) build alike. Every piece that touches a point asks the one corner function
 // (`lp_joint`) about it with the same points in the same order, and every
 // position is made by one expression at the end (`lp_assemble`), so the
 // copies of a place agree bit for bit. Nothing here makes or tests an
@@ -584,8 +587,8 @@ fn lp_splits(look: LineLook, joint: LpJoint) -> bool {
     return false;
 }
 
-// A segment's corner slots: its quad's outline fanned from its end's
-// corner point (or its left vertex)
+// A segment's slots: its quad's outline fanned from its end's corner point
+// (or its left vertex), its triangles (0 1 2), (0 2 3), (0 3 4) and (0 4 5)
 const LP_FAN: u32 = 0u;
 const LP_TO_LEFT: u32 = 1u;
 const LP_FROM_LEFT: u32 = 2u;
@@ -593,38 +596,16 @@ const LP_START_SPLIT: u32 = 3u;
 const LP_FROM_RIGHT: u32 = 4u;
 const LP_TO_RIGHT: u32 = 5u;
 
-fn lp_segment_slot(tri: u32, corner: u32) -> u32 {
-    if corner == 0u {
-        return LP_FAN;
-    }
-    switch tri {
-        case 0u: {
-            return select(LP_FROM_LEFT, LP_TO_LEFT, corner == 1u);
-        }
-        case 1u: {
-            return select(LP_START_SPLIT, LP_FROM_LEFT, corner == 1u);
-        }
-        case 2u: {
-            return select(LP_FROM_RIGHT, LP_START_SPLIT, corner == 1u);
-        }
-        default: {
-            return select(LP_TO_RIGHT, LP_FROM_RIGHT, corner == 1u);
-        }
-    }
-}
-
-// Which of a piece's points (0, or 1 for a segment's far end) the corner
-// of triangle `tri` at `corner` lies at
-fn line_piece_corner(kind: u32, tri: u32, corner: u32) -> i32 {
+// Which of a piece's points (0, or 1 for a segment's far end) its vertex in
+// `slot` lies at
+fn line_piece_corner(kind: u32, slot: u32) -> i32 {
     if kind != PIECE_SEGMENT {
         return 0;
     }
-    let slot = lp_segment_slot(tri, corner);
     return select(0, 1, slot == LP_FAN || slot == LP_TO_LEFT || slot == LP_TO_RIGHT);
 }
 
-fn lp_segment_vertex(w: LineWindow, look: LineLook, joints: array<LpJoint, 3>, tri: u32, corner: u32) -> LpPlace {
-    let slot = lp_segment_slot(tri, corner);
+fn lp_segment_vertex(w: LineWindow, look: LineLook, joints: array<LpJoint, 3>, slot: u32) -> LpPlace {
     let start = !(slot == LP_FAN || slot == LP_TO_LEFT || slot == LP_TO_RIGHT);
     let j = select(-1, 0, start);
     if !(lp_has(w, j) && lp_has(w, j + 1)) {
@@ -637,15 +618,6 @@ fn lp_segment_vertex(w: LineWindow, look: LineLook, joints: array<LpJoint, 3>, t
         which = LP_SPLIT;
     }
     return lp_end(w, look, joints, start, which);
-}
-
-// Which of a fan triangle's vertices (0 to 2) is at `corner`, given as for
-// a left turn and wound like the strip (`side` the outside)
-fn lp_wedge(side: f32, corner: u32) -> u32 {
-    if corner == 0u || side < 0.0 {
-        return corner;
-    }
-    return 3u - corner;
 }
 
 // A join's vertices
@@ -674,54 +646,103 @@ const LJ_STRIP_START: u32 = 19u;
 // Arc vertex k is LJ_ARC + k
 const LJ_ARC: u32 = 32u;
 
-// The join's vertex at `corner` of triangle `tri`
-fn lp_join_role(look: LineLook, turn: LpTurn, tri: u32, corner: u32) -> u32 {
+// What a join's `slot` holds. A miter or bevel join's triangles are (0 2
+// 3), (1 4 5), (1 5 6) and (0 7 8); a round join's (0 2 3), its arc's (1
+// 6+k 7+k) for k from 0 to `LINE_ARC_STEPS`, and (0 4 5). Each triangle is
+// given as for a left turn: the CPU's reference winds a right turn's the
+// other way, its first vertex the same
+fn lp_join_role(look: LineLook, turn: LpTurn, slot: u32) -> u32 {
     let inner = turn.shares_inside;
-    let bevelled = !turn.mitered && look.join != JOIN_ROUND;
-    var abc = vec3<u32>(0u);
-    if bevelled {
-        switch tri {
+    if look.join == JOIN_ROUND {
+        // Where the inner side splits, the slanted ends are the arc's ends
+        // twice over, of no area (the arc's ends push as the segments' do)
+        switch slot {
             case 0u: {
-                abc = select(vec3<u32>(LJ_BEVEL_CENTRE, LJ_STRIP_END, LJ_ELBOW_END), vec3<u32>(LJ_BEVEL_CENTRE, LJ_BEVEL_INNER_END, LJ_ELBOW_END), inner);
+                return select(LJ_ROUND_CENTRE, LJ_CENTRE, inner);
             }
             case 1u: {
-                abc = vec3<u32>(LJ_BEVEL_CENTRE, LJ_ELBOW_END, LJ_MIDDLE);
+                return LJ_ROUND_CENTRE;
             }
             case 2u: {
-                abc = vec3<u32>(LJ_BEVEL_CENTRE, LJ_MIDDLE, LJ_ELBOW_START);
+                return select(LJ_FIRST, LJ_INNER_END, inner);
+            }
+            case 3u: {
+                return select(LJ_FIRST, LJ_OUTER_END, inner);
+            }
+            case 4u: {
+                return select(LJ_LAST, LJ_OUTER_START, inner);
+            }
+            case 5u: {
+                return select(LJ_LAST, LJ_INNER_START, inner);
+            }
+            case 6u: {
+                return LJ_FIRST;
             }
             default: {
-                abc = select(vec3<u32>(LJ_BEVEL_CENTRE, LJ_ELBOW_START, LJ_STRIP_START), vec3<u32>(LJ_BEVEL_CENTRE, LJ_ELBOW_START, LJ_BEVEL_INNER_START), inner);
+                return select(LJ_ARC + slot - 7u, LJ_LAST, slot == 7u + LINE_ARC_STEPS);
             }
         }
-    } else {
-        // A round join's arc is its triangles 1 to 16
-        let last = select(3u, LINE_ARC_STEPS + 2u, look.join == JOIN_ROUND);
-        // Where the inner side splits, the fringe triangles from the strip's
-        // elbows to the fan's ends (a round's arc ends push as they do)
-        var fringe_end = vec3<u32>(LJ_ROUND_CENTRE, LJ_FIRST, LJ_FIRST);
-        var fringe_start = vec3<u32>(LJ_ROUND_CENTRE, LJ_LAST, LJ_LAST);
-        if turn.mitered {
-            fringe_end = vec3<u32>(LJ_POINT, LJ_STRIP_END, LJ_END_POINT);
-            fringe_start = vec3<u32>(LJ_POINT, LJ_START_POINT, LJ_STRIP_START);
-        }
-        if tri == 0u {
-            abc = select(fringe_end, vec3<u32>(LJ_CENTRE, LJ_INNER_END, LJ_OUTER_END), inner);
-        } else if tri == last {
-            abc = select(fringe_start, vec3<u32>(LJ_CENTRE, LJ_OUTER_START, LJ_INNER_START), inner);
-        } else if turn.mitered {
-            abc = select(vec3<u32>(LJ_POINT, LJ_TIP, LJ_START_POINT), vec3<u32>(LJ_POINT, LJ_END_POINT, LJ_TIP), tri == 1u);
-        } else {
-            let k = tri - 1u;
-            let b = select(LJ_ARC + k - 1u, LJ_FIRST, k == 0u);
-            let c = select(LJ_ARC + k, LJ_LAST, k == LINE_ARC_STEPS);
-            abc = vec3<u32>(LJ_ROUND_CENTRE, b, c);
+    }
+    if !turn.mitered {
+        // A bevel fans from its corner point; where the inner side
+        // splits, its slanted ends are fringe triangles from the strip's
+        // elbows
+        switch slot {
+            case 0u, 1u: {
+                return LJ_BEVEL_CENTRE;
+            }
+            case 2u: {
+                return select(LJ_STRIP_END, LJ_BEVEL_INNER_END, inner);
+            }
+            case 3u, 4u: {
+                return LJ_ELBOW_END;
+            }
+            case 5u: {
+                return LJ_MIDDLE;
+            }
+            case 6u, 7u: {
+                return LJ_ELBOW_START;
+            }
+            default: {
+                return select(LJ_STRIP_START, LJ_BEVEL_INNER_START, inner);
+            }
         }
     }
-    return abc[lp_wedge(turn.side, corner)];
+    // A miter's point fans to its tip; its slanted ends are wedges from the
+    // corner point to the shared inner vertex, or where the inner side
+    // splits, fringe triangles from the strip's elbows
+    switch slot {
+        case 0u: {
+            return select(LJ_POINT, LJ_CENTRE, inner);
+        }
+        case 1u: {
+            return LJ_POINT;
+        }
+        case 2u: {
+            return select(LJ_STRIP_END, LJ_INNER_END, inner);
+        }
+        case 3u: {
+            return select(LJ_END_POINT, LJ_OUTER_END, inner);
+        }
+        case 4u: {
+            return LJ_END_POINT;
+        }
+        case 5u: {
+            return LJ_TIP;
+        }
+        case 6u: {
+            return LJ_START_POINT;
+        }
+        case 7u: {
+            return select(LJ_START_POINT, LJ_OUTER_START, inner);
+        }
+        default: {
+            return select(LJ_STRIP_START, LJ_INNER_START, inner);
+        }
+    }
 }
 
-fn lp_join_vertex(w: LineWindow, look: LineLook, joints: array<LpJoint, 3>, tri: u32, corner: u32) -> LpPlace {
+fn lp_join_vertex(w: LineWindow, look: LineLook, joints: array<LpJoint, 3>, slot: u32) -> LpPlace {
     let point = lp_pt(w, 0);
     let joint = joints[1];
     if !(lp_has(w, -1) && lp_has(w, 0) && lp_has(w, 1)) || joint.shape != LP_TURN {
@@ -749,7 +770,7 @@ fn lp_join_vertex(w: LineWindow, look: LineLook, joints: array<LpJoint, 3>, tri:
     let centre_uv = vec2<f32>(u, 0.5);
     let zero = vec2<f32>(0.0);
 
-    let role = lp_join_role(look, turn, tri, corner);
+    let role = lp_join_role(look, turn, slot);
     let outer_end = lp_placed(lp_edge(side, hw, n0, turn.push0, limit0), m0, hw, vec2<f32>(u_end, v_out), n0);
     let outer_start = lp_placed(lp_edge(side, hw, n1, turn.push1, limit1), m1, hw, vec2<f32>(u, v_out), n1);
     let inner_end = lp_placed(lp_shared(lp_edge(-side, hw, n0, -side * miter, both)), -(side * miter), hw, vec2<f32>(u_end, v_in), bisector);
@@ -860,23 +881,24 @@ const LC_LAST: u32 = 6u;
 // Arc vertex k is LC_ARC + k
 const LC_ARC: u32 = 32u;
 
-fn lp_cap_role(cap: u32, start: bool, tri: u32, corner: u32) -> u32 {
+// What a cap's `slot` holds. A square cap's triangles are (0 1 2) and (1 3
+// 2); a round cap's (0 1+k 2+k) for k from 0 to `LINE_ARC_STEPS`, given as
+// for a start cap (the reference winds an end cap's the other way)
+fn lp_cap_role(cap: u32, start: bool, slot: u32) -> u32 {
     if cap == CAP_SQUARE {
-        var abc: vec3<u32>;
-        if start {
-            abc = select(vec3<u32>(LC_FAR_RIGHT, LC_RIGHT, LC_LEFT), vec3<u32>(LC_FAR_LEFT, LC_FAR_RIGHT, LC_LEFT), tri == 0u);
-        } else {
-            abc = select(vec3<u32>(LC_RIGHT, LC_FAR_RIGHT, LC_FAR_LEFT), vec3<u32>(LC_LEFT, LC_RIGHT, LC_FAR_LEFT), tri == 0u);
-        }
-        return abc[corner];
+        let order = select(vec4<u32>(LC_LEFT, LC_RIGHT, LC_FAR_LEFT, LC_FAR_RIGHT), vec4<u32>(LC_FAR_LEFT, LC_FAR_RIGHT, LC_LEFT, LC_RIGHT), start);
+        return order[min(slot, 3u)];
     }
-    let b = select(LC_ARC + tri - 1u, LC_FIRST, tri == 0u);
-    let c = select(LC_ARC + tri, LC_LAST, tri == LINE_ARC_STEPS);
-    let abc = vec3<u32>(LC_CENTRE, b, c);
-    return abc[lp_wedge(select(1.0, -1.0, start), corner)];
+    if slot == 0u {
+        return LC_CENTRE;
+    }
+    if slot == 1u {
+        return LC_FIRST;
+    }
+    return select(LC_ARC + slot - 2u, LC_LAST, slot == LINE_ARC_STEPS + 2u);
 }
 
-fn lp_cap_vertex(w: LineWindow, look: LineLook, joints: array<LpJoint, 3>, start: bool, tri: u32, corner: u32) -> LpPlace {
+fn lp_cap_vertex(w: LineWindow, look: LineLook, joints: array<LpJoint, 3>, start: bool, slot: u32) -> LpPlace {
     let point = lp_pt(w, 0);
     let near_at = select(-1, 1, start);
     if !lp_has(w, near_at) {
@@ -902,7 +924,7 @@ fn lp_cap_vertex(w: LineWindow, look: LineLook, joints: array<LpJoint, 3>, start
     let n = segment.normal;
     let u = point.u;
     let out = select(segment.dir, -segment.dir, start);
-    let role = lp_cap_role(look.cap, start, tri, corner);
+    let role = lp_cap_role(look.cap, start, slot);
     if role >= LC_ARC {
         let turn = select(-1.0, 1.0, start);
         let step = LINE_PI / f32(LINE_ARC_STEPS);
@@ -943,21 +965,50 @@ fn lp_cap_vertex(w: LineWindow, look: LineLook, joints: array<LpJoint, 3>, start
     }
 }
 
-// The vertex at `corner` of triangle `tri` of a piece of `kind`, given the
-// window about the point it lies at (`line_piece_corner`)
-fn line_piece_vertex(w: LineWindow, look: LineLook, kind: u32, tri: u32, corner: u32) -> PieceVertex {
+// The slot triangle `tri` of a piece of `kind` names at `corner` (0 to 2),
+// as `piece_template` lays them out on the CPU (the UI, whose instances
+// draw their triangles unindexed, asks this)
+fn line_piece_slot(kind: u32, join: u32, cap: u32, tri: u32, corner: u32) -> u32 {
+    if kind == PIECE_SEGMENT {
+        return select(tri + corner, 0u, corner == 0u);
+    }
+    if kind == PIECE_JOIN {
+        if join == JOIN_ROUND {
+            let last = LINE_ARC_STEPS + 2u;
+            if tri == 0u || tri == last {
+                let ends = select(vec2<u32>(2u, 3u), vec2<u32>(4u, 5u), tri == last);
+                return select(ends[min(max(corner, 1u), 2u) - 1u], 0u, corner == 0u);
+            }
+            return select(5u + tri + corner - 1u, 1u, corner == 0u);
+        }
+        if corner == 0u {
+            return select(1u, 0u, tri == 0u || tri == 3u);
+        }
+        let first = array<u32, 4>(2u, 4u, 5u, 7u);
+        return first[min(tri, 3u)] + corner - 1u;
+    }
+    if cap == CAP_SQUARE {
+        let order = select(vec3<u32>(1u, 3u, 2u), vec3<u32>(0u, 1u, 2u), tri == 0u);
+        return order[min(corner, 2u)];
+    }
+    return select(tri + corner, 0u, corner == 0u);
+}
+
+// The vertex a piece of `kind` holds in `slot`, given the window about the
+// point it lies at (`line_piece_corner`)
+fn line_piece_vertex(w: LineWindow, look: LineLook, kind: u32, slot: u32) -> PieceVertex {
     // The corner and its neighbours, each asked once, from one place
     let joints = array<LpJoint, 3>(lp_joint(w, -1, look), lp_joint(w, 0, look), lp_joint(w, 1, look));
     var place: LpPlace;
     switch kind {
         case PIECE_SEGMENT: {
-            place = lp_segment_vertex(w, look, joints, tri, corner);
+            place = lp_segment_vertex(w, look, joints, slot);
         }
         case PIECE_JOIN: {
-            place = lp_join_vertex(w, look, joints, tri, corner);
+            place = lp_join_vertex(w, look, joints, slot);
         }
         default: {
-            place = lp_cap_vertex(w, look, joints, kind == PIECE_START_CAP, tri, corner);
+            place = lp_cap_vertex(w, look, joints, kind == PIECE_START_CAP, slot);
         }
     }
     return lp_assemble(lp_pt(w, 0), place);

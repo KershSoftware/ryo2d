@@ -249,8 +249,8 @@ pub(crate) fn camera_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
 }
 
 /// The layout the line stream is bound with (group 2 of the line
-/// pipelines), three storage arrays the vertex stage reads: the line table
-/// (`LineInfo`), the points (`LinePoint`) and one code a triangle.
+/// pipelines), two storage arrays the vertex stage reads: the line table
+/// (`LineInfo`) and the points (`LinePoint`).
 pub(crate) fn line_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
   line_layout_for(device, wgpu::ShaderStages::VERTEX)
 }
@@ -273,7 +273,7 @@ pub(crate) fn line_layout_for(
   };
   device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
     label: Some("Batch Line Stream Layout"),
-    entries: &[entry(0), entry(1), entry(2)],
+    entries: &[entry(0), entry(1)],
   })
 }
 
@@ -544,7 +544,8 @@ pub(crate) fn custom_pipeline(
 }
 
 /// A pipeline drawing `key`'s stream (instanced quads, lines' triangles
-/// built from the line stream, or a mesh's indexed triangles with a quad's
+/// built from the line stream by their vertex codes, indexed, or a mesh's
+/// indexed triangles with a quad's
 /// instance) with `module`'s
 /// `vs_main` (`vs_tile` for tile chunks, `vs_mesh` for meshes) and
 /// `fragment`, blended and formatted for `key`.
@@ -601,7 +602,8 @@ fn batch_pipeline(
       },
     }),
     // No culling: a diagonally flipped tile's quad has its axes swapped,
-    // which turns it over
+    // which turns it over, and a line's pieces wind one way about a left
+    // turn and the other about a right one
     primitive: wgpu::PrimitiveState {
       topology: wgpu::PrimitiveTopology::TriangleList,
       cull_mode: None,

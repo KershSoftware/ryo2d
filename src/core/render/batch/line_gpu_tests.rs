@@ -6,9 +6,9 @@ use glam::Vec2;
 use wgpu::util::DeviceExt;
 
 use super::gpu::line_group;
-use super::lines::LineStream;
-use super::pipelines::{camera_layout, line_layout_for};
+use super::lines::{LineStream, MITER_LIMIT, PieceKind, piece_template};
 use super::lines::{PolyPoint, PolyStyle};
+use super::pipelines::{camera_layout, line_layout_for};
 use super::polyline::{Triangles, Vertex2D};
 use crate::core::graphics::bind_groups;
 use crate::core::graphics::camera_gpu::{CameraGlobals, pixels_per_unit};
@@ -206,7 +206,12 @@ struct Dumped {
   _pad: [f32; 3],
 }
 
-fn storage(device: &wgpu::Device, label: &str, bytes: &[u8]) -> wgpu::Buffer {
+fn buffer(
+  device: &wgpu::Device,
+  label: &str,
+  bytes: &[u8],
+  usage: wgpu::BufferUsages,
+) -> wgpu::Buffer {
   // A binding needs a buffer of some size
   let bytes = if bytes.is_empty() {
     &[0u8; 16][..]
@@ -216,32 +221,125 @@ fn storage(device: &wgpu::Device, label: &str, bytes: &[u8]) -> wgpu::Buffer {
   device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
     label: Some(label),
     contents: bytes,
-    usage: wgpu::BufferUsages::STORAGE,
+    usage,
   })
 }
 
-/// `stream`'s buffers and their bind group, in `layout`
-pub(super) fn stream_group(
-  device: &wgpu::Device,
-  layout: &wgpu::BindGroupLayout,
-  stream: &LineStream,
-) -> wgpu::BindGroup {
-  let table = storage(
-    device,
-    "Test Line Table",
-    bytemuck::cast_slice(&stream.lines),
-  );
-  let points = storage(
-    device,
-    "Test Line Points",
-    bytemuck::cast_slice(&stream.points),
-  );
-  let codes = storage(
-    device,
-    "Test Line Codes",
-    bytemuck::cast_slice(&stream.codes),
-  );
-  line_group(device, layout, [&table, &points, &codes])
+/// The tests' one way to draw a line stream: upload it, encode what the
+/// frame encodes before its passes, and draw it in a pass whose pipeline
+/// and other groups the caller set
+pub(super) struct LineGpuTest {
+  layout: wgpu::BindGroupLayout,
+}
+
+/// A stream uploaded for drawing
+pub(super) struct UploadedLines {
+  group: wgpu::BindGroup,
+  /// Its vertex codes, the draw's index buffer (and a storage array the
+  /// dump reads)
+  indices: wgpu::Buffer,
+  /// How many indices it draws
+  pub(super) vertices: u32,
+}
+
+impl LineGpuTest {
+  pub(super) fn new(device: &wgpu::Device) -> Self {
+    Self {
+      layout: line_layout_for(
+        device,
+        wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::COMPUTE,
+      ),
+    }
+  }
+
+  /// The layout of the group the line pipelines bind the stream with
+  pub(super) fn layout(&self) -> &wgpu::BindGroupLayout {
+    &self.layout
+  }
+
+  pub(super) fn upload(
+    &self,
+    device: &wgpu::Device,
+    _queue: &wgpu::Queue,
+    stream: &LineStream,
+  ) -> UploadedLines {
+    let storage = wgpu::BufferUsages::STORAGE;
+    let table = buffer(
+      device,
+      "Test Line Table",
+      bytemuck::cast_slice(&stream.lines),
+      storage,
+    );
+    let points = buffer(
+      device,
+      "Test Line Points",
+      bytemuck::cast_slice(&stream.points),
+      storage,
+    );
+    let indices = buffer(
+      device,
+      "Test Line Indices",
+      bytemuck::cast_slice(&stream.indices),
+      wgpu::BufferUsages::INDEX | storage,
+    );
+    UploadedLines {
+      group: line_group(device, &self.layout, [&table, &points]),
+      indices,
+      vertices: stream.indices.len() as u32,
+    }
+  }
+
+  /// What the frame encodes before its passes
+  pub(super) fn encode(&self, _encoder: &mut wgpu::CommandEncoder, _lines: &UploadedLines) {}
+
+  /// Draw every line of `lines` in `pass`, binding the stream as group 2
+  pub(super) fn draw<'a>(&self, pass: &mut wgpu::RenderPass<'a>, lines: &'a UploadedLines) {
+    pass.set_bind_group(2, &lines.group, &[]);
+    pass.set_index_buffer(lines.indices.slice(..), wgpu::IndexFormat::Uint32);
+    pass.draw_indexed(0..lines.vertices, 0, 0..1);
+  }
+
+  /// `stream` drawn into `target` (cleared to transparent first) by
+  /// `pipeline`, with the camera's group and `texture` (group 1) when given
+  pub(super) fn paint(
+    &self,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    stream: &LineStream,
+    target: &wgpu::Texture,
+    pipeline: &wgpu::RenderPipeline,
+    groups: (&wgpu::BindGroup, Option<&wgpu::BindGroup>),
+  ) {
+    let lines = self.upload(device, queue, stream);
+    let mut encoder = device.create_command_encoder(&Default::default());
+    self.encode(&mut encoder, &lines);
+    {
+      let view = target.create_view(&Default::default());
+      let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("Test Line Pass"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+          view: &view,
+          depth_slice: None,
+          resolve_target: None,
+          ops: wgpu::Operations {
+            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+            store: wgpu::StoreOp::Store,
+          },
+        })],
+        depth_stencil_attachment: None,
+        timestamp_writes: None,
+        occlusion_query_set: None,
+        multiview_mask: None,
+      });
+      pass.set_pipeline(pipeline);
+      pass.set_bind_group(0, groups.0, &[]);
+      if let Some(texture) = groups.1 {
+        pass.set_bind_group(1, texture, &[]);
+      }
+      self.draw(&mut pass, &lines);
+    }
+    queue.submit([encoder.finish()]);
+  }
 }
 
 fn module(device: &wgpu::Device) -> wgpu::ShaderModule {
@@ -251,26 +349,29 @@ fn module(device: &wgpu::Device) -> wgpu::ShaderModule {
   })
 }
 
-/// Every vertex of `stream`, three a triangle, as the GPU builds it
+/// Every vertex `stream` draws, three a triangle in its index buffer's
+/// order, as the GPU builds it
 fn dump(device: &wgpu::Device, queue: &wgpu::Queue, stream: &LineStream) -> Vec<Dumped> {
-  let count = 3 * stream.codes.len();
-  let stream_layout = line_layout_for(device, wgpu::ShaderStages::COMPUTE);
+  let gpu = LineGpuTest::new(device);
+  let lines = gpu.upload(device, queue, stream);
+  let count = lines.vertices as usize;
+  let storage = |binding, read_only| wgpu::BindGroupLayoutEntry {
+    binding,
+    visibility: wgpu::ShaderStages::COMPUTE,
+    ty: wgpu::BindingType::Buffer {
+      ty: wgpu::BufferBindingType::Storage { read_only },
+      has_dynamic_offset: false,
+      min_binding_size: None,
+    },
+    count: None,
+  };
   let dump_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
     label: Some("Line Dump Layout"),
-    entries: &[wgpu::BindGroupLayoutEntry {
-      binding: 0,
-      visibility: wgpu::ShaderStages::COMPUTE,
-      ty: wgpu::BindingType::Buffer {
-        ty: wgpu::BufferBindingType::Storage { read_only: false },
-        has_dynamic_offset: false,
-        min_binding_size: None,
-      },
-      count: None,
-    }],
+    entries: &[storage(0, false), storage(1, true)],
   });
   let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
     label: Some("Line Dump Pipeline Layout"),
-    bind_group_layouts: &[None, None, Some(&stream_layout), Some(&dump_layout)],
+    bind_group_layouts: &[None, None, Some(gpu.layout()), Some(&dump_layout)],
     immediate_size: 0,
   });
   let module = module(device);
@@ -282,7 +383,7 @@ fn dump(device: &wgpu::Device, queue: &wgpu::Queue, stream: &LineStream) -> Vec<
     compilation_options: Default::default(),
     cache: None,
   });
-  let size = (count * std::mem::size_of::<Dumped>()) as u64;
+  let size = (count.max(1) * std::mem::size_of::<Dumped>()) as u64;
   let out = device.create_buffer(&wgpu::BufferDescriptor {
     label: Some("Line Dump"),
     size,
@@ -295,23 +396,29 @@ fn dump(device: &wgpu::Device, queue: &wgpu::Queue, stream: &LineStream) -> Vec<
     usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
     mapped_at_creation: false,
   });
-  let stream_group = stream_group(device, &stream_layout, stream);
   let dump_group = bind_groups::create(
     device,
     &wgpu::BindGroupDescriptor {
       label: Some("Line Dump Group"),
       layout: &dump_layout,
-      entries: &[wgpu::BindGroupEntry {
-        binding: 0,
-        resource: out.as_entire_binding(),
-      }],
+      entries: &[
+        wgpu::BindGroupEntry {
+          binding: 0,
+          resource: out.as_entire_binding(),
+        },
+        wgpu::BindGroupEntry {
+          binding: 1,
+          resource: lines.indices.as_entire_binding(),
+        },
+      ],
     },
   );
   let mut encoder = device.create_command_encoder(&Default::default());
+  gpu.encode(&mut encoder, &lines);
   {
     let mut pass = encoder.begin_compute_pass(&Default::default());
     pass.set_pipeline(&pipeline);
-    pass.set_bind_group(2, &stream_group, &[]);
+    pass.set_bind_group(2, &lines.group, &[]);
     pass.set_bind_group(3, &dump_group, &[]);
     pass.dispatch_workgroups((count as u32).div_ceil(64), 1, 1);
   }
@@ -320,11 +427,12 @@ fn dump(device: &wgpu::Device, queue: &wgpu::Queue, stream: &LineStream) -> Vec<
   let slice = read.slice(..);
   slice.map_async(wgpu::MapMode::Read, |_| {});
   let _ = device.poll(wgpu::PollType::wait_indefinitely());
-  let dumped = {
+  let mut dumped = {
     let view = slice.get_mapped_range().expect("the dump maps");
     bytemuck::cast_slice::<u8, Dumped>(&view).to_vec()
   };
   read.unmap();
+  dumped.truncate(count);
   dumped
 }
 
@@ -359,37 +467,41 @@ fn compare(v: &Vertex2D, d: &Dumped) -> Vec<(&'static str, f32, f32)> {
   fields
 }
 
-#[test]
-fn the_gpu_builds_the_reference_s_vertices() {
-  // Every vertex of every triangle, in the reference's order, equal within
-  // f32's rounding: every join and cap, closed, tapered, split and U-turned
-  let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
-    return;
+/// `dumped` in the reference's corner order: each triangle's first vertex
+/// is the reference's (flat attributes come from it), and its other two
+/// are the reference's in either order, a right turn's triangles winding
+/// the other way on the GPU (no face is culled); each pair goes the way
+/// that puts its fields nearer the reference's
+fn paired(reference: &Triangles, dumped: &[Dumped]) -> Vec<Dumped> {
+  let off = |v: &Vertex2D, d: &Dumped| -> f32 {
+    compare(v, d)
+      .iter()
+      .map(|(_, cpu, gpu)| (cpu - gpu).abs())
+      .sum()
   };
-  let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-  let (mut stream, mut reference) = (LineStream::default(), Triangles::default());
-  let mut names = Vec::new();
-  for (index, line) in lines().iter().enumerate() {
-    for join in JOINS {
-      for cap in CAPS {
-        let (points, style) = (line.poly(), line.style(join, cap));
-        let gpu = stream.polyline(&points, &style);
-        let cpu = reference.polyline(&points, &style);
-        assert_eq!(
-          gpu, cpu,
-          "line {index} {join:?} {cap:?}: the triangles' counts"
-        );
-        names.push((gpu, format!("line {index} {join:?} {cap:?}")));
-      }
+  let mut out = dumped.to_vec();
+  for (tri, gpu) in reference.indices.chunks(3).zip(out.chunks_mut(3)) {
+    let [_, b, c] = [0, 1, 2].map(|k| &reference.vertices[tri[k] as usize]);
+    if let [_, g1, g2] = gpu
+      && off(b, g2) + off(c, g1) < off(b, g1) + off(c, g2)
+    {
+      std::mem::swap(g1, g2);
     }
   }
-  let dumped = dump(&device, &queue, &stream);
-  let error = pollster::block_on(scope.pop());
-  assert!(error.is_none(), "{error:?}");
-  assert_eq!(dumped.len(), reference.indices.len());
+  out
+}
+
+/// Where the GPU's `dumped` vertices (paired) differ from the reference's
+/// by more than f32's rounding, naming each by the line in `names` whose
+/// range holds it, and the worst difference
+fn differences(
+  reference: &Triangles,
+  dumped: &[Dumped],
+  names: &[(std::ops::Range<u32>, String)],
+) -> (Vec<String>, (f32, String)) {
   let mut failures = Vec::new();
   let mut worst = (0.0f32, String::new());
-  for (corner, (&index, d)) in reference.indices.iter().zip(&dumped).enumerate() {
+  for (corner, (&index, d)) in reference.indices.iter().zip(dumped).enumerate() {
     let v = &reference.vertices[index as usize];
     let name = names
       .iter()
@@ -416,6 +528,38 @@ fn the_gpu_builds_the_reference_s_vertices() {
       }
     }
   }
+  (failures, worst)
+}
+
+#[test]
+fn the_gpu_builds_the_reference_s_vertices() {
+  // Every vertex of every triangle, in the reference's order, equal within
+  // f32's rounding: every join and cap, closed, tapered, split and U-turned
+  let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+    return;
+  };
+  let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+  let (mut stream, mut reference) = (LineStream::default(), Triangles::default());
+  let mut names = Vec::new();
+  for (index, line) in lines().iter().enumerate() {
+    for join in JOINS {
+      for cap in CAPS {
+        let (points, style) = (line.poly(), line.style(join, cap));
+        let gpu = stream.polyline(&points, &style);
+        let cpu = reference.polyline(&points, &style);
+        assert_eq!(
+          gpu, cpu,
+          "line {index} {join:?} {cap:?}: the triangles' counts"
+        );
+        names.push((gpu, format!("line {index} {join:?} {cap:?}")));
+      }
+    }
+  }
+  let dumped = paired(&reference, &dump(&device, &queue, &stream));
+  let error = pollster::block_on(scope.pop());
+  assert!(error.is_none(), "{error:?}");
+  assert_eq!(dumped.len(), reference.indices.len());
+  let (failures, worst) = differences(&reference, &dumped, &names);
   eprintln!("{} vertices; worst: {worst:?}", dumped.len());
   assert!(
     failures.is_empty(),
@@ -477,16 +621,16 @@ fn the_gpu_builds_the_reference_s_vertices() {
 struct Counter {
   pipeline: wgpu::RenderPipeline,
   camera_layout: wgpu::BindGroupLayout,
-  stream_layout: wgpu::BindGroupLayout,
+  lines: LineGpuTest,
 }
 
 impl Counter {
   fn new(device: &wgpu::Device) -> Self {
     let camera_layout = camera_layout(device);
-    let stream_layout = line_layout_for(device, wgpu::ShaderStages::VERTEX);
+    let lines = LineGpuTest::new(device);
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
       label: Some("Line Count Layout"),
-      bind_group_layouts: &[Some(&camera_layout), None, Some(&stream_layout)],
+      bind_group_layouts: &[Some(&camera_layout), None, Some(lines.layout())],
       immediate_size: 0,
     });
     let module = module(device);
@@ -530,7 +674,7 @@ impl Counter {
     Self {
       pipeline,
       camera_layout,
-      stream_layout,
+      lines,
     }
   }
 
@@ -561,7 +705,6 @@ impl Counter {
         }],
       },
     );
-    let lines = stream_group(device, &self.stream_layout, stream);
     let texture = device.create_texture(&wgpu::TextureDescriptor {
       label: Some("Line Count Image"),
       size: wgpu::Extent3d {
@@ -576,31 +719,14 @@ impl Counter {
       usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
       view_formats: &[],
     });
-    let mut encoder = device.create_command_encoder(&Default::default());
-    {
-      let target = texture.create_view(&Default::default());
-      let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-        label: Some("Line Count Pass"),
-        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-          view: &target,
-          depth_slice: None,
-          resolve_target: None,
-          ops: wgpu::Operations {
-            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-            store: wgpu::StoreOp::Store,
-          },
-        })],
-        depth_stencil_attachment: None,
-        timestamp_writes: None,
-        occlusion_query_set: None,
-        multiview_mask: None,
-      });
-      pass.set_pipeline(&self.pipeline);
-      pass.set_bind_group(0, &camera, &[]);
-      pass.set_bind_group(2, &lines, &[]);
-      pass.draw(0..3 * stream.codes.len() as u32, 0..1);
-    }
-    queue.submit([encoder.finish()]);
+    self.lines.paint(
+      device,
+      queue,
+      stream,
+      &texture,
+      &self.pipeline,
+      (&camera, None),
+    );
     let image =
       crate::core::capture::read_texture_rgba(device, queue, &texture).expect("read back");
     image.pixels().map(|pixel| pixel.0[0]).collect()
@@ -778,6 +904,262 @@ fn a_translucent_line_drawn_on_the_gpu_counts_every_pixel_once() {
   assert!(
     failures.is_empty(),
     "{} pixels wrong:\n{}",
+    failures.len(),
+    failures[..failures.len().min(30)].join("\n")
+  );
+}
+
+#[test]
+fn the_slot_layouts_agree() {
+  // The slots each triangle names, as the CPU writes them into the index
+  // buffer (`piece_template`) and as the UI's unindexed instances ask the
+  // GPU for them (`line_piece_slot`), for every kind, join and cap
+  let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+    return;
+  };
+  let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+  let count = 4 * 864;
+  let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+    label: Some("Slot Dump Layout"),
+    entries: &[wgpu::BindGroupLayoutEntry {
+      binding: 2,
+      visibility: wgpu::ShaderStages::COMPUTE,
+      ty: wgpu::BindingType::Buffer {
+        ty: wgpu::BufferBindingType::Storage { read_only: false },
+        has_dynamic_offset: false,
+        min_binding_size: None,
+      },
+      count: None,
+    }],
+  });
+  let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+    label: Some("Slot Dump Pipeline Layout"),
+    bind_group_layouts: &[None, None, None, Some(&layout)],
+    immediate_size: 0,
+  });
+  let module = module(&device);
+  let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+    label: Some("Slot Dump"),
+    layout: Some(&pipeline_layout),
+    module: &module,
+    entry_point: Some("cs_slot_dump"),
+    compilation_options: Default::default(),
+    cache: None,
+  });
+  let size = (count * 4) as u64;
+  let out = device.create_buffer(&wgpu::BufferDescriptor {
+    label: Some("Slot Dump"),
+    size,
+    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+    mapped_at_creation: false,
+  });
+  let read = device.create_buffer(&wgpu::BufferDescriptor {
+    label: Some("Slot Dump Readback"),
+    size,
+    usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+    mapped_at_creation: false,
+  });
+  let group = bind_groups::create(
+    &device,
+    &wgpu::BindGroupDescriptor {
+      label: Some("Slot Dump Group"),
+      layout: &layout,
+      entries: &[wgpu::BindGroupEntry {
+        binding: 2,
+        resource: out.as_entire_binding(),
+      }],
+    },
+  );
+  let mut encoder = device.create_command_encoder(&Default::default());
+  {
+    let mut pass = encoder.begin_compute_pass(&Default::default());
+    pass.set_pipeline(&pipeline);
+    pass.set_bind_group(3, &group, &[]);
+    pass.dispatch_workgroups((count as u32).div_ceil(64), 1, 1);
+  }
+  encoder.copy_buffer_to_buffer(&out, 0, &read, 0, size);
+  queue.submit([encoder.finish()]);
+  let slice = read.slice(..);
+  slice.map_async(wgpu::MapMode::Read, |_| {});
+  let _ = device.poll(wgpu::PollType::wait_indefinitely());
+  let slots = {
+    let view = slice.get_mapped_range().expect("the dump maps");
+    bytemuck::cast_slice::<u8, u32>(&view).to_vec()
+  };
+  read.unmap();
+  let error = pollster::block_on(scope.pop());
+  assert!(error.is_none(), "{error:?}");
+  let kinds = [
+    PieceKind::Segment,
+    PieceKind::Join,
+    PieceKind::StartCap,
+    PieceKind::EndCap,
+  ];
+  let mut differ = Vec::new();
+  let mut checked = 0;
+  for (k, kind) in kinds.into_iter().enumerate() {
+    for (j, join) in JOINS.into_iter().enumerate() {
+      for (c, cap) in [LineCap::Butt, LineCap::Square, LineCap::Round]
+        .into_iter()
+        .enumerate()
+      {
+        for (tri, corners) in piece_template(kind, join, cap).iter().enumerate() {
+          for (corner, &slot) in corners.iter().enumerate() {
+            let at = k * 864 + j * 288 + c * 96 + tri * 3 + corner;
+            checked += 1;
+            if slots[at] != slot {
+              differ.push(format!(
+                "{kind:?} {join:?} {cap:?} triangle {tri} corner {corner}: {slot} on the CPU, {} on the GPU",
+                slots[at]
+              ));
+            }
+          }
+        }
+      }
+    }
+  }
+  assert!(checked > 500, "{checked} slots checked");
+  assert!(differ.is_empty(), "{}", differ.join("\n"));
+}
+
+/// The decisions the GPU takes at a corner of `line`: which way it turns,
+/// whether its inner side is shared and, for a miter, whether it stays
+/// within the limit; or that it runs straight on or turns back
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum Decision {
+  Turn {
+    left: bool,
+    shared: bool,
+    mitered: bool,
+  },
+  Straight,
+  UTurn,
+}
+
+fn decisions(line: &TestLine, join: LineJoin) -> Vec<Decision> {
+  let n = line.points.len();
+  let at = |i: usize| line.points[i % n];
+  let corners = if line.closed {
+    0..n
+  } else {
+    1..n.saturating_sub(1)
+  };
+  corners
+    .map(|i| {
+      let (a, p, b) = (at(i + n - 1), at(i), at(i + 1));
+      let (d0, d1) = ((p - a).normalize(), (b - p).normalize());
+      let turn = d0.perp_dot(d1);
+      let cos = d0.dot(d1);
+      if turn.abs() < 1e-6 && cos > 0.0 {
+        return Decision::Straight;
+      }
+      if 1.0 + cos <= 1e-6 {
+        return Decision::UTurn;
+      }
+      let miter = (d0.perp() + d1.perp()) / (1.0 + cos);
+      let shortest = p.distance(a).min(p.distance(b));
+      Decision::Turn {
+        left: turn > 0.0,
+        shared: miter.length() * line.halves[i % n] <= shortest / 2.0,
+        mitered: join == LineJoin::Miter && miter.length() <= MITER_LIMIT,
+      }
+    })
+    .collect()
+}
+
+#[test]
+fn every_slot_builds_its_role_under_every_decision() {
+  // Each kind's fixed slots, drawn indexed, build the triangles the
+  // reference builds (each triangle's first vertex the same, its other two
+  // as a pair) under every decision at a corner: either turn, the inner
+  // side shared or split, a miter within its limit or bevelled past it,
+  // straight on and a U-turn, with every cap at both ends and closed
+  let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+    return;
+  };
+  let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+  let long = |turn: f32| {
+    [
+      (0.0, 0.0),
+      (20.0, 0.0),
+      (20.0 + 20.0 * turn.cos(), 20.0 * turn.sin()),
+    ]
+  };
+  let short = |turn: f32| {
+    [
+      (0.0, 0.0),
+      (1.5, 0.0),
+      (1.5 + 1.5 * turn.cos(), 1.5 * turn.sin()),
+    ]
+  };
+  let mut cases = Vec::new();
+  for degrees in [40.0f32, -40.0, 160.0, -160.0] {
+    let turn = degrees.to_radians();
+    cases.push(TestLine::even(&long(turn), 1.0, false));
+    cases.push(TestLine::even(&short(turn), 1.0, false));
+  }
+  cases.push(TestLine::even(
+    &[(0.0, 0.0), (10.0, 0.0), (20.0, 0.0)],
+    1.0,
+    false,
+  ));
+  cases.push(TestLine::even(
+    &[(0.0, 0.0), (10.0, 0.0), (0.0, 0.0)],
+    1.0,
+    false,
+  ));
+  cases.push(TestLine::even(
+    &[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)],
+    1.0,
+    true,
+  ));
+  let mut seen = Vec::new();
+  let (mut stream, mut reference) = (LineStream::default(), Triangles::default());
+  let mut names = Vec::new();
+  for (index, line) in cases.iter().enumerate() {
+    for join in JOINS {
+      for decision in decisions(line, join) {
+        seen.push((join, decision));
+      }
+      for cap in CAPS {
+        let (points, style) = (line.poly(), line.style(join, cap));
+        let gpu = stream.polyline(&points, &style);
+        assert_eq!(gpu, reference.polyline(&points, &style));
+        names.push((gpu, format!("case {index} {join:?} {cap:?}")));
+      }
+    }
+  }
+  // Every decision is met, for every join it can be met with
+  for join in JOINS {
+    for left in [false, true] {
+      for shared in [false, true] {
+        for mitered in [false, true] {
+          if mitered && join != LineJoin::Miter {
+            continue;
+          }
+          let decision = Decision::Turn {
+            left,
+            shared,
+            mitered,
+          };
+          assert!(
+            seen.contains(&(join, decision)),
+            "{join:?} {decision:?} met"
+          );
+        }
+      }
+    }
+    assert!(seen.contains(&(join, Decision::Straight)));
+    assert!(seen.contains(&(join, Decision::UTurn)));
+  }
+  let dumped = paired(&reference, &dump(&device, &queue, &stream));
+  let error = pollster::block_on(scope.pop());
+  assert!(error.is_none(), "{error:?}");
+  let (failures, worst) = differences(&reference, &dumped, &names);
+  eprintln!("{} vertices; worst {worst:?}", dumped.len());
+  assert!(
+    failures.is_empty(),
+    "{} fields differ:\n{}",
     failures.len(),
     failures[..failures.len().min(30)].join("\n")
   );

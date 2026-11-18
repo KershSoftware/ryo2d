@@ -1,5 +1,6 @@
-// Trails and lines, built on the GPU from their points: each triangle's
-// code names its piece (`line_pieces.wgsl` builds its vertices), styled
+// Trails and lines, built on the GPU from their points: each vertex's code
+// (its index) names its piece and the piece's slot (`line_pieces.wgsl`
+// builds its vertices), styled
 // across their width (Solid, Soft, Glow) and optionally displaced along
 // their perpendicular (Lightning, Noise, Ribbon) or scrolled (UV scroll).
 //
@@ -53,9 +54,6 @@ struct LinePoint {
 
 @group(2) @binding(0) var<storage, read> lines: array<LineInfo>;
 @group(2) @binding(1) var<storage, read> line_points: array<LinePoint>;
-// One a triangle: its piece's point << 7 | the piece's kind << 5 | the
-// triangle within the piece
-@group(2) @binding(2) var<storage, read> line_codes: array<u32>;
 
 struct VertexOutput {
     @builtin(position) @invariant position: vec4<f32>,
@@ -85,18 +83,17 @@ fn line_point(at: u32) -> LinePt {
     return LinePt(point.pos, point.half_width, point.u, unpack4x8unorm(point.color));
 }
 
-// Vertex `index` of the frame's world lines, three a triangle
-fn world_vertex(index: u32) -> WorldVertex {
-    let code = line_codes[index / 3u];
-    let corner = index % 3u;
+// The world line vertex of `code`, a value of the line index buffer: its
+// piece's point << 7 | the piece's kind << 5 | the piece's slot
+fn world_vertex(code: u32) -> WorldVertex {
     let at = code >> 7u;
     let kind = (code >> 5u) & 3u;
-    let tri = code & 31u;
+    let slot = code & 31u;
     let line_id = line_points[at].line;
     let info = lines[line_id];
     let count = i32(info.count);
     let closed = info.closed == 1u;
-    let point = i32(at - info.first) + line_piece_corner(kind, tri, corner);
+    let point = i32(at - info.first) + line_piece_corner(kind, slot);
     var w: LineWindow;
     w.present = 0u;
     w.seam = 0u;
@@ -114,7 +111,7 @@ fn world_vertex(index: u32) -> WorldVertex {
         }
     }
     let look = LineLook(info.join, info.cap, info.miter_limit);
-    return WorldVertex(line_piece_vertex(w, look, kind, tri, corner), line_id);
+    return WorldVertex(line_piece_vertex(w, look, kind, slot), line_id);
 }
 
 // ========== Noise Functions ==========
@@ -180,9 +177,9 @@ fn ribbon_displacement(uv: vec2<f32>, amplitude: f32, frequency: f32, speed: f32
 // ========== Vertex Shader ==========
 
 @vertex
-fn vs_main(@builtin(vertex_index) index: u32) -> VertexOutput {
+fn vs_main(@builtin(vertex_index) code: u32) -> VertexOutput {
     var out: VertexOutput;
-    let world = world_vertex(index);
+    let world = world_vertex(code);
     let vertex = world.vertex;
     var pos = vertex.position;
     let line = lines[world.line];

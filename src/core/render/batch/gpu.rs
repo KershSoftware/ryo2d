@@ -82,8 +82,8 @@ pub(crate) struct Batch2D {
   placed: Vec<SpriteInstance>,
   draws: Vec<CameraDraws>,
   // This frame's trails and lines, in world space for every camera: their
-  // points, line table and triangle codes, copied while the frame is
-  // gathered and uploaded once, built into triangles on the GPU
+  // points, line table and vertex codes, copied while the frame is gathered
+  // and uploaded once, built into triangles on the GPU
   lines: LineStream,
   // This frame's meshes, in world space for every camera, built and
   // uploaded as the triangles are; each draws with one of the instances
@@ -92,11 +92,12 @@ pub(crate) struct Batch2D {
   // change, drawn through the frame's tile slots
   chunks: ChunkStore,
   chunk_buffers: ChunkBuffers,
-  // The line stream's buffers, and their bind group (group 2 of the line
-  // pipelines), made again only when one grows
+  // The line stream's buffers, and the bind group of its table and points
+  // (group 2 of the line pipelines), made again only when one grows; its
+  // vertex codes are the line draws' index buffer
   line_table: GrowingBuffer,
   line_points: GrowingBuffer,
-  line_codes: GrowingBuffer,
+  line_indices: GrowingBuffer,
   line_layout: wgpu::BindGroupLayout,
   line_group: wgpu::BindGroup,
   mesh_vertices: GrowingBuffer,
@@ -209,11 +210,17 @@ impl Batch2D {
     let line_table = storage("Batch Line Table", std::mem::size_of::<LineInfo>()).capped(cap.lines);
     let line_points =
       storage("Batch Line Points", std::mem::size_of::<LinePoint>()).capped(cap.points);
-    let line_codes = storage("Batch Line Codes", std::mem::size_of::<u32>()).capped(cap.codes);
+    let line_indices = GrowingBuffer::new(
+      device,
+      "Batch Line Indices",
+      std::mem::size_of::<u32>(),
+      wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+    )
+    .capped(cap.indices);
     let line_group = line_group(
       device,
       &line_layout,
-      [&line_table.buffer, &line_points.buffer, &line_codes.buffer],
+      [&line_table.buffer, &line_points.buffer],
     );
     // Tile chunks' pipeline for a plain layer, made now rather than in the
     // frame the first map lands (about 0.85 ms there, measured headless)
@@ -244,7 +251,7 @@ impl Batch2D {
       chunk_buffers,
       line_table,
       line_points,
-      line_codes,
+      line_indices,
       line_layout,
       line_group,
       mesh_vertices: GrowingBuffer::new(
@@ -373,7 +380,7 @@ impl Batch2D {
   }
 
   /// The frame's trails and lines, for gathering them: cleared with the
-  /// frame's draw list, whose triangle items are ranges of their codes.
+  /// frame's draw list, whose triangle items are ranges of their indices.
   pub(crate) fn lines(&mut self) -> &mut LineStream {
     &mut self.lines
   }
@@ -781,21 +788,17 @@ impl Batch2D {
       self
         .line_points
         .write(device, queue, bytemuck::cast_slice(&lines.points)),
-      self
-        .line_codes
-        .write(device, queue, bytemuck::cast_slice(&lines.codes)),
     ];
     if grew.contains(&true) {
       self.line_group = line_group(
         device,
         &self.line_layout,
-        [
-          &self.line_table.buffer,
-          &self.line_points.buffer,
-          &self.line_codes.buffer,
-        ],
+        [&self.line_table.buffer, &self.line_points.buffer],
       );
     }
+    self
+      .line_indices
+      .write(device, queue, bytemuck::cast_slice(&lines.indices));
     let meshes = &self.meshes;
     let vertices = bytemuck::cast_slice(&meshes.vertices);
     self.mesh_vertices.write(device, queue, vertices);
@@ -967,10 +970,15 @@ impl Batch2D {
         pass.draw(0..6, 0..draw.range.len() as u32);
       }
       Stream::Triangles => {
-        // Built from the line stream, three vertices a triangle code: no
-        // vertex or index buffer
+        // Built from the line stream, each vertex from its code, an index:
+        // no vertex buffer
         bound.bind(pass, 2, (&self.line_group, None));
-        pass.draw(draw.range.clone(), 0..1);
+        if bound.stream != Some(Stream::Triangles) {
+          let indices = self.line_indices.buffer.slice(..);
+          pass.set_index_buffer(indices, wgpu::IndexFormat::Uint32);
+          bound.stream = Some(Stream::Triangles);
+        }
+        pass.draw_indexed(draw.range.clone(), 0, 0..1);
       }
       Stream::Meshes => {
         // Its own triangles, with the one instance that is its alone
@@ -1152,13 +1160,13 @@ fn instance_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
   buffer(device, "Batch Instances", size, usage)
 }
 
-/// The line stream's bind group over its line table, points and codes.
+/// The line stream's bind group over its line table and points.
 pub(crate) fn line_group(
   device: &wgpu::Device,
   layout: &wgpu::BindGroupLayout,
-  buffers: [&wgpu::Buffer; 3],
+  buffers: [&wgpu::Buffer; 2],
 ) -> wgpu::BindGroup {
-  let [table, points, codes] = buffers;
+  let [table, points] = buffers;
   crate::core::graphics::bind_groups::create(
     device,
     &wgpu::BindGroupDescriptor {
@@ -1172,10 +1180,6 @@ pub(crate) fn line_group(
         wgpu::BindGroupEntry {
           binding: 1,
           resource: points.as_entire_binding(),
-        },
-        wgpu::BindGroupEntry {
-          binding: 2,
-          resource: codes.as_entire_binding(),
         },
       ],
     },

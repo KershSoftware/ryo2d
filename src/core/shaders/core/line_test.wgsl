@@ -8,8 +8,9 @@ fn fs_count(in: VertexOutput) -> @location(0) vec4<f32> {
     return vec4<f32>(1.0 / 255.0);
 }
 
-// Every vertex of the frame's world lines, unpushed, as the pieces build
-// them (tests compare them with the CPU builder's)
+// Every vertex the frame's world lines draw, three a triangle in the index
+// buffer's order, unpushed, as the pieces build them (tests compare them
+// with the CPU builder's)
 struct LineDump {
     position: vec2<f32>,
     uv: vec2<f32>,
@@ -31,6 +32,8 @@ struct LineDump {
 };
 
 @group(3) @binding(0) var<storage, read_write> line_dump: array<LineDump>;
+// The line index buffer's values
+@group(3) @binding(1) var<storage, read> line_dump_codes: array<u32>;
 
 @compute @workgroup_size(64)
 fn cs_line_dump(@builtin(global_invocation_id) id: vec3<u32>) {
@@ -38,7 +41,7 @@ fn cs_line_dump(@builtin(global_invocation_id) id: vec3<u32>) {
     if index >= arrayLength(&line_dump) {
         return;
     }
-    let v = world_vertex(index).vertex;
+    let v = world_vertex(line_dump_codes[index]).vertex;
     line_dump[index] = LineDump(
         v.position,
         v.uv,
@@ -58,4 +61,18 @@ fn cs_line_dump(@builtin(global_invocation_id) id: vec3<u32>) {
         0.0,
         0.0,
     );
+}
+
+// Every slot `line_piece_slot` names: entry `i` is triangle `i / 3 % 32`'s
+// corner `i % 3` of a piece of kind `i / 864`, join `i / 288 % 3` and cap
+// `i / 96 % 3` (tests compare them with the CPU's templates)
+@group(3) @binding(2) var<storage, read_write> slot_dump: array<u32>;
+
+@compute @workgroup_size(64)
+fn cs_slot_dump(@builtin(global_invocation_id) id: vec3<u32>) {
+    let i = id.x;
+    if i >= arrayLength(&slot_dump) {
+        return;
+    }
+    slot_dump[i] = line_piece_slot(i / 864u, i / 288u % 3u, i / 96u % 3u, i / 3u % 32u, i % 3u);
 }

@@ -6,18 +6,30 @@
 //!   is copied as its filtered points (`LinePoint`: place, half width, `u`,
 //!   sRGB colour and its line) and its entry in the line table (`LineInfo`:
 //!   style, effect, emission, first point, count, join, cap, closed, edge
-//!   and miter limit); then one 32-bit code a triangle names its piece's
-//!   point, the piece's kind and the triangle within it, in the order the
-//!   pieces draw (`piece_list`, `piece_triangles`). Nothing is tessellated
-//!   on the CPU. The filter, the piece list and the line table are the
-//!   CPU's whole part; their rules are told in `polyline.rs`, the reference
-//!   builder, compiled for tests alone. A draw covers `3 × triangles` vertices of the code stream,
-//!   and the vertex stage finds its triangle's code by `vertex_index ÷ 3`
-//!   (`line.wgsl`), so draws merge as index ranges did and z-order holds.
-//!   The GPU's vertices equal the CPU builder's (`polyline.rs`, the
-//!   reference), triangle for triangle
-//!   (`the_gpu_builds_the_reference_s_vertices`), and its pushed mesh covers
-//!   every pixel of a translucent line once
+//!   and miter limit); then an index buffer whose values are vertex codes,
+//!   each naming its piece's point, the piece's kind and one of the
+//!   piece's fixed slots, three a triangle in the order the pieces draw
+//!   (`piece_list`, `piece_template`). Nothing is tessellated on the CPU.
+//!   The filter, the piece list and the line table are the CPU's whole
+//!   part; their rules are told in `polyline.rs`, the reference builder,
+//!   compiled for tests alone. A draw is indexed, over `3 × triangles`
+//!   indices, and the vertex stage decodes its `vertex_index`, the code
+//!   (`line.wgsl`), so a piece's triangles share its vertices in the GPU's
+//!   vertex reuse, draws merge as index ranges did and z-order holds.
+//! - **Slots.** Each kind has fixed slots that its triangles name, the same
+//!   for every piece of that kind whatever its geometry (`piece_template`;
+//!   `line_piece_slot` in `line_pieces.wgsl`, for the UI's unindexed
+//!   instances, lays them out alike: `the_slot_layouts_agree`), and what a
+//!   slot holds follows the GPU's decision at the corner (miter or bevel,
+//!   the inner side shared or split), used alike by every triangle naming
+//!   it. Every kind under every decision builds the triangles the reference
+//!   builds, each with the same first vertex, which flat attributes are
+//!   taken from (`every_slot_builds_its_role_under_every_decision`; a right
+//!   turn's triangles wind the other way to the reference's, which draws
+//!   the same with no face culled: line pipelines cull none). The GPU's
+//!   vertices equal the CPU builder's (`polyline.rs`, the reference),
+//!   triangle for triangle (`the_gpu_builds_the_reference_s_vertices`), and
+//!   its pushed mesh covers every pixel of a translucent line once
 //!   (`a_translucent_line_drawn_on_the_gpu_counts_every_pixel_once`).
 //! - **Culling** grows a line's box by `MITER_LIMIT` times its widest half
 //!   width (a miter's tip, a square cap's corner) and its effect's reach,
@@ -28,13 +40,14 @@
 //!   length, at most `MITER_LIMIT`), while the box grows by `4 hw + 1 px`, so
 //!   where the tip of a line just outside the view points into it, a sliver
 //!   of coverage under 0.1 can be culled at the view's edge.
-//! - **Limit: the stream holds what the device binds.** Its points, codes
-//!   and line table are each one storage binding, so each holds as many as
-//!   the device's `max_storage_buffer_binding_size` (and `max_buffer_size`)
+//! - **Limit: the stream holds what the device binds.** Its points and
+//!   line table are each one storage binding, so each holds as many as the
+//!   device's `max_storage_buffer_binding_size` (and `max_buffer_size`)
 //!   fits, the points never past the 2^25 a code can name and the table
-//!   never past `MAX_LINES` (`StreamCap`, `LineStream::for_device`: under
-//!   the `Limits::default()` the engine asks for, 128 MiB each, so 5,592,405
-//!   points, 33,554,432 triangles and 1,048,576 lines); a line that would
+//!   never past `MAX_LINES`, and its index buffer as many as
+//!   `max_buffer_size` holds (`StreamCap`, `LineStream::for_device`: under
+//!   the `Limits::default()` the engine asks for, 5,592,405 points,
+//!   67,108,864 indices and 1,048,576 lines); a line that would
 //!   take any past it draws nothing, and the log is warned once a run
 //!   (`a_line_past_the_stream_s_cap_draws_nothing_and_warns_once`). Past it
 //!   the bind group would fail validation, which ends the run.
@@ -223,13 +236,50 @@ pub(crate) const ARC_TRIANGLES: u32 = 16;
 
 /// The triangles a piece of `kind` draws, whatever its geometry.
 pub(crate) fn piece_triangles(kind: PieceKind, join: LineJoin, cap: LineCap) -> u32 {
+  piece_template(kind, join, cap).len() as u32
+}
+
+/// A segment's slots: its quad fanned from its end's corner point
+const SEGMENT_TEMPLATE: [[u32; 3]; SEGMENT_TRIANGLES as usize] =
+  [[0, 1, 2], [0, 2, 3], [0, 3, 4], [0, 4, 5]];
+/// A miter or bevel join's: its two slanted ends and the two triangles
+/// between them, from the corner point
+const JOIN_TEMPLATE: [[u32; 3]; JOIN_TRIANGLES as usize] =
+  [[0, 2, 3], [1, 4, 5], [1, 5, 6], [0, 7, 8]];
+/// A round join's: its slanted ends, then its arc between them
+const ROUND_JOIN_TEMPLATE: [[u32; 3]; ROUND_JOIN_TRIANGLES as usize] = {
+  let mut template = [[0, 2, 3]; ROUND_JOIN_TRIANGLES as usize];
+  let mut k = 0;
+  while k < ARC_TRIANGLES {
+    template[1 + k as usize] = [1, 6 + k, 7 + k];
+    k += 1;
+  }
+  template[ROUND_JOIN_TRIANGLES as usize - 1] = [0, 4, 5];
+  template
+};
+const SQUARE_CAP_TEMPLATE: [[u32; 3]; SQUARE_CAP_TRIANGLES as usize] = [[0, 1, 2], [1, 3, 2]];
+/// A round cap's: its arc fanned from its corner point
+const ROUND_CAP_TEMPLATE: [[u32; 3]; ROUND_CAP_TRIANGLES as usize] = {
+  let mut template = [[0, 0, 0]; ROUND_CAP_TRIANGLES as usize];
+  let mut k = 0;
+  while k < ARC_TRIANGLES {
+    template[k as usize] = [0, 1 + k, 2 + k];
+    k += 1;
+  }
+  template
+};
+
+/// The slots each triangle of a piece of `kind` names, in the order they
+/// draw, whatever its geometry (what each slot holds is the GPU's, by the
+/// corner: `line_pieces.wgsl`).
+pub(crate) fn piece_template(kind: PieceKind, join: LineJoin, cap: LineCap) -> &'static [[u32; 3]] {
   match (kind, join, cap) {
-    (PieceKind::Segment, ..) => SEGMENT_TRIANGLES,
-    (PieceKind::Join, LineJoin::Round, _) => ROUND_JOIN_TRIANGLES,
-    (PieceKind::Join, ..) => JOIN_TRIANGLES,
-    (PieceKind::StartCap | PieceKind::EndCap, _, LineCap::Butt) => 0,
-    (PieceKind::StartCap | PieceKind::EndCap, _, LineCap::Square) => SQUARE_CAP_TRIANGLES,
-    (PieceKind::StartCap | PieceKind::EndCap, _, LineCap::Round) => ROUND_CAP_TRIANGLES,
+    (PieceKind::Segment, ..) => &SEGMENT_TEMPLATE,
+    (PieceKind::Join, LineJoin::Round, _) => &ROUND_JOIN_TEMPLATE,
+    (PieceKind::Join, ..) => &JOIN_TEMPLATE,
+    (PieceKind::StartCap | PieceKind::EndCap, _, LineCap::Butt) => &[],
+    (PieceKind::StartCap | PieceKind::EndCap, _, LineCap::Square) => &SQUARE_CAP_TEMPLATE,
+    (PieceKind::StartCap | PieceKind::EndCap, _, LineCap::Round) => &ROUND_CAP_TEMPLATE,
   }
 }
 
@@ -420,31 +470,33 @@ pub(crate) struct LinePoint {
   pub(crate) line: u32,
 }
 
-/// A triangle code keeps 25 bits for its point, so the stream never holds
+/// A vertex code keeps 25 bits for its point, so the stream never holds
 /// more points than this
 const CODE_POINTS: usize = 1 << 25;
 
-/// The most the stream holds a frame, each of its buffers being one storage
-/// binding: as many as the device binds and makes in one buffer
+/// The most the stream holds a frame: as many points and lines as one
+/// storage binding of the device holds, and as many indices as one of its
+/// buffers
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct StreamCap {
   pub(crate) points: usize,
-  /// Triangles, one code each
-  pub(crate) codes: usize,
+  /// Three a triangle
+  pub(crate) indices: usize,
   pub(crate) lines: usize,
 }
 
 impl StreamCap {
   /// The cap of a device with `limits`
   pub(crate) fn of(limits: &wgpu::Limits) -> Self {
-    let bytes = limits
+    let binding = limits
       .max_storage_buffer_binding_size
       .min(limits.max_buffer_size);
-    let fits = |element: usize| usize::try_from(bytes / element as u64).unwrap_or(usize::MAX);
+    let fits =
+      |bytes: u64, element: usize| usize::try_from(bytes / element as u64).unwrap_or(usize::MAX);
     Self {
-      points: fits(std::mem::size_of::<LinePoint>()).min(CODE_POINTS),
-      codes: fits(std::mem::size_of::<u32>()),
-      lines: fits(std::mem::size_of::<LineInfo>()).min(MAX_LINES),
+      points: fits(binding, std::mem::size_of::<LinePoint>()).min(CODE_POINTS),
+      indices: fits(limits.max_buffer_size, std::mem::size_of::<u32>()),
+      lines: fits(binding, std::mem::size_of::<LineInfo>()).min(MAX_LINES),
     }
   }
 }
@@ -456,25 +508,25 @@ impl Default for StreamCap {
   }
 }
 
-/// A triangle's code: its piece's point (in the point buffer), the piece's
-/// kind and the triangle within it (`line.wgsl` reads it back).
-pub(crate) fn triangle_code(point: u32, kind: PieceKind, triangle: u32) -> u32 {
+/// A vertex's code, a value of the index buffer: its piece's point (in the
+/// point buffer), the piece's kind and its slot (`line.wgsl` reads it back).
+pub(crate) fn vertex_code(point: u32, kind: PieceKind, slot: u32) -> u32 {
   let kind = match kind {
     PieceKind::Segment => 0,
     PieceKind::Join => 1,
     PieceKind::StartCap => 2,
     PieceKind::EndCap => 3,
   };
-  (point << 7) | (kind << 5) | triangle
+  (point << 7) | (kind << 5) | slot
 }
 
 /// The frame's world lines as the GPU builds them: their points, the line
-/// table and one code a triangle.
+/// table and the index buffer of vertex codes, three a triangle.
 #[derive(Default)]
 pub(crate) struct LineStream {
   pub(crate) points: Vec<LinePoint>,
   pub(crate) lines: Vec<LineInfo>,
-  pub(crate) codes: Vec<u32>,
+  pub(crate) indices: Vec<u32>,
   /// Room kept from line to line
   filtered: Vec<PolyPoint>,
   pieces: Vec<Piece>,
@@ -501,14 +553,14 @@ impl LineStream {
   pub(crate) fn clear(&mut self) {
     self.points.clear();
     self.lines.clear();
-    self.codes.clear();
+    self.indices.clear();
   }
 
   /// Add the line through `points`: its filtered points, its entry in the
-  /// line table and its triangles' codes; the vertices they draw, three a
-  /// triangle (empty when nothing is drawn).
+  /// line table and its triangles' vertex codes; the indices they take,
+  /// three a triangle (empty when nothing is drawn).
   pub(crate) fn polyline(&mut self, points: &[PolyPoint], style: &PolyStyle) -> Range<u32> {
-    let start = 3 * self.codes.len() as u32;
+    let start = self.indices.len() as u32;
     let Some(closed) = filter_points(points, style.closed, &mut self.filtered) else {
       return start..start;
     };
@@ -522,7 +574,7 @@ impl LineStream {
     let cap = self.cap;
     if self.lines.len() >= cap.lines
       || self.points.len() + count > cap.points
-      || self.codes.len() + triangles > cap.codes
+      || self.indices.len() + 3 * triangles > cap.indices
     {
       if !self.warned {
         self.warned = true;
@@ -530,7 +582,7 @@ impl LineStream {
           "more than {} lines and trails, {} of their points or {} of their triangles in one frame: the rest draw nothing",
           cap.lines,
           cap.points,
-          cap.codes
+          cap.indices / 3
         );
       }
       return start..start;
@@ -552,13 +604,13 @@ impl LineStream {
       }
     }));
     for piece in &self.pieces {
-      let code = triangle_code(first + piece.point, piece.kind, 0);
-      let triangles = piece_triangles(piece.kind, style.join, style.cap);
+      let code = vertex_code(first + piece.point, piece.kind, 0);
+      let template = piece_template(piece.kind, style.join, style.cap);
       self
-        .codes
-        .extend((0..triangles).map(|triangle| code | triangle));
+        .indices
+        .extend(template.iter().flatten().map(|slot| code | slot));
     }
-    start..3 * self.codes.len() as u32
+    start..self.indices.len() as u32
   }
 }
 
@@ -741,7 +793,7 @@ mod tests {
       StreamCap::default(),
       StreamCap {
         points: 5_592_405,
-        codes: 33_554_432,
+        indices: 67_108_864,
         lines: 1_048_576,
       }
     );
@@ -750,18 +802,27 @@ mod tests {
       ..wgpu::Limits::default()
     };
     let mut stream = LineStream::for_device(&limits);
+    let indices = 300;
     let small = StreamCap {
       points: 16,
-      codes: 100,
+      indices: 67_108_864,
       lines: 5,
     };
     assert_eq!(stream.cap(), small);
-    // A buffer may be no bigger than the device makes one, either
+    // A buffer may be no bigger than the device makes one, either, and the
+    // index buffer is one
     let buffer = wgpu::Limits {
       max_buffer_size: 400,
       ..wgpu::Limits::default()
     };
-    assert_eq!(StreamCap::of(&buffer), small);
+    assert_eq!(
+      StreamCap::of(&buffer),
+      StreamCap {
+        indices: 100,
+        ..small
+      }
+    );
+    stream.cap.indices = indices;
     let line = |count: usize| -> Vec<PolyPoint> {
       (0..count)
         .map(|i| PolyPoint {
@@ -797,10 +858,14 @@ mod tests {
     assert!(stream.polyline(&line(2), &miter).is_empty());
     let cap = stream.cap();
     assert_eq!(
-      (stream.points.len(), stream.codes.len(), stream.lines.len()),
-      (13, 86, 5)
+      (
+        stream.points.len(),
+        stream.indices.len(),
+        stream.lines.len()
+      ),
+      (13, 258, 5)
     );
-    assert!(stream.points.len() <= cap.points && stream.codes.len() <= cap.codes);
+    assert!(stream.points.len() <= cap.points && stream.indices.len() <= cap.indices);
   }
 
   #[test]
