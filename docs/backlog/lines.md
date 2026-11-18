@@ -150,6 +150,54 @@ The split (`Full`, µs; the corner pass included):
 
 Each round's GPU figures, branch (main): mixed 68.3, 67.0, 63.2 (41.9, 39.8, 43.5); miter 1k 98.3, 81.4, 60.0 (36.0, 53.5, 39.5); miter 10k 427.3, 682.1, 474.6 (384.0, 419.7, 371.9); round 1k 69.3, 79.0, 79.9 (55.3, 73.8, 54.9); round 10k 859.2, 521.2, 508.2 (773.0, 820.6, 776.2). The corner pass: 5.5 to 6.0 µs (mixed), 5.7 to 9.8 (1k), 19 to 27 (10k), 251 to 254 (100k).
 
-**Against the bound (1.15 times main):** met on 10,000 round lines (0.67) and, in the quieter rounds, on 10,000 mitered ones (0.78 in the round before the final three, 1.24 in their median); missed on the 1,000-line scenes and the mixed thousand (1.4 to 2.1). There the draw itself is about as long as main's whole frame of lines: the split's position-only vertex stage alone takes 33 µs for 1,000 mitered lines (main's world pass about 35 to 40), each vertex loading its line's entry and five points through two dependent reads, mixing segment, join and cap work in each group of vertices, and the corner pass adding its fixed 6. What would cut further: a vertex record the corner pass writes for the vertices a point's pieces share (the points' window loads would go), drawing a line's pieces sorted by kind so each group runs one kind's code, or skipping the corner pass below a few thousand points.
+**Against the bound (1.15 times main), in that sitting:** met on 10,000 round lines (0.67); missed on 10,000 mitered lines (1.24 median; 1.11, 1.63 and 1.28 by round), on the 1,000-line scenes (mitered 2.06, round 1.43) and on the mixed thousand (1.60). There the draw itself is about as long as main's whole frame of lines: the split's position-only vertex stage alone takes 33 µs for 1,000 mitered lines (main's world pass about 35 to 40), each vertex loading its line's entry and five points through two dependent reads, mixing segment, join and cap work in each group of vertices, and the corner pass adding its fixed 6. The next round (below) tried what was named to cut further.
 
 **CPU:** still far under main, but less than before the indexed codes (render −65% to −88%, prepare −79% to −89% then): the index buffer is three codes a triangle where the codes were one.
+
+## One more GPU round (2026-11-17)
+
+The owner chose one more round on the GPU after the corner pass met the bound only on 10,000 round lines. Each idea was measured against the step before it in three alternating rounds of the line bench (release, medians), kept only if it helped the small scenes without costing the large ones. The machine was busy throughout (loads 4 to 16, flagged on every run; the owner's desktop was in use), and the small scenes' GPU figures moved by up to three times from run to run, so a difference under about 15% on them is noise.
+
+**The measure first.** A frame whose corner pass got no timestamp used to count it as no time; such frames are now left out of the GPU's median with the world-untimed ones, and counted (`benches/lines.rs`). The bench still adds two intervals, the world passes' (from empty passes round them) and the corner pass's own, rather than one from the corner pass's start to the world passes' end, because Metal's stamps on separate passes do not keep their order: tried and dropped,
+- an empty pass's outer stamps (its start; the end of one that is first in the frame) fell before the corner pass's own start, by up to 650 µs at 100,000 lines (during the upload's copy), and the end of the last pass fell 500 to 600 µs before the corner pass on the small scenes;
+- passes drawing one pixel instead of nothing did the same;
+- stamps on the world pass itself (an engine hook, dropped) gave its end before its start in up to 170 of 300 frames on 1,000 lines; where they held, the corner pass's end to the world pass's start (the camera's clear between them) was 3 to 6 µs, which the two intervals leave out;
+- one interval from the corner pass's start to the stamp after the world passes read 216, 76 and 229 µs for the mixed scene in three runs.
+
+**Steps** (GPU µs, medians of three; the step before in brackets):
+
+| Step | mixed | miter 1k | miter 10k | round 1k | round 10k | miter 100k | round 100k | Kept |
+|---|---|---|---|---|---|---|---|---|
+| A bevel join's repeated places named by one slot each (6 slots of 9) | 64.4 (79.1) | 62.7 (86.7) | 404.8 (415.5) | 81.4 (87.6) | 526.9 (505.7) | 4,294 (4,268) | 5,048 (5,066) | yes |
+| Corners worked out in place, no corner pass (against the pass, same build) | 59.7 (61.7) | 56.6 (63.5) | 441.9 (417.3) | 92.6 (102.6) | 492.3 (798.5) | 4,938 (4,551) | 5,033 (5,171) | under 16,384 points |
+| A line's pieces sorted by kind (segments, joins, caps) | 76.3 (61.6) | 184.2 (71.8) | 781.1 (561.8) | 88.2 (111.7) | 1,158.9 (1,067.6) | 5,338 (5,322) | 5,527 (5,504) | no |
+| The window's far points loaded only where read (a seam's `u`) | 121.1 (74.9) | 73.2 (61.2) | 1,596 (617) | 114.6 (111.8) | 784.6 (790.7) | 5,339 (5,267) | 5,558 (5,253) | no |
+
+- **Bevel slots.** Only a bevel join can share: a miter's slots hold nine places when its inner side is shared and six when it splits, and a round join's fifteen or ten, and which one is the GPU's decision, made after the index buffer is written. The bench's lines-only scenes have no bevel, so their changes are noise; the mixed scene's third of bevel joins is where it shows. Kept: same triangles, fewer vertex invocations.
+- **No corner pass for a small stream.** Vertices work their corners out in place (the UI's `lp_corner_here`) when the stream has under 16,384 points: 6,000 points (1,000 lines) drew 3% to 11% faster in place, 60,000 and 600,000 up to 8% slower (round 10,000 read faster but moved by 2.5 times between rounds). The threshold lies between the two measured sizes, not measured closer. Both ways build the same vertices bit for bit.
+- **Sorting pieces by kind** gave no GPU change at 100,000 lines (1.00) and nothing clear on the small scenes, and the CPU render step read 8% to 26% slower in its run; dropped.
+- **Loading only the window points a vertex reads** (the vertex reading the corner pass's record needs only its neighbours and, at a closed line's seam, the point two back) gave no change at 100,000 lines (1.01, 1.06); dropped.
+- **Not tried: a per-point vertex record from the corner pass.** The small scenes, the ones over the bound, no longer run the pass, so a record it wrote could not help them; at 10,000 lines and over the bound is met.
+
+**Final, three alternating rounds against main** (loads 8.1, 6.3, 4.6 and 7.8, 5.6, 4.3, flagged; medians, µs; main exported at 076356c5 and built apart, its 10,000-line scenes the largest it can draw):
+
+| Scene | CPU render main → branch | prepare main → branch | GPU main → branch | GPU ratio | Bound |
+|---|---|---|---|---|---|
+| mixed | 827.4 → 278.0 (−66%) | 360.0 → 76.4 (−79%) | 47.9 → 60.7 | 1.27 | missed |
+| miter 1k | 581.5 → 263.1 (−55%) | 245.8 → 74.5 (−70%) | 44.4 → 59.7 | 1.34 | missed |
+| miter 10k | 5,060.3 → 1,663.7 (−67%) | 2,463.2 → 646.0 (−74%) | 645.2 → 407.8 | 0.63 | met |
+| round 1k | 1,044.7 → 293.4 (−72%) | 497.2 → 101.0 (−80%) | 72.1 → 79.0 | 1.10 | met |
+| round 10k | 9,942.8 → 1,987.8 (−80%) | 5,177.4 → 870.0 (−83%) | 926.5 → 553.5 | 0.60 | met |
+| miter 100k | — → 15,201.5 | — → 6,429.9 | — → 5,113.2 | — | main cannot draw it |
+| round 100k | — → 18,945.0 | — → 8,583.7 | — → 5,511.1 | — | main cannot draw it |
+
+Each round's GPU, branch (main): mixed 98.5, 59.8, 60.7 (39.4, 47.9, 50.8); miter 1k 193.0, 59.7, 58.8 (33.4, 44.6, 44.4); miter 10k 483.4, 407.8, 405.1 (697.7, 582.2, 645.2); round 1k 137.2, 74.9, 79.0 (125.5, 72.1, 70.1); round 10k 861.9, 553.5, 550.1 (912.8, 1,113.6, 926.5). By round the ratios are mixed 2.50, 1.25, 1.19; miter 1k 5.78, 1.34, 1.32; miter 10k 0.69, 0.70, 0.63; round 1k 1.09, 1.04, 1.13; round 10k 0.94, 0.50, 0.59. Untimed frames: main 0 to 63 of 300 a scene, the branch 0 to 6. The corner pass: 20 to 30 µs at 10,000 lines, 245 to 257 at 100,000; none at 1,000.
+
+At the round's start, in the same sitting and measure: mixed 1.64, miter 1k 1.93, miter 10k 0.62, round 1k 1.27, round 10k 0.47. Main's 10,000-line figures in this sitting (582 to 699 µs mitered) are well above the 372 to 420 of the sitting before, under the same measure, while the branch's are about where they were; the 10,000-line verdicts lean on main's figure of the day.
+
+**Against the bound (1.15 times main):** met on 10,000 mitered lines (0.63), 10,000 round lines (0.60) and 1,000 round lines (1.10, 1.04 to 1.13 by round); missed on 1,000 mitered lines (1.34) and the mixed thousand (1.27).
+
+**CPU:** render 55% to 80% under main, prepare 70% to 83% under. The final build's render step read up to about 20% over a build of the same paths a few runs earlier (prepare unchanged), and a rebuild of that earlier source read the same as the final on round 100,000 lines and 18% under it on mitered: build-to-build and load noise on the render step's extract part, not a change of this round (which touches no CPU path but the bevel template and one uniform write).
+
+**The UI bench** (`benches/ui_render.rs`, the guard, 2,000 interleaved frames, three alternating runs each against main, loads 7.5 down to 5.2), re-run as `ui.wgsl`'s vertex stage changed with the slots: the UI pass stepped alone is unchanged (idle 15.9, 15.9, 15.8 µs on main, 15.4, 15.9, 15.7 here; one label 22.7, 23.4, 21.7 against 22.1, 22.3, 22.5; scrolling 22.8, 24.5, 22.5 against 22.5, 22.5, 23.5). The render step over an empty frame reads higher in its medians (one label: main +28.4, +28.9, +34.0 µs, here +34.4, +33.0, +25.3; scrolling: main +37.9, +39.3, +43.6, here +42.5, +43.0, +32.8; idle under 2.5 µs on both), within each other's spread under this load; the settings screen draws no line, so the line code's change reaches it only through the shared pipeline's size. The guard's own label and scrolling targets were missed on both, as the machine's load moves them.
+
