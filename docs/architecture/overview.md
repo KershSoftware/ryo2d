@@ -7,7 +7,7 @@ The big picture: how a frame runs, where state lives and what each part of the e
 | Path | What |
 |------|------|
 | `src/core/` | The engine (the `ryo2d` crate); the prelude in `src/lib.rs` is its public surface |
-| `src/cli/` | The `ryo2d` command |
+| `crates/ryo2d-cli/` | The `ryo2d` command, its own crate on top of the engine |
 | `crates/ryo2d-derive` | `#[derive(NetworkInput)]`, re-exported by the core |
 | `crates/ryo2d-procgen`, `crates/ryo2d-inventory` | Optional crates on top of `ryo2d`; a game adds them and imports their own preludes |
 | `examples/` | `demo-kit` (the demo shell), `demos/*` (one feature each), `games/*` |

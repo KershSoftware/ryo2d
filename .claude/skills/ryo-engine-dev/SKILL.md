@@ -18,7 +18,7 @@ You help developers work on the Ryo2D engine itself (games use `ryo-game-dev`).
 | `src/core/ecs/AGENTS.md` | Phases and sets, resource-scope rule, transforms, interpolation, pooling, messages |
 | `src/core/systems/AGENTS.md` | Built-in systems and how to add one |
 | `src/core/*/AGENTS.md` | Each module's conventions and decisions (read the nearest one) |
-| `src/cli/AGENTS.md` | The `ryo2d` command and the embedded skills |
+| `crates/ryo2d-cli/AGENTS.md` | The `ryo2d` command and the embedded skills |
 | `docs/architecture/overview.md` | The big picture |
 | Skills `ryo-ecs-internals`, `ryo-renderer`, `ryo-api` | ECS internals, the renderer, public signatures |
 
@@ -157,6 +157,7 @@ Engine::frame
 | Path | Rule |
 |------|------|
 | `src/lib.rs` | The prelude is the public surface; games use only `ryo2d::prelude::*` (plus `ryo2d::testing`) |
+| `crates/ryo2d-cli` | The `ryo2d` command (binary `ryo2d`); depends on `ryo2d`, so games never compile it |
 | `crates/ryo2d-derive` | `#[derive(NetworkInput)]`, re-exported by `ryo2d` |
 | `crates/ryo2d-procgen`, `crates/ryo2d-inventory` | Optional crates on top of `ryo2d`, each with its own prelude and AGENTS.md |
 | `attic/` | Parked code outside the workspace, not compiled (the raycaster and its demo) |
@@ -216,7 +217,7 @@ The developer tools (the console, the dev windows, the debug keys and overlays, 
 
 ## Logging
 
-- Engine code logs with `log::trace!` to `log::error!` (the `log` crate; the target is the module path, so engine records are under `ryo2d::`). No `println!` or `eprintln!` in engine library code outside `src/cli/`, `src/core/network/` and the logging module's own stderr output.
+- Engine code logs with `log::trace!` to `log::error!` (the `log` crate; the target is the module path, so engine records are under `ryo2d::`). No `println!` or `eprintln!` in engine library code outside `crates/ryo2d-cli/`, `src/core/network/` and the logging module's own stderr output.
 - A log call must not format before its level is known (`log`'s macros check first), and an output never holds a lock another output waits on.
 - Games log with the prelude's `info!` and the rest, under `game::`; a crate calling `log` directly is a library to the log (default level `warn`).
 - **A thread the engine spawns** runs its body through `logging::scoped(..)`, read on the spawning thread, so its records carry its engine's log scope and reach that engine's console and a test's capture; a new spawn site must do the same (`src/core/logging/AGENTS.md`, Scopes and the frame).

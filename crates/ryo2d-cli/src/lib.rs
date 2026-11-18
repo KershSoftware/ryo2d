@@ -1,4 +1,4 @@
-//! Command-line interface for Ryo2D
+//! The `ryo2d` command-line interface
 //!
 //! The `ryo2d` CLI provides commands for building, running, and developing
 //! Ryo2D game projects.

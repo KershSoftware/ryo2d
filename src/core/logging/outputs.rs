@@ -17,7 +17,8 @@ pub(super) static NEXT_SEQ: AtomicU64 = AtomicU64::new(1);
 static STDERR: AtomicBool = AtomicBool::new(cfg!(dev_tools));
 
 /// Turns the stderr output on or off (native; the browser has its console).
-pub(crate) fn set_stderr(on: bool) {
+/// The `ryo2d` command turns it on, as the build it ships in starts with it off.
+pub fn set_stderr(on: bool) {
   #[cfg(test)]
   if watch::set(on) {
     return;
@@ -35,9 +36,9 @@ pub(super) fn stderr_enabled() -> bool {
   STDERR.load(Ordering::Relaxed)
 }
 
-/// Whether the stderr output is on
+/// Whether the stderr output is on (native).
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn stderr_on() -> bool {
+pub fn stderr_on() -> bool {
   stderr_enabled()
 }
 

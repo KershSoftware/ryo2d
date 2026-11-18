@@ -47,8 +47,6 @@
 //! `render(gpu)` for batched GPU sprites. Scenes add their own systems with
 //! `ctx.add_systems`.
 
-#[cfg(not(target_arch = "wasm32"))]
-pub mod cli;
 pub mod core;
 pub use core::ecs;
 pub use core::logging;

@@ -1,4 +1,6 @@
-# AGENTS.md - CLI Module
+# AGENTS.md - The `ryo2d` command
+
+The `ryo2d-cli` crate (binary `ryo2d`, `run_cli` in `src/lib.rs`) depends on the engine, so a game never compiles it. The engine's items it needs are `pub` there.
 
 ## Conventions
 
@@ -17,6 +19,6 @@
 
 ## Skills
 
-- `.claude/skills/<name>/SKILL.md` is the one copy of each skill: `init` and `install-skills` ship it as it is. The build script (`src/build.rs`, `list_skills`) writes `embedded_skills.rs` to `OUT_DIR`, an `include_str!` of every skill folder's `SKILL.md`, which `EMBEDDED_SKILLS` (`commands/install_skills.rs`) includes. An edited skill rebuilds through `include_str!`, and a new or removed folder reruns the build script, so a skill needs no step beyond writing it
+- `.claude/skills/<name>/SKILL.md` is the one copy of each skill: `init` and `install-skills` ship it as it is. The crate's build script (`build.rs`, `list_skills`) writes `embedded_skills.rs` to `OUT_DIR`, an `include_str!` of every skill folder's `SKILL.md`, which `EMBEDDED_SKILLS` (`commands/install_skills.rs`) includes. An edited skill rebuilds through `include_str!`, and a new or removed folder reruns the build script, so a skill needs no step beyond writing it
 - The listing printed during install reads each description from the skill's frontmatter (`skill_description`). Only `SKILL.md` is shipped: a skill that grows other files needs the installer to ship them too
 - `installing_writes_every_skill_folder_as_it_is` installs into a temporary folder and checks it holds every skill folder's `SKILL.md` byte for byte, and nothing else

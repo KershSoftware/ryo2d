@@ -17,8 +17,9 @@ use std::env;
 use std::fmt;
 use std::io;
 use std::path::PathBuf;
+use std::process::ExitCode;
 
-use crate::core::config::Workspace;
+use ryo2d::core::config::Workspace;
 
 /// CLI-specific error type
 #[derive(Debug)]
@@ -102,17 +103,23 @@ impl Output {
   }
 }
 
-/// Parse command-line arguments and run the appropriate command
-pub fn run_cli() -> CliResult<()> {
-  let args: Vec<String> = env::args().collect();
-  run_with(&args)
+/// Runs the command `args` name (the first is the program's name), printing
+/// its error once: success is 0, a failure 1.
+pub fn run_cli(args: Vec<String>) -> ExitCode {
+  match run_with(&args) {
+    Ok(()) => ExitCode::SUCCESS,
+    Err(e) => {
+      eprintln!("{}", e);
+      ExitCode::FAILURE
+    }
+  }
 }
 
 /// [`run_cli`] with these arguments (the first is the program's name).
 fn run_with(args: &[String]) -> CliResult<()> {
   // The installed CLI is a build without tools, which writes no log file:
   // the engine's warnings (Ryo.toml's) go to the terminal
-  crate::core::logging::set_stderr(true);
+  ryo2d::logging::set_stderr(true);
   if args.len() < 2 {
     print_help();
     return Ok(());
@@ -212,7 +219,11 @@ fn get_cargo_package_name(workspace: &Workspace) -> CliResult<String> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::core::logging::{stderr_on, watch_stderr};
+  use ryo2d::logging::{set_stderr, stderr_on};
+  use std::sync::Mutex;
+
+  /// The log's stderr switch is the process's: tests that read it take turns
+  static STDERR_SWITCH: Mutex<()> = Mutex::new(());
 
   fn args(words: &[&str]) -> Vec<String> {
     words.iter().map(|word| (*word).to_owned()).collect()
@@ -220,9 +231,10 @@ mod tests {
 
   #[test]
   fn the_cli_shows_the_engine_s_warnings_in_every_build() {
-    let _log = crate::core::logging::capture_log();
+    let _turn = STDERR_SWITCH.lock().unwrap_or_else(|e| e.into_inner());
+    let _log = ryo2d::logging::capture_log();
     // As the installed CLI starts: a build without tools, stderr off
-    let _watch = watch_stderr(false);
+    set_stderr(false);
     run_with(&args(&["ryo2d", "version"])).unwrap();
     assert!(stderr_on(), "Ryo.toml's warnings reach the terminal");
 

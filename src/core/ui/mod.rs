@@ -49,7 +49,7 @@
 mod containers;
 pub(crate) mod debug;
 pub(crate) mod env;
-pub(crate) mod file;
+pub mod file;
 pub(crate) mod fragment;
 pub(crate) mod id;
 pub(crate) mod image_sizes;

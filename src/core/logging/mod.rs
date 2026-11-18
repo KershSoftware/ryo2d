@@ -38,9 +38,9 @@ pub(crate) use file::{
 use levels::Levels;
 #[cfg(dev_tools)]
 pub(crate) use levels::parse_level;
-pub(crate) use outputs::set_stderr;
+pub use outputs::set_stderr;
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) use outputs::stderr_on;
+pub use outputs::stderr_on;
 #[cfg(test)]
 pub(crate) use outputs::{Taken, watch_stderr};
 #[cfg(all(dev_tools, not(target_arch = "wasm32")))]

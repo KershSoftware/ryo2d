@@ -170,7 +170,7 @@ status "Building" "ryo2d CLI in release mode..."
 echo ""
 
 cd "$SCRIPT_DIR"
-if ! cargo build --release --bin ryo2d; then
+if ! cargo build --release -p ryo2d-cli --bin ryo2d; then
     error "Build failed"
     exit 1
 fi

@@ -36,14 +36,14 @@ macro_rules! project_settings {
     /// Settings from the project: `Ryo.toml` in dev, embedded values in
     /// release. `None` = not provided.
     #[derive(Debug, Clone, Default, PartialEq)]
-    pub(crate) struct ProjectLayer {
+    pub struct ProjectLayer {
       $( pub $field: Option<$ty>, )*
     }
 
     impl ProjectLayer {
       /// The settings a Ryo.toml sets. A value of the wrong type or text is
       /// left unset, and `warn` is told.
-      pub(crate) fn from_toml(table: &toml::Table, warn: &mut dyn FnMut(String)) -> Self {
+      pub fn from_toml(table: &toml::Table, warn: &mut dyn FnMut(String)) -> Self {
         ProjectLayer {
           $( $field: toml_value(table, stringify!($section), stringify!($key), warn), )*
         }
@@ -52,7 +52,7 @@ macro_rules! project_settings {
       /// Values `ryo2d build` embedded (release builds); `None` when the
       /// binary wasn't built by `ryo2d build`. Malformed values are skipped
       /// with a warning.
-      pub(crate) fn from_embedded<'a>(lookup: impl Fn(&str) -> Option<&'a str>) -> Option<Self> {
+      pub fn from_embedded<'a>(lookup: impl Fn(&str) -> Option<&'a str>) -> Option<Self> {
         lookup(RELEASE_MARKER)?;
         Some(ProjectLayer {
           $( $field: embedded_value(&lookup, &[$($embed)?]), )*
@@ -61,7 +61,7 @@ macro_rules! project_settings {
 
       /// The embedded values of the settings this layer sets.
       #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
-      pub(crate) fn to_embedded_env(&self) -> Vec<(&'static str, String)> {
+      pub fn to_embedded_env(&self) -> Vec<(&'static str, String)> {
         let mut env = Vec::new();
         $($(
           if let Some(value) = &self.$field {
@@ -85,7 +85,7 @@ macro_rules! project_settings {
     }
 
     /// Every key `ryo2d build` embeds
-    pub(crate) const EMBED_KEYS: &[&str] = &[
+    pub const EMBED_KEYS: &[&str] = &[
       $($($embed,)?)*
       $($($ws_embed,)?)*
       $env_embed,
@@ -126,9 +126,9 @@ macro_rules! project_settings {
       }
     }
 
-    /// A Ryo.toml table that sets every entry to its sample
-    #[cfg(test)]
-    pub(crate) fn sample_table() -> toml::Table {
+    /// A Ryo.toml table that sets every entry to its sample, for tests that
+    /// check a setting is carried through (the `ryo2d` command's)
+    pub fn sample_table() -> toml::Table {
       let mut table = toml::Table::new();
       $(
         insert_sample(
@@ -149,7 +149,7 @@ impl ProjectLayer {
   /// A workspace's project values (dev builds): what its Ryo.toml sets, with
   /// the title it falls back to (`[project] name`, then the folder's name),
   /// and the logo as a path from the workspace's root.
-  pub(crate) fn from_workspace(workspace: &Workspace) -> Self {
+  pub fn from_workspace(workspace: &Workspace) -> Self {
     let config = workspace.config();
     ProjectLayer {
       title: Some(config.title.clone()),
@@ -168,7 +168,7 @@ impl ProjectLayer {
   /// `ryo2d build` embeds): the resolution is always set, and the icon is
   /// not a value (a release finds icon.png beside the game). The `[debug]`
   /// values are only those Ryo.toml sets.
-  pub(crate) fn for_release(workspace: &Workspace) -> Self {
+  pub fn for_release(workspace: &Workspace) -> Self {
     let mut layer = Self::from_workspace(workspace);
     layer.icon = None;
     layer
@@ -406,7 +406,6 @@ fn sample<T: TableValue>(value: toml::Value) -> T {
     .unwrap_or_else(|| panic!("the sample {value} doesn't read as its entry's type"))
 }
 
-#[cfg(test)]
 fn insert_sample(table: &mut toml::Table, section: &str, key: &str, value: toml::Value) {
   let section = table
     .entry(section)

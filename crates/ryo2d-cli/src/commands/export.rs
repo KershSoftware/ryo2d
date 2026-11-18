@@ -75,7 +75,7 @@ pub fn execute(args: &[String]) -> CliResult<()> {
 
 /// The version: Ryo.toml's `[project] version` as the workspace read it, else
 /// Cargo.toml's `[package] version`
-fn get_project_version(workspace: &crate::core::config::Workspace) -> Option<String> {
+fn get_project_version(workspace: &ryo2d::core::config::Workspace) -> Option<String> {
   workspace
     .config()
     .version
@@ -338,13 +338,13 @@ EXAMPLE:
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::cli::commands::licenses::{FONT_LICENSES, LICENSES_DIR};
+  use crate::commands::licenses::{FONT_LICENSES, LICENSES_DIR};
 
   #[test]
   fn the_version_comes_from_the_workspace_s_ryo_toml() {
     // Read as the workspace read it, not from a file named Ryo.toml on disk
     let dir = tempfile::tempdir().unwrap();
-    let workspace = crate::core::config::Workspace::from_toml_str(
+    let workspace = ryo2d::core::config::Workspace::from_toml_str(
       "[project]\nversion = \"1.2.3\"\n",
       dir.path().to_path_buf(),
     )
@@ -361,7 +361,7 @@ mod tests {
     )
     .unwrap();
     let workspace =
-      crate::core::config::Workspace::from_toml_str("", dir.path().to_path_buf()).unwrap();
+      ryo2d::core::config::Workspace::from_toml_str("", dir.path().to_path_buf()).unwrap();
     assert_eq!(get_project_version(&workspace).as_deref(), Some("0.4.0"));
   }
 

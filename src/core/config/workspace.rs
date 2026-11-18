@@ -184,10 +184,7 @@ impl Workspace {
   ///
   /// Ryo.toml files on disk are ignored, so `ryo2d run` sees exactly what a
   /// shipped game sees.
-  pub(crate) fn from_embedded<'a>(
-    root: &Path,
-    lookup: impl Fn(&str) -> Option<&'a str>,
-  ) -> Option<Self> {
+  pub fn from_embedded<'a>(root: &Path, lookup: impl Fn(&str) -> Option<&'a str>) -> Option<Self> {
     let project = ProjectLayer::from_embedded(&lookup)?;
     let mut config = WorkspaceConfig::default();
     set(&mut config.title, project.title.clone());
@@ -221,12 +218,12 @@ impl Workspace {
   /// # Errors
   ///
   /// [`EngineError::WorkspaceError`] when the text is not TOML.
-  pub(crate) fn from_toml_str(text: &str, root: PathBuf) -> Result<Workspace, EngineError> {
+  pub fn from_toml_str(text: &str, root: PathBuf) -> Result<Workspace, EngineError> {
     Self::read_toml(text, root, &mut warn_once)
   }
 
   /// [`from_toml_str`](Self::from_toml_str), telling `warn` of each problem.
-  pub(crate) fn read_toml(
+  pub fn read_toml(
     text: &str,
     root: PathBuf,
     warn: &mut dyn FnMut(String),
@@ -560,7 +557,7 @@ impl WorkspaceConfig {
 
   /// `[env]` as JSON values, the form `system.json` once seeded it in and
   /// `ryo2d build` embeds it in.
-  pub(crate) fn env_json(&self) -> HashMap<String, serde_json::Value> {
+  pub fn env_json(&self) -> HashMap<String, serde_json::Value> {
     self
       .env
       .iter()

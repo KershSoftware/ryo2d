@@ -134,7 +134,7 @@ Write-Host ""
 
 Push-Location $ScriptDir
 try {
-  & cargo build --release --bin ryo2d
+  & cargo build --release -p ryo2d-cli --bin ryo2d
   if ($LASTEXITCODE -ne 0) {
     Write-Error "Build failed"
     exit 1

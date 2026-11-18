@@ -17,7 +17,7 @@ The engine's log: the `log` crate's macros in front, one `log::Log` (the engine'
 
 ## Logging
 
-- **Engine code** logs with `log::trace!` to `log::error!`; the target is the module path. No `println!`/`eprintln!` in engine library code outside `src/cli/`, `src/core/network/` and this module's own stderr output.
+- **Engine code** logs with `log::trace!` to `log::error!`; the target is the module path. No `println!`/`eprintln!` in engine library code outside `crates/ryo2d-cli/`, `src/core/network/` and this module's own stderr output.
 - **A game** logs with the prelude's macros, which call `ensure()` and then `log`'s macro with the target `concat!("game::", module_path!())`. So the first line a game logs, before any engine is built, installs the logger and is kept. `warn_once!` keeps one `AtomicBool` per call site and logs the first time the site is reached with its target's level letting warnings through: the level is checked first, so a site reached while silenced keeps its one line for when the level is raised. A game that calls `log::info!` itself is a library to the log.
 - **Origins** by target: `game` or under it is the game; `ryo2d`, under it, or `ryo2d_*` is the engine; anything else (`gamepad` too) is a library.
 

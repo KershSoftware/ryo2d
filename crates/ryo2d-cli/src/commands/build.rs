@@ -68,7 +68,7 @@ pub fn execute(args: &[String]) -> CliResult<()> {
 /// removed, so a `RYO_EMBED_*` variable left in the shell never reaches the
 /// shipped game.
 fn release_build_command(
-  workspace: &crate::core::config::Workspace,
+  workspace: &ryo2d::core::config::Workspace,
   target_dir: &Path,
   embedded: &[(&'static str, String)],
   icon_path: &Path,
@@ -81,7 +81,7 @@ fn release_build_command(
   }
   // Use shared target directory for dependency caching
   command.env("CARGO_TARGET_DIR", target_dir);
-  for key in crate::core::config::project::EMBED_KEYS {
+  for key in ryo2d::core::config::project::EMBED_KEYS {
     command.env_remove(key);
   }
   command
@@ -133,18 +133,18 @@ fn build_warnings(options: BuildOptions) -> Vec<&'static str> {
 
 /// The per-game save folder name: `[release] save_folder` as written, else
 /// `[project] name` turned into a single folder name.
-fn release_save_folder(config: &crate::core::config::WorkspaceConfig) -> String {
+fn release_save_folder(config: &ryo2d::core::config::WorkspaceConfig) -> String {
   config
     .release
     .save_folder
     .clone()
-    .unwrap_or_else(|| crate::core::config::save_location::folder_from_project_name(&config.name))
+    .unwrap_or_else(|| ryo2d::core::config::save_location::folder_from_project_name(&config.name))
 }
 
 /// [`release_save_folder`], rejected before building when it can't name a folder.
-fn checked_save_folder(config: &crate::core::config::WorkspaceConfig) -> CliResult<String> {
+fn checked_save_folder(config: &ryo2d::core::config::WorkspaceConfig) -> CliResult<String> {
   let folder = release_save_folder(config);
-  if crate::core::config::save_location::valid_save_folder(&folder) {
+  if ryo2d::core::config::save_location::valid_save_folder(&folder) {
     return Ok(folder);
   }
   let source = if config.release.save_folder.is_some() {
@@ -170,9 +170,9 @@ fn checked_save_folder(config: &crate::core::config::WorkspaceConfig) -> CliResu
 /// - `RYO_EMBED_PORTABLE`, `RYO_EMBED_SAVE_FOLDER` (the folder name, from
 ///   [`release_save_folder`]) and `RYO_EMBED_ENV` (`[env]` as JSON).
 pub(crate) fn embedded_config_env(
-  workspace: &crate::core::config::Workspace,
+  workspace: &ryo2d::core::config::Workspace,
 ) -> Vec<(&'static str, String)> {
-  use crate::core::config::project::ProjectLayer;
+  use ryo2d::core::config::project::ProjectLayer;
 
   let config = workspace.config();
   let mut env = ProjectLayer::for_release(workspace).to_embedded_env();
@@ -187,7 +187,7 @@ pub(crate) fn embedded_config_env(
 
 /// Create a distributable release bundle
 fn create_release_bundle(
-  workspace: &crate::core::config::Workspace,
+  workspace: &ryo2d::core::config::Workspace,
   package_name: &str,
   display_name: &str,
   icon_path: &PathBuf,
@@ -401,7 +401,7 @@ fn find_workspace_target_dir(start_dir: &std::path::Path) -> PathBuf {
 /// - Runtime window icon (title bar, taskbar) via the engine's icon loading
 /// - Windows .exe embedding (requires game project's build.rs to use winres)
 fn resolve_icon_path(
-  workspace: &crate::core::config::Workspace,
+  workspace: &ryo2d::core::config::Workspace,
   custom_logo: Option<&PathBuf>,
 ) -> CliResult<PathBuf> {
   if let Some(logo) = custom_logo {
@@ -432,7 +432,7 @@ fn resolve_icon_path(
   let logo_path = temp_dir.join("ryo2d-logo.png");
 
   // Write embedded logo bytes
-  let logo_bytes = include_bytes!("../../assets/logo.png");
+  let logo_bytes = include_bytes!("../../../../src/assets/logo.png");
   fs::write(&logo_path, logo_bytes)
     .map_err(|e| CliError::Other(format!("Failed to write default logo: {}", e)))?;
 
@@ -486,8 +486,8 @@ EXAMPLE:
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::core::config::project::{EMBED_KEYS, ProjectLayer, sample_table};
-  use crate::core::config::{Workspace, WorkspaceConfig};
+  use ryo2d::core::config::project::{EMBED_KEYS, ProjectLayer, sample_table};
+  use ryo2d::core::config::{Workspace, WorkspaceConfig};
 
   /// A workspace from Ryo.toml text, with no folder on disk
   fn workspace(toml: &str) -> Workspace {
@@ -513,8 +513,8 @@ mod tests {
   /// Resolve a Ryo.toml as the web does (the compiled-in file) and as a release
   /// of it does (the values `ryo2d build` embeds)
   fn web_and_release_resolve(text: &'static str) {
-    use crate::core::config::ProjectFile;
-    use crate::core::config::resolve::{BuilderOverrides, resolve_settings};
+    use ryo2d::core::config::ProjectFile;
+    use ryo2d::core::config::resolve::{BuilderOverrides, resolve_settings};
 
     let env = embedded_config_env(&workspace(text));
     let release = ProjectLayer::from_embedded(lookup_in(&env)).unwrap();
@@ -527,7 +527,7 @@ mod tests {
 
   #[test]
   fn a_web_style_resolve_matches_the_release_resolve_of_the_same_ryo_toml() {
-    web_and_release_resolve(include_str!("../../../tests/fixtures/project/Ryo.toml"));
+    web_and_release_resolve(include_str!("../../../../tests/fixtures/project/Ryo.toml"));
     // Nothing set but the name: the unset values resolve alike too
     web_and_release_resolve("[project]\nname = \"Bare\"\n");
     web_and_release_resolve(
@@ -627,7 +627,7 @@ mod tests {
 
   #[test]
   fn embedded_display_title_and_volumes_round_trip() {
-    use crate::core::config::DisplayMode;
+    use ryo2d::core::config::DisplayMode;
     let ws = workspace(
       "[project]\ntitle = \"Hopper\"\n\n[system]\ndisplay_mode = \"borderless_fullscreen\"\n\
        resolution = \"800x600\"\nmaster_volume = 0.3\nmusic_volume = 0.4\nsfx_volume = 0.5\n\
@@ -838,7 +838,7 @@ mod tests {
 
   #[test]
   fn the_build_script_reads_the_project_table() {
-    let script = include_str!("../../build.rs");
+    let script = include_str!("../../../../src/build.rs");
     assert!(script.contains("include!(\"core/config/project_table.rs\")"));
   }
 }

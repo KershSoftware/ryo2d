@@ -2,12 +2,12 @@
 
 use std::path::{Path, PathBuf};
 
-use glam::UVec2;
 use image::RgbaImage;
+use ryo2d::ecs::UVec2;
 
 use super::{CliError, CliResult, Output};
-use crate::core::config::Workspace;
-use crate::testing::{SheetError, SheetOptions, SheetSkeleton, skeleton_sheet};
+use ryo2d::core::config::Workspace;
+use ryo2d::testing::{SheetError, SheetOptions, SheetSkeleton, skeleton_sheet};
 
 /// The flags the command takes, for the message about one it does not
 const FLAGS: &str = "--animations, --moments, --skins, --once, --bones, --cell, --hz, --out";

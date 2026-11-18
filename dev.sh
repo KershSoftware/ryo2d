@@ -173,23 +173,23 @@ run_example() {
             # Dev mode
             echo -e "${MAGENTA}  Mode: Development (hot-reload enabled)${NC}"
             echo ""
-            cargo run --manifest-path "$SCRIPT_DIR/Cargo.toml" --bin ryo2d -- dev --skip-opt-check || true
+            cargo run --manifest-path "$SCRIPT_DIR/Cargo.toml" -p ryo2d-cli --bin ryo2d -- dev --skip-opt-check || true
             ;;
         2)
             # Dev mode with profiler
             echo -e "${MAGENTA}  Mode: Development with profiler${NC}"
             echo -e "${GRAY}        A separate profiler window will open with real-time flamegraphs.${NC}"
             echo ""
-            cargo run --manifest-path "$SCRIPT_DIR/Cargo.toml" --bin ryo2d -- dev --skip-opt-check -p || true
+            cargo run --manifest-path "$SCRIPT_DIR/Cargo.toml" -p ryo2d-cli --bin ryo2d -- dev --skip-opt-check -p || true
             ;;
         *)
             # Release mode (default)
             echo -e "${GREEN}  Mode: Build + Run (release)${NC}"
             echo ""
             echo -e "${YELLOW}Building...${NC}"
-            if cargo run --manifest-path "$SCRIPT_DIR/Cargo.toml" --bin ryo2d -- build; then
+            if cargo run --manifest-path "$SCRIPT_DIR/Cargo.toml" -p ryo2d-cli --bin ryo2d -- build; then
                 echo -e "${YELLOW}Running...${NC}"
-                cargo run --manifest-path "$SCRIPT_DIR/Cargo.toml" --bin ryo2d -- run || true
+                cargo run --manifest-path "$SCRIPT_DIR/Cargo.toml" -p ryo2d-cli --bin ryo2d -- run || true
             else
                 echo -e "${RED}Build failed!${NC}"
             fi
@@ -423,7 +423,7 @@ case "$COMMAND" in
         for i in "${!DEMO_NAMES[@]}"; do
             demo="${DEMO_NAMES[$i]}"
             demo_path="${DEMO_PATHS[$i]}"
-            ryo2d_cmd="cargo run --manifest-path \"$SCRIPT_DIR/Cargo.toml\" --bin ryo2d -- dev --skip-opt-check"
+            ryo2d_cmd="cargo run --manifest-path \"$SCRIPT_DIR/Cargo.toml\" -p ryo2d-cli --bin ryo2d -- dev --skip-opt-check"
 
             if [[ "$TERM_CMD" == "gnome-terminal" ]]; then
                 gnome-terminal --working-directory="$demo_path" -- bash -c "$ryo2d_cmd; exec bash" &

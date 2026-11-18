@@ -184,13 +184,13 @@ function Run-Example {
                 # Dev mode
                 Write-Host "  Mode: Development (hot-reload enabled)" -ForegroundColor Magenta
                 Write-Host ""
-                & cargo run --manifest-path "$PSScriptRoot/Cargo.toml" --bin ryo2d -- dev --skip-opt-check
+                & cargo run --manifest-path "$PSScriptRoot/Cargo.toml" -p ryo2d-cli --bin ryo2d -- dev --skip-opt-check
             }
             2 {
                 # Dev mode with profiler
                 Write-Host "  Mode: Development with Profiler" -ForegroundColor Magenta
                 Write-Host ""
-                & cargo run --manifest-path "$PSScriptRoot/Cargo.toml" --bin ryo2d -- dev --skip-opt-check -p
+                & cargo run --manifest-path "$PSScriptRoot/Cargo.toml" -p ryo2d-cli --bin ryo2d -- dev --skip-opt-check -p
             }
             default {
                 # Release mode
@@ -198,12 +198,12 @@ function Run-Example {
                 Write-Host ""
                 # Build the game
                 Write-Host "Building..." -ForegroundColor Yellow
-                & cargo run --manifest-path "$PSScriptRoot/Cargo.toml" --bin ryo2d -- build
+                & cargo run --manifest-path "$PSScriptRoot/Cargo.toml" -p ryo2d-cli --bin ryo2d -- build
 
                 if ($LASTEXITCODE -eq 0) {
                     # Run the built game
                     Write-Host "Running..." -ForegroundColor Yellow
-                    & cargo run --manifest-path "$PSScriptRoot/Cargo.toml" --bin ryo2d -- run
+                    & cargo run --manifest-path "$PSScriptRoot/Cargo.toml" -p ryo2d-cli --bin ryo2d -- run
                 } else {
                     Write-Host "Build failed!" -ForegroundColor Red
                 }
@@ -382,7 +382,7 @@ switch ($ExampleName.ToLower()) {
 
         foreach ($demo in $demos) {
             # Launch ryo2d dev in a new terminal window for each demo
-            $ryo2dCmd = "cargo run --manifest-path `"$PSScriptRoot/Cargo.toml`" --bin ryo2d -- dev --skip-opt-check"
+            $ryo2dCmd = "cargo run --manifest-path `"$PSScriptRoot/Cargo.toml`" -p ryo2d-cli --bin ryo2d -- dev --skip-opt-check"
             $proc = Start-Process -FilePath "powershell" -ArgumentList "-NoExit", "-Command", "Set-Location '$($demo.Path)'; $ryo2dCmd" -PassThru -WindowStyle Normal
             $pids += $proc.Id
             Write-Host "  Started $($demo.Name) in dev mode (PID $($proc.Id))" -ForegroundColor Green

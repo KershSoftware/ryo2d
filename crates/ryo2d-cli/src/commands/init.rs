@@ -550,7 +550,7 @@ mod tests {
       .and_then(toml::Value::as_float);
     assert_eq!(master, Some(1.0));
     assert_eq!(
-      crate::core::config::resolve::DEFAULT_MASTER_VOLUME,
+      ryo2d::core::config::resolve::DEFAULT_MASTER_VOLUME,
       1.0,
       "the engine's default"
     );
@@ -559,7 +559,7 @@ mod tests {
   #[test]
   fn a_new_game_s_ryo_toml_reads_without_a_warning() {
     let mut warnings = Vec::new();
-    let read = crate::core::config::Workspace::read_toml(
+    let read = ryo2d::core::config::Workspace::read_toml(
       &generate_ryo_toml("game"),
       std::path::PathBuf::from("game"),
       &mut |warning| warnings.push(warning),

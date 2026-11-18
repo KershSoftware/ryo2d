@@ -32,7 +32,8 @@ Suggested sources for game assets:
 
 | Path | What |
 |------|------|
-| `src/` | The `ryo2d` crate: `src/core/` is the engine, `src/cli/` the `ryo2d` command, `src/lib.rs` the prelude (the public surface) |
+| `src/` | The `ryo2d` crate: `src/core/` is the engine, `src/lib.rs` the prelude (the public surface) |
+| `crates/ryo2d-cli` | The `ryo2d` command (package `ryo2d-cli`, binary `ryo2d`): depends on `ryo2d`, so games never compile it. Install with `./install.sh` or `./install.ps1`; from a checkout `cargo run -p ryo2d-cli -- <command>` |
 | `crates/ryo2d-derive` | The `#[derive(NetworkInput)]` macro, re-exported by `ryo2d` |
 | `crates/ryo2d-procgen` | Optional procedural generation; games add the crate and `use ryo2d_procgen::prelude::*` |
 | `crates/ryo2d-inventory` | Optional items, inventories, equipment and loot; `use ryo2d_inventory::prelude::*` |
@@ -42,7 +43,7 @@ Suggested sources for game assets:
 | `attic/` | Code parked outside the build (the raycaster and its demo); not compiled |
 | `.claude/skills/` | Agent skills; the CLI embeds them straight from here (listed by `src/build.rs`) |
 
-Dependencies point toward the core: the optional crates depend on `ryo2d`, never the reverse (the core's only dependency in `crates/` is the `ryo2d-derive` proc macro), and the `ryo2d` prelude exports the core only.
+Dependencies point toward the core: the optional crates and the CLI depend on `ryo2d`, never the reverse (the core's only dependency in `crates/` is the `ryo2d-derive` proc macro), and the `ryo2d` prelude exports the core only.
 
 ---
 

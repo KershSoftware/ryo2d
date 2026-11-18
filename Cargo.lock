@@ -5716,6 +5716,17 @@ dependencies = [
  "web-time",
  "wgpu",
  "winit",
+]
+
+[[package]]
+name = "ryo2d-cli"
+version = "0.0.1"
+dependencies = [
+ "image",
+ "ryo2d",
+ "serde_json",
+ "tempfile",
+ "toml",
  "zip",
 ]
 

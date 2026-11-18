@@ -1,0 +1,25 @@
+[package]
+name = "ryo2d-cli"
+version = "0.0.1"
+edition = "2024"
+description = "The ryo2d command: create, build, run and package Ryo2D games"
+license = "MIT"
+build = "build.rs"
+
+[lib]
+name = "ryo2d_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ryo2d"
+path = "src/main.rs"
+
+[dependencies]
+ryo2d = { path = "../.." }
+image = "0.25"
+serde_json = "1.0"
+toml = "0.9.11"
+zip = "2"
+
+[dev-dependencies]
+tempfile = "3"

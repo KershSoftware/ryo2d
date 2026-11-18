@@ -34,7 +34,7 @@ impl SkillsPlatform {
 }
 
 /// Every `.claude/skills/<name>/SKILL.md` as (name, content), listed by the
-/// build script (`src/build.rs`): the skills folder is the one copy
+/// build script (`build.rs`): the skills folder is the one copy
 const EMBEDDED_SKILLS: &[(&str, &str)] = include!(concat!(env!("OUT_DIR"), "/embedded_skills.rs"));
 
 /// Execute the install-skills command
@@ -279,7 +279,7 @@ mod tests {
     let project = tempfile::tempdir().unwrap();
     install_skills_to_dir(project.path(), SkillsPlatform::Claude, true).unwrap();
     let installed = project.path().join(".claude/skills");
-    let sources = Path::new(env!("CARGO_MANIFEST_DIR")).join(".claude/skills");
+    let sources = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.claude/skills");
     let mut skills = 0;
     for entry in std::fs::read_dir(&sources).unwrap() {
       let entry = entry.unwrap();

@@ -13,10 +13,6 @@ autoexamples = false
 name = "ryo2d"
 path = "src/lib.rs"
 
-[[bin]]
-name = "ryo2d"
-path = "src/bin/ryo2d.rs"
-
 [workspace]
 members = [
   ".",
@@ -82,7 +78,6 @@ renet_netcode = "2.0"
 # The streamed clips' decoder (src/core/audio/stream.rs). kira's own version,
 # with the same formats kira enables, so nothing more is built
 symphonia = { version = "0.6.1", default-features = false, features = ["wav", "pcm", "ogg", "vorbis", "mp3", "flac"] }
-zip = "2"
 
 # Optional profiling dependency (enable with --features profiler)
 puffin = { version = "0.19", optional = true }

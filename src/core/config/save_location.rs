@@ -11,7 +11,7 @@ use super::project::compiled_embedded_value;
 /// `"MyGame"` or `"MyStudio/MyGame"`), without characters Windows rejects and
 /// without components ending in `.` or a space or naming a reserved Windows
 /// device (`CON`, `NUL`, `COM1`, ..., with or without an extension).
-pub(crate) fn valid_save_folder(name: &str) -> bool {
+pub fn valid_save_folder(name: &str) -> bool {
   const FORBIDDEN: &[char] = &['<', '>', ':', '"', '|', '?', '*', '\\'];
   if name.trim().is_empty()
     || name
@@ -146,7 +146,7 @@ pub(crate) fn enter_bundle_dir() {
 
 /// Make a project name one folder: path separators, control characters and
 /// `<>:"|?*` become `-`, then surrounding whitespace and trailing dots go.
-pub(crate) fn folder_from_project_name(name: &str) -> String {
+pub fn folder_from_project_name(name: &str) -> String {
   let replaced: String = name
     .chars()
     .map(|c| {

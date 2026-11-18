@@ -8,10 +8,13 @@
 //! The player's settings and the game's saves live in `core::settings` and `core::saves`.
 
 pub(crate) mod preferences;
-pub(crate) mod project;
+/// The project layer: what a Ryo.toml sets, and what `ryo2d build` embeds.
+pub mod project;
 mod project_file;
-pub(crate) mod resolve;
-pub(crate) mod save_location;
+/// The layered settings: builder calls over the project's values over defaults.
+pub mod resolve;
+/// Where a game keeps its saves, and the folder name a release uses.
+pub mod save_location;
 pub mod workspace;
 
 pub use project_file::ProjectFile;

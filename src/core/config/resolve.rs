@@ -21,10 +21,10 @@ use crate::core::graphics::screen::Presentation;
 use crate::core::lighting::ShadowQuality;
 
 /// Engine default resolution.
-pub(crate) const DEFAULT_RESOLUTION: (u32, u32) = (1280, 720);
+pub const DEFAULT_RESOLUTION: (u32, u32) = (1280, 720);
 /// Engine default master volume: 1, the mix as designed (0 dB on the
 /// volume curve, amplitude = v²).
-pub(crate) const DEFAULT_MASTER_VOLUME: f32 = 1.0;
+pub const DEFAULT_MASTER_VOLUME: f32 = 1.0;
 /// Engine default music volume.
 pub(crate) const DEFAULT_MUSIC_VOLUME: f32 = 1.0;
 /// Engine default sound effects volume.
@@ -39,7 +39,7 @@ const DEFAULT_TITLE: &str = "Ryo2D";
 
 /// Settings set through `EngineBuilder` calls; `None` = not set.
 #[derive(Debug, Clone, Default, PartialEq)]
-pub(crate) struct BuilderOverrides {
+pub struct BuilderOverrides {
   pub title: Option<String>,
   pub resolution: Option<(u32, u32)>,
   pub pixel_art: Option<bool>,
@@ -59,7 +59,7 @@ pub(crate) struct BuilderOverrides {
 
 /// Final value of every layered setting.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct ResolvedSettings {
+pub struct ResolvedSettings {
   pub title: String,
   /// The fit or pixel-art resolution, or (when no layer set one) the main
   /// camera's design area
@@ -150,10 +150,7 @@ impl ResolvedSettings {
 }
 
 /// Layer project values and builder calls over the engine defaults.
-pub(crate) fn resolve_settings(
-  project: &ProjectLayer,
-  builder: &BuilderOverrides,
-) -> ResolvedSettings {
+pub fn resolve_settings(project: &ProjectLayer, builder: &BuilderOverrides) -> ResolvedSettings {
   let mut s = ResolvedSettings::defaults();
 
   set(&mut s.title, project.title.clone());

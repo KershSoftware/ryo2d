@@ -10,7 +10,7 @@ use super::document::UiFile;
 use super::error::{UiFileError, UiFileIssue};
 
 /// Every `*.ui.ron` under `dir`, sorted
-pub(crate) fn ui_files_under(dir: &Path) -> Vec<PathBuf> {
+pub fn ui_files_under(dir: &Path) -> Vec<PathBuf> {
   let mut found = Vec::new();
   let mut pending = vec![dir.to_path_buf()];
   while let Some(next) = pending.pop() {
@@ -37,7 +37,7 @@ pub(crate) fn ui_files_under(dir: &Path) -> Vec<PathBuf> {
 /// game would: imports and images are read from it, and each file is
 /// checked against them. Issue paths are asset paths; each issue is listed
 /// once.
-pub(crate) fn check_files(assets: &Path, files: &[PathBuf]) -> Vec<UiFileIssue> {
+pub fn check_files(assets: &Path, files: &[PathBuf]) -> Vec<UiFileIssue> {
   let mut world = World::new();
   let server = AssetServer::new(DiskSource::new(assets));
   server.register_asset::<Image>(&mut world);

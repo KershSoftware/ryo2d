@@ -41,7 +41,7 @@ impl ProjectFile {
 
   /// What the engine takes from the file, resolving as a release build does.
   /// `None` without a file, or when its text is not TOML (warned).
-  pub(crate) fn read(&self) -> Option<FileProject> {
+  pub fn read(&self) -> Option<FileProject> {
     let text = self.text?;
     let workspace = match Workspace::from_toml_str(text, PathBuf::new()) {
       Ok(workspace) => workspace,
@@ -73,7 +73,7 @@ impl ProjectFile {
 }
 
 /// A [`ProjectFile`]'s values
-pub(crate) struct FileProject {
+pub struct FileProject {
   pub layer: ProjectLayer,
   /// `[project] name`, when the file sets one
   pub name: Option<String>,

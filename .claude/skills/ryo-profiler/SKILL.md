@@ -163,7 +163,7 @@ The `profiler` feature brings the developer tools with it. `ryo2d build` adds ne
 | `src/core/profiler.rs` | Macros, `init` (scopes on for `enable_profiler`), `new_frame` |
 | `src/core/windows/profiler_window.rs` | Windowed flamegraph viewer |
 | `src/core/diagnostics/flags.rs` | `DebugConfig::enable_profiler`, the runtime switch (set from `[debug] enable_profiler` in Ryo.toml) |
-| `src/cli/commands/dev.rs` | `--profiler` CLI flag handling |
+| `crates/ryo2d-cli/src/commands/dev.rs` | `--profiler` CLI flag handling |
 
 ### How Data Flows
 

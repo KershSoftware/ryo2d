@@ -16,15 +16,15 @@ pub(super) const FONT_LICENSES: [(&str, &str); 4] = [
   ("README.txt", README),
   (
     "OFL-Inter.txt",
-    include_str!("../../assets/fonts/OFL-Inter.txt"),
+    include_str!("../../../../src/assets/fonts/OFL-Inter.txt"),
   ),
   (
     "OFL-JetBrainsMono.txt",
-    include_str!("../../assets/fonts/OFL-JetBrainsMono.txt"),
+    include_str!("../../../../src/assets/fonts/OFL-JetBrainsMono.txt"),
   ),
   (
     "m5x7-LICENSE.txt",
-    include_str!("../../assets/fonts/m5x7-LICENSE.txt"),
+    include_str!("../../../../src/assets/fonts/m5x7-LICENSE.txt"),
   ),
 ];
 
