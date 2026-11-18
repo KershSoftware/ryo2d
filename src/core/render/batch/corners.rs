@@ -37,7 +37,7 @@ pub(crate) const CORNER_PASS_FROM: usize = 16_384;
 
 /// Whether the corner pass runs for a stream of `points` points
 pub(crate) fn builds_corners(points: usize) -> bool {
-  points >= CORNER_PASS_FROM.max(1)
+  points >= CORNER_PASS_FROM
 }
 
 /// The bytes of a point's corner record (`LineCorner`)

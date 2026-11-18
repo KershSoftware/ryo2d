@@ -707,7 +707,9 @@ fn lp_join_role(look: LineLook, turn: LpTurn, slot: u32) -> u32 {
     if !turn.mitered {
         // A bevel fans from its corner point; where the inner side
         // splits, its slanted ends are fringe triangles from the strip's
-        // elbows
+        // elbows. A bevel join's own layout never names slots 1, 4 and 7;
+        // a miter past its limit, bevelled here, keeps the miter's layout
+        // and names them, each the same place as the slot before it
         switch slot {
             case 0u, 1u: {
                 return LJ_BEVEL_CENTRE;
