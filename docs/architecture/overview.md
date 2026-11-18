@@ -14,7 +14,7 @@ The big picture: how a frame runs, where state lives and what each part of the e
 | `tests/integration`, `tests/e2e` | Integration tests and headless GPU end-to-end tests |
 | `attic/` | Parked code outside the build: the raycaster and its demo, to return as `crates/ryo2d-raycast` on the render pipeline |
 
-Dependencies point toward the core: the optional crates depend on `ryo2d`, never the reverse.
+Dependencies point toward the core: the optional crates and the `ryo2d` command (`crates/ryo2d-cli`) depend on `ryo2d`, never the reverse. The command reaches the engine's internals only through the doc-hidden `ryo2d::tooling` module.
 
 ## Engine, World and Resources
 

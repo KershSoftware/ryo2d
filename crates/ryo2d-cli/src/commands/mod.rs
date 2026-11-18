@@ -119,7 +119,7 @@ pub fn run_cli(args: Vec<String>) -> ExitCode {
 fn run_with(args: &[String]) -> CliResult<()> {
   // The installed CLI is a build without tools, which writes no log file:
   // the engine's warnings (Ryo.toml's) go to the terminal
-  ryo2d::logging::set_stderr(true);
+  ryo2d::tooling::set_stderr(true);
   if args.len() < 2 {
     print_help();
     return Ok(());
@@ -219,11 +219,20 @@ fn get_cargo_package_name(workspace: &Workspace) -> CliResult<String> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use ryo2d::logging::{set_stderr, stderr_on};
+  use ryo2d::tooling::{set_stderr, stderr_on};
   use std::sync::Mutex;
 
   /// The log's stderr switch is the process's: tests that read it take turns
   static STDERR_SWITCH: Mutex<()> = Mutex::new(());
+
+  /// Puts the stderr switch back as the test found it
+  struct Restore(bool);
+
+  impl Drop for Restore {
+    fn drop(&mut self) {
+      set_stderr(self.0);
+    }
+  }
 
   fn args(words: &[&str]) -> Vec<String> {
     words.iter().map(|word| (*word).to_owned()).collect()
@@ -233,6 +242,7 @@ mod tests {
   fn the_cli_shows_the_engine_s_warnings_in_every_build() {
     let _turn = STDERR_SWITCH.lock().unwrap_or_else(|e| e.into_inner());
     let _log = ryo2d::logging::capture_log();
+    let _restore = Restore(stderr_on());
     // As the installed CLI starts: a build without tools, stderr off
     set_stderr(false);
     run_with(&args(&["ryo2d", "version"])).unwrap();

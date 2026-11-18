@@ -4,6 +4,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use ryo2d::tooling::embedded_config_env;
+
 use super::licenses::write_font_licenses;
 use super::{CliError, CliResult, Output, discover_workspace, get_cargo_package_name};
 
@@ -81,7 +83,7 @@ fn release_build_command(
   }
   // Use shared target directory for dependency caching
   command.env("CARGO_TARGET_DIR", target_dir);
-  for key in ryo2d::core::config::project::EMBED_KEYS {
+  for key in ryo2d::tooling::EMBED_KEYS {
     command.env_remove(key);
   }
   command
@@ -131,20 +133,10 @@ fn build_warnings(options: BuildOptions) -> Vec<&'static str> {
   }
 }
 
-/// The per-game save folder name: `[release] save_folder` as written, else
-/// `[project] name` turned into a single folder name.
-fn release_save_folder(config: &ryo2d::core::config::WorkspaceConfig) -> String {
-  config
-    .release
-    .save_folder
-    .clone()
-    .unwrap_or_else(|| ryo2d::core::config::save_location::folder_from_project_name(&config.name))
-}
-
-/// [`release_save_folder`], rejected before building when it can't name a folder.
+/// [`release_save_folder`](ryo2d::tooling::release_save_folder), rejected before building when it can't name a folder.
 fn checked_save_folder(config: &ryo2d::core::config::WorkspaceConfig) -> CliResult<String> {
-  let folder = release_save_folder(config);
-  if ryo2d::core::config::save_location::valid_save_folder(&folder) {
+  let folder = ryo2d::tooling::release_save_folder(config);
+  if ryo2d::tooling::valid_save_folder(&folder) {
     return Ok(folder);
   }
   let source = if config.release.save_folder.is_some() {
@@ -157,32 +149,6 @@ fn checked_save_folder(config: &ryo2d::core::config::WorkspaceConfig) -> CliResu
      Use a relative name like \"MyStudio/MyGame\" without \"..\", a drive, any of <>:\"|?*\\ \
      or a reserved Windows name (CON, PRN, AUX, NUL, COM1-9, LPT1-9)"
   )))
-}
-
-/// Ryo.toml values passed to the release build; the engine reads them with
-/// `option_env!` (`core::config::project`). Each setting the project sets
-/// ships as its table entry's embed key (a `[debug]` value only when the
-/// project sets it: a build with the tools then takes the engine's own
-/// defaults, as in dev, and one without ignores them), the title as the
-/// workspace resolves it, and also:
-/// - `RYO_EMBED_RESOLUTION` always (the engine's default when unset), as it
-///   marks a binary `ryo2d build` made;
-/// - `RYO_EMBED_PORTABLE`, `RYO_EMBED_SAVE_FOLDER` (the folder name, from
-///   [`release_save_folder`]) and `RYO_EMBED_ENV` (`[env]` as JSON).
-pub(crate) fn embedded_config_env(
-  workspace: &ryo2d::core::config::Workspace,
-) -> Vec<(&'static str, String)> {
-  use ryo2d::core::config::project::ProjectLayer;
-
-  let config = workspace.config();
-  let mut env = ProjectLayer::for_release(workspace).to_embedded_env();
-  env.push(("RYO_EMBED_PORTABLE", config.release.portable.to_string()));
-  env.push(("RYO_EMBED_SAVE_FOLDER", release_save_folder(config)));
-  env.push((
-    "RYO_EMBED_ENV",
-    serde_json::to_string(&config.env_json()).unwrap_or_else(|_| "{}".to_string()),
-  ));
-  env
 }
 
 /// Create a distributable release bundle
@@ -486,8 +452,8 @@ EXAMPLE:
 #[cfg(test)]
 mod tests {
   use super::*;
-  use ryo2d::core::config::project::{EMBED_KEYS, ProjectLayer, sample_table};
   use ryo2d::core::config::{Workspace, WorkspaceConfig};
+  use ryo2d::tooling::EMBED_KEYS;
 
   /// A workspace from Ryo.toml text, with no folder on disk
   fn workspace(toml: &str) -> Workspace {
@@ -501,68 +467,6 @@ mod tests {
       .map(|(_, value)| value.clone())
   }
 
-  fn lookup_in<'a>(env: &'a [(&'static str, String)]) -> impl Fn(&str) -> Option<&'a str> + 'a {
-    move |name| {
-      env
-        .iter()
-        .find(|(key, _)| *key == name)
-        .map(|(_, value)| value.as_str())
-    }
-  }
-
-  /// Resolve a Ryo.toml as the web does (the compiled-in file) and as a release
-  /// of it does (the values `ryo2d build` embeds)
-  fn web_and_release_resolve(text: &'static str) {
-    use ryo2d::core::config::ProjectFile;
-    use ryo2d::core::config::resolve::{BuilderOverrides, resolve_settings};
-
-    let env = embedded_config_env(&workspace(text));
-    let release = ProjectLayer::from_embedded(lookup_in(&env)).unwrap();
-    let web = ProjectFile::from_toml(text).read().unwrap().layer;
-    assert_eq!(
-      resolve_settings(&web, &BuilderOverrides::default()),
-      resolve_settings(&release, &BuilderOverrides::default()),
-    );
-  }
-
-  #[test]
-  fn a_web_style_resolve_matches_the_release_resolve_of_the_same_ryo_toml() {
-    web_and_release_resolve(include_str!("../../../../tests/fixtures/project/Ryo.toml"));
-    // Nothing set but the name: the unset values resolve alike too
-    web_and_release_resolve("[project]\nname = \"Bare\"\n");
-    web_and_release_resolve(
-      "[project]\nname = \"Titled\"\ntitle = \"The Title\"\n[debug]\nconsole = true\ndev_window_keys = true\n",
-    );
-  }
-
-  #[test]
-  fn save_folder_defaults_to_the_project_name() {
-    let env = embedded_config_env(&workspace("[project]\nname = \"Star Hopper\"\n"));
-    assert_eq!(
-      embedded_value(&env, "RYO_EMBED_SAVE_FOLDER").as_deref(),
-      Some("Star Hopper")
-    );
-    assert_eq!(
-      embedded_value(&env, "RYO_EMBED_PORTABLE").as_deref(),
-      Some("false")
-    );
-  }
-
-  #[test]
-  fn save_folder_override_and_portable_are_embedded() {
-    let env = embedded_config_env(&workspace(
-      "[release]\nsave_folder = \"Studio/Hopper\"\nportable = true\n",
-    ));
-    assert_eq!(
-      embedded_value(&env, "RYO_EMBED_SAVE_FOLDER").as_deref(),
-      Some("Studio/Hopper")
-    );
-    assert_eq!(
-      embedded_value(&env, "RYO_EMBED_PORTABLE").as_deref(),
-      Some("true")
-    );
-  }
-
   #[test]
   fn default_save_folder_is_sanitized_but_explicit_is_not() {
     let mut config = WorkspaceConfig {
@@ -573,11 +477,9 @@ mod tests {
       checked_save_folder(&config).ok().as_deref(),
       Some("Squash-Stretch Demo")
     );
-    let env = embedded_config_env(&workspace(
-      "[project]\nname = \"Squash/Stretch Demo\"\n\n[release]\nsave_folder = \"Studio/Game\"\n",
-    ));
+    config.release.save_folder = Some("Studio/Game".to_string());
     assert_eq!(
-      embedded_value(&env, "RYO_EMBED_SAVE_FOLDER").as_deref(),
+      checked_save_folder(&config).ok().as_deref(),
       Some("Studio/Game")
     );
     config.release.save_folder = None;
@@ -603,73 +505,6 @@ mod tests {
   }
 
   #[test]
-  fn embedded_env_covers_every_key_the_engine_reads() {
-    let every = toml::to_string(&sample_table()).unwrap();
-    let mut names: Vec<&str> = embedded_config_env(&workspace(&every))
-      .into_iter()
-      .map(|(name, _)| name)
-      .collect();
-    let mut expected: Vec<&str> = EMBED_KEYS.to_vec();
-    names.sort_unstable();
-    expected.sort_unstable();
-    assert_eq!(names, expected);
-  }
-
-  #[test]
-  fn a_project_that_sets_nothing_still_ships_the_release_marker_and_the_fixed_keys() {
-    let env = embedded_config_env(&workspace(""));
-    let value = |key| embedded_value(&env, key);
-    assert_eq!(value("RYO_EMBED_RESOLUTION").as_deref(), Some("1280x720"));
-    assert_eq!(value("RYO_EMBED_TITLE").as_deref(), Some("game"));
-    assert_eq!(value("RYO_EMBED_ENV").as_deref(), Some("{}"));
-    assert_eq!(value("RYO_EMBED_SAVE_FOLDER").as_deref(), Some("game"));
-  }
-
-  #[test]
-  fn embedded_display_title_and_volumes_round_trip() {
-    use ryo2d::core::config::DisplayMode;
-    let ws = workspace(
-      "[project]\ntitle = \"Hopper\"\n\n[system]\ndisplay_mode = \"borderless_fullscreen\"\n\
-       resolution = \"800x600\"\nmaster_volume = 0.3\nmusic_volume = 0.4\nsfx_volume = 0.5\n\
-       ui_volume = 0.6\nvoice_volume = 0.7\nambience_volume = 0.8\naudio_buffer_frames = 256\n\n\
-       [tilemap]\ntiled_project = \"maps/game.tiled-project\"\n",
-    );
-
-    let env = embedded_config_env(&ws);
-    let layer = ProjectLayer::from_embedded(lookup_in(&env)).unwrap();
-
-    assert_eq!(layer.display_mode, Some(DisplayMode::BorderlessFullscreen));
-    assert_eq!(layer.resolution, Some((800, 600)));
-    assert_eq!(layer.title.as_deref(), Some("Hopper"));
-    assert_eq!(layer.master_volume, Some(0.3));
-    assert_eq!(layer.music_volume, Some(0.4));
-    assert_eq!(layer.sfx_volume, Some(0.5));
-    assert_eq!(layer.ui_volume, Some(0.6));
-    assert_eq!(layer.voice_volume, Some(0.7));
-    assert_eq!(layer.ambience_volume, Some(0.8));
-    assert_eq!(layer.audio_buffer_frames, Some(256));
-    assert_eq!(
-      layer.tiled_project.as_deref(),
-      Some("maps/game.tiled-project")
-    );
-    // Unset, the device's own buffer and the default Tiled project ship as nothing
-    let env = embedded_config_env(&workspace("[project]\ntitle = \"Hopper\"\n"));
-    let workspace = Workspace::from_embedded(std::path::Path::new("."), lookup_in(&env));
-    assert_eq!(
-      ProjectLayer::from_embedded(lookup_in(&env)).map(|layer| layer.audio_buffer_frames),
-      Some(None)
-    );
-    assert_eq!(
-      workspace.map(|ws| ws.config().tiled_project.clone()),
-      Some(None)
-    );
-    assert_eq!(
-      ProjectLayer::from_embedded(lookup_in(&env)).map(|layer| layer.tiled_project),
-      Some(None)
-    );
-  }
-
-  #[test]
   fn invalid_save_folder_error_names_where_it_came_from() {
     let mut config = WorkspaceConfig::default();
     config.release.save_folder = Some("../escape".to_string());
@@ -686,45 +521,6 @@ mod tests {
     };
     assert!(message.contains("[project] name"), "{message}");
     assert!(message.contains("set [release] save_folder"), "{message}");
-  }
-
-  #[test]
-  fn embedded_debug_and_background_settings_reach_the_engine() {
-    let ws = workspace(
-      "[debug]\ndisable_debug_keys = true\nenable_profiler = true\ndev_window_keys = true\n\
-       logger_window = true\n\n[system]\ntarget_background_fps = 15\nbackground_rendering = false\n",
-    );
-
-    let env = embedded_config_env(&ws);
-    let layer = ProjectLayer::from_embedded(lookup_in(&env)).unwrap();
-
-    assert_eq!(layer.disable_debug_keys, Some(true));
-    assert_eq!(layer.enable_profiler, Some(true));
-    assert_eq!(layer.dev_window_keys, Some(true));
-    assert_eq!(layer.logger_window, Some(true));
-    assert_eq!(layer.background_fps, Some(15));
-    assert_eq!(layer.background_rendering, Some(false));
-  }
-
-  #[test]
-  fn a_release_build_embeds_only_what_the_project_set() {
-    let env = embedded_config_env(&workspace("[project]\nname = \"g\"\n"));
-    for key in [
-      "RYO_EMBED_CONSOLE",
-      "RYO_EMBED_DEV_WINDOW_KEYS",
-      "RYO_EMBED_LOGGER_WINDOW",
-      "RYO_EMBED_ENABLE_PROFILER",
-      "RYO_EMBED_SHOW_COLLIDERS",
-    ] {
-      assert_eq!(embedded_value(&env, key), None, "{key} was not set");
-    }
-    let env = embedded_config_env(&workspace(
-      "[project]\nname = \"g\"\n\n[debug]\nconsole = false\nlogger_window = true\n",
-    ));
-    let value = |key| embedded_value(&env, key);
-    assert_eq!(value("RYO_EMBED_CONSOLE").as_deref(), Some("false"));
-    assert_eq!(value("RYO_EMBED_LOGGER_WINDOW").as_deref(), Some("true"));
-    assert_eq!(value("RYO_EMBED_DEV_WINDOW_KEYS"), None);
   }
 
   #[test]
@@ -765,26 +561,6 @@ mod tests {
       build_warnings(tools),
       ["this build includes developer tools: do not ship it"]
     );
-  }
-
-  #[test]
-  fn env_section_is_embedded_and_read_back() {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(
-      dir.path().join("Ryo.toml"),
-      "[env]\ndifficulty = \"hard\"\nlives = 3\nhard_mode = true\nspeed = 1.5\n",
-    )
-    .unwrap();
-    let workspace = Workspace::from_path(dir.path()).unwrap();
-    let env = embedded_config_env(&workspace);
-
-    let shipped = Workspace::from_embedded(dir.path(), lookup_in(&env)).unwrap();
-
-    let config = shipped.config();
-    assert_eq!(config.env_str("difficulty"), Some("hard"));
-    assert_eq!(config.env_int("lives"), Some(3));
-    assert_eq!(config.env_bool("hard_mode"), Some(true));
-    assert_eq!(config.env_float("speed"), Some(1.5));
   }
 
   #[test]
@@ -834,11 +610,5 @@ mod tests {
       let expected = embedded_value(&embedded, key).map(OsString::from);
       assert_eq!(envs.get(OsStr::new(key)), Some(&expected), "{key}");
     }
-  }
-
-  #[test]
-  fn the_build_script_reads_the_project_table() {
-    let script = include_str!("../../../../src/build.rs");
-    assert!(script.contains("include!(\"core/config/project_table.rs\")"));
   }
 }

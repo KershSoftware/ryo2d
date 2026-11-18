@@ -48,6 +48,20 @@
 //! `ctx.add_systems`.
 
 pub mod core;
+
+/// What the `ryo2d` command and other tools need from the engine's insides.
+/// For tools, not for games, and with no promise of stability.
+#[doc(hidden)]
+pub mod tooling {
+  pub use crate::core::config::project::{EMBED_KEYS, embedded_config_env};
+  pub use crate::core::config::save_location::{release_save_folder, valid_save_folder};
+  pub use crate::core::logging::set_stderr;
+  #[cfg(not(target_arch = "wasm32"))]
+  pub use crate::core::logging::stderr_on;
+  #[cfg(not(target_arch = "wasm32"))]
+  pub use crate::core::ui::file::check::{check_files, ui_files_under};
+}
+
 pub use core::ecs;
 pub use core::logging;
 #[cfg(not(target_arch = "wasm32"))]

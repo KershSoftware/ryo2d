@@ -536,8 +536,8 @@ EXAMPLES:
 mod tests {
   use super::generate_ryo_toml;
 
-  /// A new game starts at the mix as designed: master at 1, as the engine
-  /// does when Ryo.toml sets none
+  /// A new game starts at the mix as designed: master at 1, which is the
+  /// engine's own default (the engine's tests hold that)
   #[test]
   fn a_new_game_s_master_volume_is_the_mix_as_designed() {
     let toml: toml::Value = match toml::from_str(&generate_ryo_toml("game")) {
@@ -549,22 +549,17 @@ mod tests {
       .and_then(|system| system.get("master_volume"))
       .and_then(toml::Value::as_float);
     assert_eq!(master, Some(1.0));
-    assert_eq!(
-      ryo2d::core::config::resolve::DEFAULT_MASTER_VOLUME,
-      1.0,
-      "the engine's default"
-    );
   }
 
   #[test]
   fn a_new_game_s_ryo_toml_reads_without_a_warning() {
-    let mut warnings = Vec::new();
-    let read = ryo2d::core::config::Workspace::read_toml(
+    let log = ryo2d::logging::capture_log();
+    let read = ryo2d::core::config::Workspace::from_toml_str(
       &generate_ryo_toml("game"),
       std::path::PathBuf::from("game"),
-      &mut |warning| warnings.push(warning),
     );
     assert!(read.is_ok());
+    let warnings = log.warnings();
     assert!(warnings.is_empty(), "{warnings:?}");
   }
 }

@@ -184,7 +184,10 @@ impl Workspace {
   ///
   /// Ryo.toml files on disk are ignored, so `ryo2d run` sees exactly what a
   /// shipped game sees.
-  pub fn from_embedded<'a>(root: &Path, lookup: impl Fn(&str) -> Option<&'a str>) -> Option<Self> {
+  pub(crate) fn from_embedded<'a>(
+    root: &Path,
+    lookup: impl Fn(&str) -> Option<&'a str>,
+  ) -> Option<Self> {
     let project = ProjectLayer::from_embedded(&lookup)?;
     let mut config = WorkspaceConfig::default();
     set(&mut config.title, project.title.clone());
@@ -223,7 +226,7 @@ impl Workspace {
   }
 
   /// [`from_toml_str`](Self::from_toml_str), telling `warn` of each problem.
-  pub fn read_toml(
+  pub(crate) fn read_toml(
     text: &str,
     root: PathBuf,
     warn: &mut dyn FnMut(String),
@@ -557,7 +560,7 @@ impl WorkspaceConfig {
 
   /// `[env]` as JSON values, the form `system.json` once seeded it in and
   /// `ryo2d build` embeds it in.
-  pub fn env_json(&self) -> HashMap<String, serde_json::Value> {
+  pub(crate) fn env_json(&self) -> HashMap<String, serde_json::Value> {
     self
       .env
       .iter()

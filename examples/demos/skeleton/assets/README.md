@@ -394,7 +394,7 @@ A deform's keys must hold an x and a y for each of the mesh's vertices: change t
 Idle, walk and run key the cape's two bones with a flap about where they hang, the lower bone a tenth of a second after the upper, so a ripple runs down the cloth with each step (and a stir as the hero breathes). A spring on each bone (in `hero.skeleton.ron`'s `constraints`) adds the rest as the hero moves: the cloth trails a walk, streams out behind a run, lifts and swings through a jump's landing and swings on round a turn. With the Meshes page's Springs off, the keyed flap shows alone. The numbers were found by trying them in the contact sheet and on the Meshes page, as the hero's file explains. To see a change, draw the sheet (the cape is a skin, so name it):
 
 ```sh
-cargo run -p ryo2d --bin ryo2d -- sheet examples/demos/skeleton/assets/hero.skeleton.ron \
+cargo run -p ryo2d-cli -- sheet examples/demos/skeleton/assets/hero.skeleton.ron \
   --animations idle,walk,run,jump,slash --once jump,slash --skins cape
 ```
 

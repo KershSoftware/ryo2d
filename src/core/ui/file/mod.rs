@@ -7,8 +7,7 @@
 
 pub(crate) mod build;
 #[cfg(not(target_arch = "wasm32"))]
-/// Checking UI files from disk, for `ryo2d check-ui`.
-pub mod check;
+pub(crate) mod check;
 pub(crate) mod document;
 pub(crate) mod error;
 pub(crate) mod reader;

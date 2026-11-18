@@ -144,9 +144,19 @@ pub(crate) fn enter_bundle_dir() {
   }
 }
 
+/// The per-game save folder name: `[release] save_folder` as written, else
+/// `[project] name` turned into a single folder name.
+pub fn release_save_folder(config: &super::workspace::WorkspaceConfig) -> String {
+  config
+    .release
+    .save_folder
+    .clone()
+    .unwrap_or_else(|| folder_from_project_name(&config.name))
+}
+
 /// Make a project name one folder: path separators, control characters and
 /// `<>:"|?*` become `-`, then surrounding whitespace and trailing dots go.
-pub fn folder_from_project_name(name: &str) -> String {
+pub(crate) fn folder_from_project_name(name: &str) -> String {
   let replaced: String = name
     .chars()
     .map(|c| {
