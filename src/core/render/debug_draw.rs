@@ -231,11 +231,14 @@ impl DebugDraw {
         continue;
       }
       let half_width = shape.width / 2.0 / scale;
-      // An odd width covers whole pixels when centred on a pixel's middle
+      // An odd width covers whole pixels when centred on a pixel's middle:
+      // the middle of the pixel a point is in, and on a pixel's edge the
+      // pixel above it or to its left, as the rasteriser's top-left rule
+      // places sprites and lines
       let odd = (shape.width.round() as i64) % 2 == 1;
       let centre = |world: Vec2| {
         if odd {
-          view.screen_to_world(view.world_to_screen(world).floor() + 0.5)
+          view.screen_to_world(view.world_to_screen(world).ceil() - 0.5)
         } else {
           world
         }

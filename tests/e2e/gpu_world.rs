@@ -382,8 +382,9 @@ fn debug_colliders_draw() {
     .count();
   // The outline of a 30x20 box is about 96 pixels
   assert!(outline > 60, "collider outline pixels: {outline}");
-  // Centred on (50, 40): the top edge runs along y = 30
-  assert_eq!(frame.get_pixel(60, 30).0, [0x60, 0x90, 0xff, 0xff]);
+  // Centred on (50, 40): the top edge runs along y = 30, a whole
+  // coordinate, so it draws the row above it, as a line there does
+  assert_eq!(frame.get_pixel(60, 29).0, [0x60, 0x90, 0xff, 0xff]);
 }
 
 /// Draws a green unlit line and a UI rect, and pushes a fade through magenta.
@@ -1530,6 +1531,53 @@ fn a_debug_line_is_one_pixel_wide_when_zoomed_out() {
     .filter(|&y| frame.get_pixel(32, y).0[1] > 150)
     .count();
   assert_eq!(rows, 1);
+}
+
+/// On a pixel-art target, a debug line and a `Line2D`, each a pixel wide,
+/// along the whole coordinate y = 600 (the camera centred on it)
+struct WholeCoordinateLines;
+
+impl Scene for WholeCoordinateLines {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    ctx.look().tonemap = Tonemap::Clamp;
+    ctx.camera().set_position(32.0, 600.0);
+    ctx.world.spawn((
+      Transform::from_xy(0.0, 0.0),
+      Line2D::horizontal(600.0, 36.0, 60.0, Color::WHITE, 1.0),
+    ));
+  }
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    ctx.debug_draw().line(
+      Vec2::new(4.0, 600.0),
+      Vec2::new(28.0, 600.0),
+      Color::WHITE,
+    );
+    SceneAction::Continue
+  }
+}
+
+#[test]
+fn a_debug_line_on_pixel_art_breaks_ties_as_a_line_does() {
+  // A point on a whole coordinate takes the pixel above it (or to its
+  // left), as the rasteriser's top-left rule and sprites do: the debug line
+  // and the `Line2D` along y = 600 both draw world row 599, the image's row
+  // 31 with the camera's centre on row 32's top edge
+  let Some(mut engine) = start(
+    EngineBuilder::new()
+      .pixel_art(64, 64)
+      .start_scene(WholeCoordinateLines),
+  ) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  let frame = engine.frame().unwrap();
+  let rows = |x: u32| -> Vec<u32> {
+    (0..64)
+      .filter(|&y| frame.get_pixel(x, y).0[0] > 128)
+      .collect()
+  };
+  assert_eq!(rows(48), [31], "the line");
+  assert_eq!(rows(16), [31], "the debug line");
 }
 
 #[test]
