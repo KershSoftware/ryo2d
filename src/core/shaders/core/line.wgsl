@@ -30,6 +30,10 @@
 // corner pass worked them out this frame (`line_corners.wgsl`)
 @group(2) @binding(2) var<storage, read> line_corners: array<LineCorner>;
 @group(2) @binding(3) var<storage, read> line_limits: array<vec2<f32>>;
+// The frame's point count, and whether the corner pass ran (1) or each
+// vertex works its corners out in place (0): a small stream skips the pass
+// (`corners.rs`)
+@group(2) @binding(4) var<uniform> line_frame: vec4<u32>;
 
 // What a vertex hands its fragments in `flags` besides its own (round,
 // second edge, along): its line's style in bits 4 and 5, and `LINE_HARD`
@@ -91,6 +95,10 @@ fn world_vertex(code: u32) -> WorldVertex {
             }
         }
     }
+    let look = LineLook(info.join, info.cap, info.miter_limit);
+    if line_frame.y == 0u {
+        return WorldVertex(line_piece_vertex(w, look, lp_corner_here(w, look), kind, slot), line_id);
+    }
     // The corner at the vertex's point, and the limits its neighbours set
     // (none past an open line's ends)
     var own = point;
@@ -109,7 +117,6 @@ fn world_vertex(code: u32) -> WorldVertex {
         let next = select(own + 1, line_wrap(own + 1, count), closed);
         corner.next_before = line_limits[info.first + u32(next)].x;
     }
-    let look = LineLook(info.join, info.cap, info.miter_limit);
     return WorldVertex(line_piece_vertex(w, look, corner, kind, slot), line_id);
 }
 

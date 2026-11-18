@@ -927,6 +927,18 @@ impl HeadlessEngine {
     }
   }
 
+  /// Whether the last frame ran the line corner pass: a stream of few
+  /// points works its corners out in its vertices instead
+  /// (`benches/lines.rs`, which then takes no corner stamps)
+  #[doc(hidden)]
+  pub fn line_corners_built(&self) -> bool {
+    self
+      .engine
+      .batch
+      .as_ref()
+      .is_some_and(|batch| batch.builds_corners())
+  }
+
   /// `calls` runs of the skeletons' frame pass (`pose_new_skeletons`) outside
   /// a frame, on a system initialised once: their time, altogether. A call
   /// looks through the skeletons only if one was added since the last (as a

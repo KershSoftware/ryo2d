@@ -35,7 +35,9 @@
 //! above nothing (a scene that drew no line would measure nothing and look
 //! fast). A frame missing a stamp it needs (Metal returns zero now and
 //! then, on main as on this code), the world passes' or the corner pass's,
-//! is left out of the GPU's median and counted, never taken as no time.
+//! is left out of the GPU's median and counted, never taken as no time. A
+//! frame whose lines are too few for the corner pass to run
+//! (`HeadlessEngine::line_corners_built`) times the world passes alone.
 //!
 //! Why two intervals, not one from the corner pass's start: Metal's stamps
 //! on passes apart from each other do not keep their order. An empty pass's
@@ -211,7 +213,12 @@ impl Stamps {
   /// The last frame's GPU time over the world passes and the corner pass,
   /// and the corner pass's apart, once its work is done: `None` when a
   /// stamp either needs is missing
-  fn read(&self, device: &wgpu::Device, period: f32) -> Option<(Duration, Duration)> {
+  fn read(
+    &self,
+    device: &wgpu::Device,
+    period: f32,
+    corners_ran: bool,
+  ) -> Option<(Duration, Duration)> {
     let slice = self.read.slice(..);
     slice.map_async(wgpu::MapMode::Read, |_| {});
     device.poll(wgpu::PollType::wait_indefinitely()).ok()?;
@@ -237,7 +244,7 @@ impl Stamps {
       return None;
     }
     let world = time(world_start, world_end);
-    if !CORNERS_STAMPED {
+    if !CORNERS_STAMPED || !corners_ran {
       return Some((world, Duration::ZERO));
     }
     if !whole(corner_start, corner_end) {
@@ -427,9 +434,11 @@ fn measure(shapes: Shapes) -> Option<Figures> {
     device
       .poll(wgpu::PollType::wait_indefinitely())
       .expect("the GPU finishes its work");
+    // A stream of few points runs no corner pass, and takes no stamps
+    let corners_ran = engine.line_corners_built();
     let gpu_time = stamps
       .as_ref()
-      .and_then(|stamps| stamps.read(&device, period));
+      .and_then(|stamps| stamps.read(&device, period, corners_ran));
     if frame < WARMUP {
       continue;
     }

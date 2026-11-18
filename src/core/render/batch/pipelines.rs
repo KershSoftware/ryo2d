@@ -276,9 +276,20 @@ pub(crate) fn line_layout_for(
     },
     count: None,
   };
+  // The frame's point count and whether the corner pass ran
+  let frame = wgpu::BindGroupLayoutEntry {
+    binding: 4,
+    visibility,
+    ty: wgpu::BindingType::Buffer {
+      ty: wgpu::BufferBindingType::Uniform,
+      has_dynamic_offset: false,
+      min_binding_size: None,
+    },
+    count: None,
+  };
   device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
     label: Some("Batch Line Stream Layout"),
-    entries: &[entry(0), entry(1), entry(2), entry(3)],
+    entries: &[entry(0), entry(1), entry(2), entry(3), frame],
   })
 }
 

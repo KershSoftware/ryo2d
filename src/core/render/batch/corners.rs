@@ -18,8 +18,27 @@
 //! - **One thread a point**, 64 a workgroup; past 65,535 workgroups across
 //!   they go on in further rows of the grid (`grid`;
 //!   `the_corner_pass_goes_on_in_rows_past_its_width`).
-//! - **Skipped with no lines**, and it binds the stream's own buffers, so it
-//!   needs no copy (`Batch2D::encode_corners`).
+//! - **Skipped with no lines, and for a small stream** (under
+//!   `CORNER_PASS_FROM` points: `builds_corners`,
+//!   `a_small_stream_skips_the_corner_pass`), whose vertices work their
+//!   corners out in place with the same function the UI uses
+//!   (`lp_corner_here`), told so by the stream's uniform (`line_frame.y`, 0),
+//!   and build the same vertices bit for bit
+//!   (`vertices_working_their_corners_out_in_place_equal_the_corner_pass_s`;
+//!   the count draw draws both ways). It binds the stream's own buffers, so
+//!   it needs no copy (`Batch2D::encode_corners`).
+
+/// The fewest points the corner pass runs for: below it each vertex works
+/// its corners out in place (`lp_corner_here`, as the UI does), which costs
+/// a small stream less than a dispatch and its wait (measured: 6,000 points
+/// draw 3% to 11% faster in place, 60,000 and 600,000 up to 8% slower; the
+/// threshold lies between, not measured closer)
+pub(crate) const CORNER_PASS_FROM: usize = 16_384;
+
+/// Whether the corner pass runs for a stream of `points` points
+pub(crate) fn builds_corners(points: usize) -> bool {
+  points >= CORNER_PASS_FROM.max(1)
+}
 
 /// The bytes of a point's corner record (`LineCorner`)
 pub(crate) const CORNER_BYTES: usize = 64;
@@ -158,6 +177,20 @@ impl CornerPass {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn a_small_stream_skips_the_corner_pass() {
+    // Below the threshold, and with no lines, the vertices work their
+    // corners out in place (`Batch2D::encode_corners` dispatches nothing;
+    // the vertices' path is `vertices_working_their_corners_out_in_place_
+    // equal_the_corner_pass_s`)
+    assert!(!builds_corners(0));
+    assert!(!builds_corners(1));
+    assert!(!builds_corners(6_000));
+    assert!(builds_corners(60_000));
+    assert!(builds_corners(CORNER_PASS_FROM));
+    assert!(!builds_corners(CORNER_PASS_FROM - 1));
+  }
 
   #[test]
   fn the_corner_pass_goes_on_in_rows_past_its_width() {

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
 use super::chunks::{ChunkBuffers, ChunkStore, SLOT_STRIDE};
-use super::corners::{CORNER_BYTES, CornerPass, LIMIT_BYTES, MAX_ACROSS};
+use super::corners::{CORNER_BYTES, CornerPass, LIMIT_BYTES, MAX_ACROSS, builds_corners};
 use super::lines::{LineInfo, LinePoint, LineStream};
 use super::mesh::{MeshStream, MeshVertex};
 use super::pipelines::{self, PipelineKey, Pipelines};
@@ -238,6 +238,13 @@ impl Batch2D {
     .capped(cap.indices);
     let line_corners = storage("Batch Line Corners", CORNER_BYTES).capped(cap.points);
     let line_limits = storage("Batch Line Limits", LIMIT_BYTES).capped(cap.points);
+    let corner_pass = CornerPass::new(device);
+    let line_count = buffer(
+      device,
+      "Batch Line Count",
+      16,
+      wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    );
     let line_group = line_group(
       device,
       &line_layout,
@@ -246,14 +253,8 @@ impl Batch2D {
         &line_points.buffer,
         &line_corners.buffer,
         &line_limits.buffer,
+        &line_count,
       ],
-    );
-    let corner_pass = CornerPass::new(device);
-    let line_count = buffer(
-      device,
-      "Batch Line Count",
-      16,
-      wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     );
     let corner_group = corner_pass.group(
       device,
@@ -848,16 +849,22 @@ impl Batch2D {
         &self.line_corners.buffer,
         &self.line_limits.buffer,
       ];
-      self.line_group = line_group(device, &self.line_layout, buffers);
       let [table, points, corners, limits] = buffers;
+      self.line_group = line_group(
+        device,
+        &self.line_layout,
+        [table, points, corners, limits, &self.line_count],
+      );
       self.corner_group = self
         .corner_pass
         .group(device, [table, points, corners, limits, &self.line_count]);
     }
-    // The corner pass's point count, written when it changes
+    // The point count, and whether the corner pass runs for it, written
+    // when it changes
     let count = lines.points.len() as u32;
     if count != self.line_count_held {
-      queue.write_buffer(&self.line_count, 0, bytemuck::cast_slice(&[count, 0, 0, 0]));
+      let built = u32::from(builds_corners(lines.points.len()));
+      queue.write_buffer(&self.line_count, 0, bytemuck::cast_slice(&[count, built, 0, 0]));
       self.line_count_held = count;
     }
     self
@@ -875,16 +882,24 @@ impl Batch2D {
 
   /// Work out every corner of the frame's lines (`corners.rs`), once a
   /// frame after [`prepare`](Self::prepare) uploaded them and before the
-  /// first camera pass draws them; nothing with no lines.
+  /// first camera pass draws them; nothing with no lines, or with too few
+  /// for the pass to pay (`builds_corners`: their vertices work their
+  /// corners out in place).
   pub(crate) fn encode_corners(&self, encoder: &mut wgpu::CommandEncoder) {
-    let points = self.lines.points.len() as u32;
-    if points == 0 {
+    if !builds_corners(self.lines.points.len()) {
       return;
     }
+    let points = self.lines.points.len() as u32;
     let stamps = self.corner_stamps.as_ref().map(|(set, at)| (set, *at));
     self
       .corner_pass
       .encode(encoder, &self.corner_group, points, MAX_ACROSS, stamps);
+  }
+
+  /// Whether the corner pass runs for this frame's lines (the line bench)
+  #[cfg(not(target_arch = "wasm32"))]
+  pub(crate) fn builds_corners(&self) -> bool {
+    builds_corners(self.lines.points.len())
   }
 
   /// Timestamp the corner pass's start and end into `set` from `at` (the
@@ -1246,13 +1261,14 @@ fn instance_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
 }
 
 /// The line stream's bind group over its line table, points, corner
-/// records and limits.
+/// records and limits, and the uniform holding its point count and whether
+/// the corner pass ran.
 pub(crate) fn line_group(
   device: &wgpu::Device,
   layout: &wgpu::BindGroupLayout,
-  buffers: [&wgpu::Buffer; 4],
+  buffers: [&wgpu::Buffer; 5],
 ) -> wgpu::BindGroup {
-  let [table, points, corners, limits] = buffers;
+  let [table, points, corners, limits, frame] = buffers;
   crate::core::graphics::bind_groups::create(
     device,
     &wgpu::BindGroupDescriptor {
@@ -1274,6 +1290,10 @@ pub(crate) fn line_group(
         wgpu::BindGroupEntry {
           binding: 3,
           resource: limits.as_entire_binding(),
+        },
+        wgpu::BindGroupEntry {
+          binding: 4,
+          resource: frame.as_entire_binding(),
         },
       ],
     },

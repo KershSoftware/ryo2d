@@ -234,6 +234,9 @@ pub(super) struct LineGpuTest {
   corners: CornerPass,
   /// The corner pass's workgroups a row
   across: u32,
+  /// Whether the vertices work their corners out in place, the corner pass
+  /// skipped, as a small stream's do
+  in_place: bool,
 }
 
 /// A stream uploaded for drawing
@@ -255,6 +258,16 @@ impl LineGpuTest {
 
   /// One whose corner pass goes on in rows past `across` workgroups
   pub(super) fn across(device: &wgpu::Device, across: u32) -> Self {
+    Self::with(device, across, false)
+  }
+
+  /// One whose vertices work their corners out in place, with no corner
+  /// pass
+  pub(super) fn in_place(device: &wgpu::Device) -> Self {
+    Self::with(device, MAX_ACROSS, true)
+  }
+
+  fn with(device: &wgpu::Device, across: u32, in_place: bool) -> Self {
     Self {
       layout: line_layout_for(
         device,
@@ -262,6 +275,7 @@ impl LineGpuTest {
       ),
       corners: CornerPass::new(device),
       across,
+      in_place,
     }
   }
 
@@ -303,7 +317,7 @@ impl LineGpuTest {
     let count_buffer = buffer(
       device,
       "Test Line Count",
-      bytemuck::cast_slice(&[count, 0, 0, 0]),
+      bytemuck::cast_slice(&[count, u32::from(!self.in_place), 0, 0]),
       wgpu::BufferUsages::UNIFORM,
     );
     let indices = buffer(
@@ -313,7 +327,11 @@ impl LineGpuTest {
       wgpu::BufferUsages::INDEX | storage,
     );
     UploadedLines {
-      group: line_group(device, &self.layout, [&table, &points, &corners, &limits]),
+      group: line_group(
+        device,
+        &self.layout,
+        [&table, &points, &corners, &limits, &count_buffer],
+      ),
       corner_group: self
         .corners
         .group(device, [&table, &points, &corners, &limits, &count_buffer]),
@@ -323,8 +341,12 @@ impl LineGpuTest {
     }
   }
 
-  /// What the frame encodes before its passes: the corner pass
+  /// What the frame encodes before its passes: the corner pass, unless the
+  /// vertices work their corners out in place
   pub(super) fn encode(&self, encoder: &mut wgpu::CommandEncoder, lines: &UploadedLines) {
+    if self.in_place {
+      return;
+    }
     self.corners.encode(
       encoder,
       &lines.corner_group,
@@ -404,7 +426,20 @@ fn dump_across(
   stream: &LineStream,
   across: u32,
 ) -> Vec<Dumped> {
-  let gpu = LineGpuTest::across(device, across);
+  dump_by(device, queue, stream, &LineGpuTest::across(device, across))
+}
+
+/// [`dump`], its vertices working their corners out in place
+fn dump_in_place(device: &wgpu::Device, queue: &wgpu::Queue, stream: &LineStream) -> Vec<Dumped> {
+  dump_by(device, queue, stream, &LineGpuTest::in_place(device))
+}
+
+fn dump_by(
+  device: &wgpu::Device,
+  queue: &wgpu::Queue,
+  stream: &LineStream,
+  gpu: &LineGpuTest,
+) -> Vec<Dumped> {
   let lines = gpu.upload(device, queue, stream);
   let count = lines.vertices as usize;
   let storage = |binding, read_only| wgpu::BindGroupLayoutEntry {
@@ -671,6 +706,57 @@ fn the_gpu_builds_the_reference_s_vertices() {
   );
 }
 
+#[test]
+fn vertices_working_their_corners_out_in_place_equal_the_corner_pass_s() {
+  // A small stream skips the corner pass and each vertex works its corners
+  // out in place (`builds_corners`): every vertex it builds is the one the
+  // corner pass's records build, bit for bit, so a stream draws the same
+  // pixels on either side of the threshold, and both equal the reference
+  let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+    return;
+  };
+  let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+  let (mut stream, mut reference) = (LineStream::default(), Triangles::default());
+  let mut names = Vec::new();
+  for (index, line) in lines().iter().enumerate() {
+    for join in JOINS {
+      for cap in CAPS {
+        let (points, style) = (line.poly(), line.style(join, cap));
+        let gpu = stream.polyline(&points, &style);
+        reference.polyline(&points, &style);
+        names.push((gpu, format!("line {index} {join:?} {cap:?}")));
+      }
+    }
+  }
+  let built = dump(&device, &queue, &stream);
+  let worked = dump_in_place(&device, &queue, &stream);
+  let error = pollster::block_on(scope.pop());
+  assert!(error.is_none(), "{error:?}");
+  assert_eq!(built.len(), worked.len());
+  let apart: Vec<String> = built
+    .iter()
+    .zip(&worked)
+    .enumerate()
+    .filter(|(_, (a, b))| bytemuck::bytes_of(*a) != bytemuck::bytes_of(*b))
+    .map(|(i, (a, b))| format!("vertex {i}: {a:?} from the records, {b:?} in place"))
+    .collect();
+  assert!(
+    apart.is_empty(),
+    "{} of {} vertices differ:\n{}",
+    apart.len(),
+    built.len(),
+    apart[..apart.len().min(10)].join("\n")
+  );
+  let (failures, worst) = differences(&reference, &paired(&reference, &worked), &names);
+  eprintln!("{} vertices; worst {worst:?}", worked.len());
+  assert!(
+    failures.is_empty(),
+    "{} fields differ:\n{}",
+    failures.len(),
+    failures[..failures.len().min(30)].join("\n")
+  );
+}
+
 /// The count pipeline: the line pipeline's vertex stage, each fragment
 /// adding one to its pixel
 struct Counter {
@@ -681,8 +767,16 @@ struct Counter {
 
 impl Counter {
   fn new(device: &wgpu::Device) -> Self {
+    Self::drawing(device, LineGpuTest::new(device))
+  }
+
+  /// One whose vertices work their corners out in place
+  fn in_place(device: &wgpu::Device) -> Self {
+    Self::drawing(device, LineGpuTest::in_place(device))
+  }
+
+  fn drawing(device: &wgpu::Device, lines: LineGpuTest) -> Self {
     let camera_layout = camera_layout(device);
-    let lines = LineGpuTest::new(device);
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
       label: Some("Line Count Layout"),
       bind_group_layouts: &[Some(&camera_layout), None, Some(lines.layout())],
@@ -814,12 +908,14 @@ fn a_translucent_line_drawn_on_the_gpu_counts_every_pixel_once() {
   // either way (the fill rule decides). The mesh covers a pixel twice only
   // where a split corner's inner side overlaps, as it does unpushed: within
   // its segments' pushed quads, which is the one place a pixel counts two
-  // (measured and printed)
+  // (measured and printed). Vertices that work their corners out in place
+  // (a small stream's) draw the same counts
   let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
     return;
   };
   let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
   let counter = Counter::new(&device);
+  let in_place = Counter::in_place(&device);
   let offsets = [
     Vec2::ZERO,
     Vec2::new(0.5, 0.5),
@@ -870,6 +966,11 @@ fn a_translucent_line_drawn_on_the_gpu_counts_every_pixel_once() {
             let view = CameraView::compute(centre, 0.0, &camera, Vec2::ZERO, full);
             assert_eq!(pixels_per_unit(&view, size), ppu);
             let counts = counter.count(&device, &queue, &stream, &view, size);
+            if in_place.count(&device, &queue, &stream, &view, size) != counts {
+              failures.push(format!(
+                "line {index} {join:?} {cap:?} ppu {ppu} offset {offset}: drawn otherwise with corners worked out in place"
+              ));
+            }
             // The reference pushed a pixel, in the image's pixels
             let pixel = 1.0 / ppu;
             let to_image = |world: Vec2| (world - centre) * ppu + full / 2.0;
