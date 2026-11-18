@@ -39,6 +39,7 @@
 mod args;
 mod commands;
 mod error;
+mod prompt;
 
 pub use commands::run_cli;
 pub use error::{CliError, CliResult};

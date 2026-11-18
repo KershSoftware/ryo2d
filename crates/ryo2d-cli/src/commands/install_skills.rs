@@ -1,10 +1,11 @@
 //! Install Skills command - installs Agent Skills into project
 
 use std::fs;
-use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use super::{CliError, CliResult, Output};
+use crate::args::{InstallSkillsArgs, SkillsChoice};
+use crate::prompt::Prompt;
 
 /// AI assistant platform for skills installation
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -38,15 +39,33 @@ impl SkillsPlatform {
 const EMBEDDED_SKILLS: &[(&str, &str)] = include!(concat!(env!("OUT_DIR"), "/embedded_skills.rs"));
 
 /// Execute the install-skills command
-pub fn execute() -> CliResult<()> {
+pub fn execute(args: &InstallSkillsArgs) -> CliResult<()> {
+  execute_with(args, &mut Prompt::from_stdin())
+}
+
+fn execute_with(args: &InstallSkillsArgs, prompt: &mut Prompt) -> CliResult<()> {
   // Discover workspace from current directory
   let workspace = super::discover_workspace()?;
-  let project_dir = workspace.root();
 
-  // Prompt for platform selection
-  let platform = prompt_platform_selection()?;
+  let choice = match args.skills {
+    Some(choice) => choice,
+    None => ask_skills(prompt, false).ok_or_else(|| {
+      CliError::Other(
+        "no answer to which AI assistant, so nothing was installed: pass --skills claude, copilot or both"
+          .to_string(),
+      )
+    })?,
+  };
 
-  install_skills_to_dir(project_dir, platform, false)
+  install_choice(workspace.root(), choice, false)
+}
+
+/// Installs the skills for every platform `choice` names
+pub fn install_choice(project_dir: &Path, choice: SkillsChoice, quiet: bool) -> CliResult<()> {
+  for platform in choice.platforms() {
+    install_skills_to_dir(project_dir, *platform, quiet)?;
+  }
+  Ok(())
 }
 
 /// Install all skills to a project directory
@@ -95,55 +114,26 @@ pub fn install_skills_to_dir(
   Ok(())
 }
 
-/// Prompt user if they want to install skills and which platform
-/// Returns None if user declines, Some(platform) if they want to install
-pub fn prompt_install_skills() -> CliResult<Option<SkillsPlatform>> {
-  print!("Install Agent Skills for AI assistants? (Y/n): ");
-  io::stdout()
-    .flush()
-    .map_err(|e| CliError::io("could not write to the terminal", e))?;
-
-  let mut input = String::new();
-  io::stdin()
-    .read_line(&mut input)
-    .map_err(|e| CliError::io("could not read from the terminal", e))?;
-
-  let response = input.trim().to_lowercase();
-  if !response.is_empty() && !response.starts_with('y') {
-    return Ok(None);
+/// Asks which AI assistant to install skills for (`with_none` adds the
+/// choice of none); an empty answer is Claude. `None` with no terminal, at
+/// the end of input or for an answer that is none of the options
+pub fn ask_skills(prompt: &mut Prompt, with_none: bool) -> Option<SkillsChoice> {
+  let mut options = vec![
+    "Claude    (.claude/skills)",
+    "Copilot   (.github/skills)",
+    "Both",
+  ];
+  let mut choices = vec![
+    SkillsChoice::Claude,
+    SkillsChoice::Copilot,
+    SkillsChoice::Both,
+  ];
+  if with_none {
+    options.push("None");
+    choices.push(SkillsChoice::None);
   }
-
-  // User wants skills, ask which platform
-  let platform = prompt_platform_selection()?;
-  Ok(Some(platform))
-}
-
-/// Prompt user to select AI assistant platform
-fn prompt_platform_selection() -> CliResult<SkillsPlatform> {
-  println!();
-  println!("Select your AI assistant:");
-  println!("  1) Claude    (.claude/skills)");
-  println!("  2) Copilot   (.github/skills)");
-  println!();
-  print!("Choice (1/2): ");
-  io::stdout()
-    .flush()
-    .map_err(|e| CliError::io("could not write to the terminal", e))?;
-
-  let mut input = String::new();
-  io::stdin()
-    .read_line(&mut input)
-    .map_err(|e| CliError::io("could not read from the terminal", e))?;
-
-  let choice = input.trim();
-  match choice {
-    "1" | "claude" | "Claude" => Ok(SkillsPlatform::Claude),
-    "2" | "copilot" | "Copilot" | "" => Ok(SkillsPlatform::Copilot),
-    _ => {
-      Output::warning("Invalid choice, defaulting to Copilot");
-      Ok(SkillsPlatform::Copilot)
-    }
-  }
+  let picked = prompt.choose("Install Agent Skills for which AI assistant?", &options, 0)?;
+  choices.get(picked).copied()
 }
 
 /// Install a single skill from embedded content
@@ -223,7 +213,29 @@ fn skill_description(skill: &str) -> &str {
 mod tests {
   use std::path::Path;
 
-  use super::{EMBEDDED_SKILLS, SkillsPlatform, install_skills_to_dir, skill_description};
+  use super::{
+    EMBEDDED_SKILLS, SkillsChoice, SkillsPlatform, ask_skills, install_skills_to_dir,
+    skill_description,
+  };
+  use crate::prompt::Prompt;
+
+  #[test]
+  fn an_empty_answer_to_the_skills_question_means_claude() {
+    assert_eq!(
+      ask_skills(&mut Prompt::scripted(true, "\n"), true),
+      Some(SkillsChoice::Claude)
+    );
+    assert_eq!(
+      ask_skills(&mut Prompt::scripted(true, "3\n"), true),
+      Some(SkillsChoice::Both)
+    );
+    assert_eq!(
+      ask_skills(&mut Prompt::scripted(true, "none\n"), true),
+      Some(SkillsChoice::None)
+    );
+    assert_eq!(ask_skills(&mut Prompt::scripted(true, "4\n"), false), None);
+    assert_eq!(ask_skills(&mut Prompt::scripted(false, "1\n"), true), None);
+  }
 
   #[test]
   fn a_skills_description_is_its_frontmatters() {

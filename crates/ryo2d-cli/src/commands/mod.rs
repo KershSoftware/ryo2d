@@ -80,7 +80,7 @@ fn dispatch(command: Command) -> CliResult<()> {
     Command::Run => run::execute(),
     Command::Dev(args) => dev::execute(&args),
     Command::Export => export::execute(),
-    Command::InstallSkills => install_skills::execute(),
+    Command::InstallSkills(args) => install_skills::execute(&args),
     Command::Netplay { command } => match command {
       NetplayCommand::Start => netplay::execute_start(),
       NetplayCommand::Ip => netplay::execute_ip(),

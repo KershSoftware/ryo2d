@@ -11,6 +11,7 @@ use std::thread;
 use std::time::Duration;
 
 use super::{CliError, CliResult, Output};
+use crate::prompt::Prompt;
 
 // =============================================================================
 // netplay start
@@ -52,23 +53,38 @@ fn run_netplay_server() -> CliResult<()> {
       println!();
     }
 
-    // Offer to install matchbox_server automatically
+    // Offer to install what is missing; nothing is installed without a yes
+    let mut prompt = Prompt::from_stdin();
     if matchbox_path.is_none() {
-      Output::status("Installing", "matchbox_server (this may take a minute)...");
-      let status = Command::new("cargo")
-        .args(["install", "matchbox_server"])
-        .status()
-        .map_err(|e| CliError::spawn("cargo install", e))?;
-
-      if !status.success() {
-        return Err(CliError::Build { status });
+      let installed = install_if_agreed(&mut prompt, "Install matchbox_server with cargo?", || {
+        Output::status("Installing", "matchbox_server (this may take a minute)...");
+        Command::new("cargo")
+          .args(["install", "matchbox_server"])
+          .status()
+          .map_err(|e| CliError::spawn("cargo install", e))
+      });
+      match installed {
+        Some(status) => {
+          let status = status?;
+          if !status.success() {
+            return Err(CliError::Build { status });
+          }
+        }
+        None => {
+          return Err(CliError::Other(
+            "matchbox_server is required, and nothing was installed: run 'cargo install matchbox_server' and try again.".to_string(),
+          ));
+        }
       }
     }
 
-    // Offer to install cloudflared automatically
     if cloudflared_path.is_none() {
-      if prompt_yes_no("Install cloudflared automatically?") {
-        if install_cloudflared() {
+      match install_if_agreed(
+        &mut prompt,
+        "Install cloudflared automatically?",
+        install_cloudflared,
+      ) {
+        Some(true) => {
           // Re-check for cloudflared after installation
           cloudflared_path = find_command("cloudflared");
           if cloudflared_path.is_none() {
@@ -76,15 +92,17 @@ fn run_netplay_server() -> CliResult<()> {
               "cloudflared installed but not found. Try restarting your terminal.".to_string(),
             ));
           }
-        } else {
+        }
+        Some(false) => {
           return Err(CliError::Other(
             "Failed to install cloudflared. Please install manually and try again.".to_string(),
           ));
         }
-      } else {
-        return Err(CliError::Other(
-          "cloudflared is required. Please install it and try again.".to_string(),
-        ));
+        None => {
+          return Err(CliError::Other(
+            "cloudflared is required, and nothing was installed: install it as shown above and try again.".to_string(),
+          ));
+        }
       }
     }
   }
@@ -530,20 +548,14 @@ fn find_command(cmd: &str) -> Option<String> {
   }
 }
 
-/// Prompt the user for a yes/no answer
-fn prompt_yes_no(question: &str) -> bool {
-  use std::io::{self, Write};
-
-  print!("  {} [Y/n] ", question);
-  io::stdout().flush().unwrap();
-
-  let mut input = String::new();
-  if io::stdin().read_line(&mut input).is_err() {
-    return false;
-  }
-
-  let input = input.trim().to_lowercase();
-  input.is_empty() || input == "y" || input == "yes"
+/// Runs `install` only when the person says yes: with no terminal, at the
+/// end of input and for any other answer it is not run
+fn install_if_agreed<T>(
+  prompt: &mut Prompt,
+  question: &str,
+  install: impl FnOnce() -> T,
+) -> Option<T> {
+  prompt.yes_no(question, true).then(install)
 }
 
 /// Attempt to install cloudflared automatically
@@ -612,5 +624,31 @@ fn install_cloudflared() -> bool {
   {
     Output::error("Automatic installation not supported on this platform.");
     false
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn netplay_never_installs_without_a_yes() {
+    for (interactive, answers) in [(false, "y\n"), (true, ""), (true, "n\n"), (true, "what\n")] {
+      let mut runs = 0;
+      let mut prompt = Prompt::scripted(interactive, answers);
+      let ran = install_if_agreed(&mut prompt, "Install it?", || runs += 1);
+      assert_eq!((ran, runs), (None, 0), "{interactive} {answers:?}");
+    }
+    let mut runs = 0;
+    let ran = install_if_agreed(&mut Prompt::scripted(true, "y\n"), "Install it?", || {
+      runs += 1;
+      "done"
+    });
+    assert_eq!((ran, runs), (Some("done"), 1));
+    let mut runs = 0;
+    let ran = install_if_agreed(&mut Prompt::scripted(true, "\n"), "Install it?", || {
+      runs += 1
+    });
+    assert_eq!((ran, runs), (Some(()), 1), "Enter takes the default, yes");
   }
 }

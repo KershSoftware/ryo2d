@@ -2,9 +2,11 @@
 
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use ryo2d::ecs::UVec2;
 use ryo2d::testing::SheetOptions;
+
+use crate::commands::install_skills::SkillsPlatform;
 
 /// Ryo2D: create, run, build and package games
 #[derive(Debug, Parser)]
@@ -50,6 +52,13 @@ pub enum Command {
   #[command(after_help = BUILD_BUNDLE)]
   Build(BuildArgs),
   /// Run the production build
+  ///
+  /// Runs the game from release/, the bundle 'ryo2d build' made, with
+  /// release/ as its working directory. Without a bundle it runs the release
+  /// binary in cargo's target folder, from the project folder, and warns
+  /// that this is not a bundle. With no build at all it says to run
+  /// 'ryo2d build'. A non-zero exit code of the game is reported as a
+  /// warning.
   Run,
   /// Package the release into a distributable zip
   ///
@@ -66,7 +75,17 @@ pub enum Command {
   #[command(after_help = EXPORT_EXAMPLES)]
   Export,
   /// Install Agent Skills for AI assistants
-  InstallSkills,
+  ///
+  /// Writes every Ryo2D skill into the project, for the assistant you
+  /// choose: Claude Code (.claude/skills/), GitHub Copilot (.github/skills/)
+  /// or both. All the skills are installed, whichever you choose, and
+  /// .gitignore is changed to track them.
+  ///
+  /// It asks which assistant when run in a terminal. With no terminal it
+  /// asks nothing and installs nothing unless --skills says which. 'ryo2d
+  /// init --skills' does the same for a project it creates.
+  #[command(after_help = INSTALL_SKILLS_EXAMPLES)]
+  InstallSkills(InstallSkillsArgs),
   /// Check UI files (*.ui.ron) without running the game
   ///
   /// Checks every *.ui.ron file under the project's assets folder, or the
@@ -132,13 +151,21 @@ The bundle (release/) holds:
     - The executable (with its configuration compiled in)
     - assets/
     - levels/ (if present)
-    - data/ (empty, for save files)
+    - data/ (empty, for save files; made only when Ryo.toml has
+      [release] portable = true, otherwise saves go to the player's
+      own folders)
+    - icon.png (the game's icon: [release] logo, else the engine's)
     - README.md (if present)
     - licenses/ (the licences of the fonts the engine builds in)
 
 Example:
     ryo2d build
     Then distribute the whole release/ folder.";
+
+const INSTALL_SKILLS_EXAMPLES: &str = "\
+Examples:
+    ryo2d install-skills                  Asks which assistant
+    ryo2d install-skills --skills both    Claude and Copilot, no questions";
 
 const EXPORT_EXAMPLES: &str = "\
 Example:
@@ -163,6 +190,44 @@ Examples:
 pub struct InitArgs {
   /// The project's name (asked for when not given)
   pub name: Option<String>,
+  /// Install the Agent Skills for this assistant, without asking (asked in a
+  /// terminal when not given; with no terminal none are installed)
+  #[arg(long, value_enum)]
+  pub skills: Option<SkillsChoice>,
+}
+
+/// `ryo2d install-skills`
+#[derive(Debug, Args)]
+pub struct InstallSkillsArgs {
+  /// The assistant to install for, without asking (required when there is
+  /// no terminal)
+  #[arg(long, value_enum)]
+  pub skills: Option<SkillsChoice>,
+}
+
+/// Which assistants' skills folders to write
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum SkillsChoice {
+  /// Claude Code: .claude/skills/
+  Claude,
+  /// GitHub Copilot: .github/skills/
+  Copilot,
+  /// Both folders
+  Both,
+  /// No skills
+  None,
+}
+
+impl SkillsChoice {
+  /// The platforms this choice installs for
+  pub fn platforms(self) -> &'static [SkillsPlatform] {
+    match self {
+      SkillsChoice::Claude => &[SkillsPlatform::Claude],
+      SkillsChoice::Copilot => &[SkillsPlatform::Copilot],
+      SkillsChoice::Both => &[SkillsPlatform::Claude, SkillsPlatform::Copilot],
+      SkillsChoice::None => &[],
+    }
+  }
 }
 
 /// `ryo2d dev`
@@ -332,6 +397,13 @@ mod tests {
     assert!(help(&["check-ui"]).contains("path:line:column"));
     assert!(help(&["dev"]).contains("F10"));
     assert!(help(&["init"]).contains("assets/"));
+    assert!(help(&["init"]).contains("--skills"));
+    let skills = help(&["install-skills"]);
+    assert!(skills.contains(".claude/skills/") && skills.contains(".github/skills/"));
+    assert!(skills.contains("--skills"));
+    assert!(help(&["run"]).contains("release/"));
+    let build = help(&["build"]);
+    assert!(build.contains("portable = true") && build.contains("icon.png"));
     assert!(!help(&["dev"]).contains("coming soon"));
   }
 

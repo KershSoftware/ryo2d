@@ -1,18 +1,19 @@
 //! Init command - scaffolds a new Ryo2D project
 
 use std::fs;
-use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use super::{CliError, CliResult, Output};
-use crate::args::InitArgs;
+use crate::args::{InitArgs, SkillsChoice};
+use crate::prompt::Prompt;
 
 /// Execute the init command
 pub fn execute(args: &InitArgs) -> CliResult<()> {
+  let mut prompt = Prompt::from_stdin();
   // Get project name from args or prompt
   let project_name = match &args.name {
     Some(name) => name.clone(),
-    None => prompt_project_name()?,
+    None => prompt_project_name(&mut prompt)?,
   };
 
   // Validate project name
@@ -41,10 +42,20 @@ pub fn execute(args: &InitArgs) -> CliResult<()> {
   Output::success(&format!("created project '{}'", project_name));
   println!();
 
-  // Prompt to install skills
-  if let Some(platform) = super::install_skills::prompt_install_skills()? {
-    println!();
-    super::install_skills::install_skills_to_dir(project_dir, platform, false)?;
+  // The flag, else the person's answer; with no one to ask, none
+  let choice = args
+    .skills
+    .or_else(|| super::install_skills::ask_skills(&mut prompt, true));
+  match choice {
+    Some(choice) if choice != SkillsChoice::None => {
+      println!();
+      super::install_skills::install_choice(project_dir, choice, false)?;
+    }
+    _ => {
+      Output::status("Skipped", "Agent Skills: none were installed");
+      println!("             Install them with 'ryo2d init --skills claude|copilot|both'");
+      println!("             for a new project, or 'ryo2d install-skills' in this one.");
+    }
   }
 
   println!();
@@ -59,18 +70,12 @@ pub fn execute(args: &InitArgs) -> CliResult<()> {
 }
 
 /// Prompt user for project name
-fn prompt_project_name() -> CliResult<String> {
-  print!("Project name: ");
-  io::stdout()
-    .flush()
-    .map_err(|e| CliError::io("could not write to the terminal", e))?;
-
-  let mut input = String::new();
-  io::stdin()
-    .read_line(&mut input)
-    .map_err(|e| CliError::io("could not read from the terminal", e))?;
-
-  let name = input.trim().to_string();
+fn prompt_project_name(prompt: &mut Prompt) -> CliResult<String> {
+  let Some(name) = prompt.ask("Project name: ") else {
+    return Err(CliError::Other(
+      "no project name was given and there is no one to ask: run 'ryo2d init NAME'".to_string(),
+    ));
+  };
 
   if name.is_empty() {
     return Err(CliError::Other("Project name cannot be empty".to_string()));

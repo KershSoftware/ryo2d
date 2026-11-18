@@ -14,17 +14,21 @@ You help users use the `ryo2d` CLI for managing game projects.
 Run from a game project directory (containing `Ryo.toml`):
 
 ```bash
-ryo2d init <name>      # Create new project
+ryo2d init <name>      # Create new project (--skills claude|copilot|both|none installs the skills)
 ryo2d build            # Production build (cargo build --release), without developer tools
 ryo2d build --dev-tools  # The same, keeping the developer tools (for testing, not for players)
 ryo2d run              # Run production build
 ryo2d dev              # Development mode (debug build, asset hot reload)
 ryo2d export           # Package release into distributable zip
-ryo2d install-skills   # Add Agent Skills to existing project
+ryo2d install-skills   # Add Agent Skills to existing project (--skills claude|copilot|both)
 ryo2d check-ui [files] # Check UI files (*.ui.ron) without running the game
 ryo2d sheet <file>     # Draw a skeleton's animations as a contact sheet PNG
 ryo2d netplay          # Tools for testing multiplayer with friends
 ```
+
+## Prompts
+
+`ryo2d` changes or installs nothing without a person saying yes. With no terminal on stdin (a pipe, CI, an agent's shell) it asks nothing, answers "no" and says which flag would do it; end of input is "no" too. So `ryo2d init my-game --skills claude` installs the skills with no questions, `ryo2d init my-game` with no terminal installs none, and `ryo2d init` with no name and no terminal fails asking for one. `install-skills` installs for Claude Code (`.claude/skills/`), Copilot (`.github/skills/`) or both, all skills each time, and with no terminal needs `--skills`.
 
 ## Checking UI files
 
@@ -193,7 +197,7 @@ opt-level = 2
 This optimizes **dependencies** (physics, rendering) while keeping game code unoptimized for fast compilation. Without it, dev builds run extremely slowly.
 
 - New projects (`ryo2d init`) include this automatically
-- `ryo2d dev` warns and offers to add it if missing
+- `ryo2d dev` warns and asks before adding it if missing; with no terminal it only says what to add
 - First build after adding is slower (recompiling deps), then fast
 
 ## The Log: `RYO_LOG`
@@ -222,8 +226,8 @@ ryo2d netplay ip                # Show your LAN and WAN IPs
 ```
 
 `netplay start` does the following:
-1. Installs `matchbox_server` (if needed)
-2. Installs `cloudflared` (if needed, prompts Y/n)
+1. Installs `matchbox_server` (if needed, asks first)
+2. Installs `cloudflared` (if needed, asks first)
 3. Starts local matchbox signaling server
 4. Creates Cloudflare Tunnel for internet access
 5. Displays connection info and code snippet
