@@ -17,7 +17,10 @@
 //!   `a_translucent_line_drawn_on_the_gpu_counts_every_pixel_once`).
 //! - **One thread a point**, 64 a workgroup; past 65,535 workgroups across
 //!   they go on in further rows of the grid (`grid`;
-//!   `the_corner_pass_goes_on_in_rows_past_its_width`).
+//!   `the_corner_pass_goes_on_in_rows_past_its_width`). The width is
+//!   WebGPU's default, fixed (`MAX_ACROSS`): under the stream's default cap
+//!   (2,097,152 points, 32,768 workgroups) one row holds every point, so
+//!   the further rows serve only a device granting larger buffers.
 //! - **Skipped with no lines, and for a small stream** (under
 //!   `CORNER_PASS_FROM` points: `builds_corners`,
 //!   `a_small_stream_skips_the_corner_pass`), whose vertices work their
