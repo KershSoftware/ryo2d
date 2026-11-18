@@ -379,6 +379,23 @@ mod tests {
   }
 
   #[test]
+  fn only_the_top_level_executable_and_the_folders_get_0o755() {
+    let dir = tempfile::tempdir().unwrap();
+    let release = dir.path().join("release");
+    fs::create_dir_all(release.join("assets")).unwrap();
+    fs::write(release.join("the_game.exe"), b"a game").unwrap();
+    // A file deeper down named like the game is only an asset
+    fs::write(release.join("assets").join("the_game.exe"), b"an asset").unwrap();
+    let zip_path = dir.path().join("g.zip");
+    create_zip(&release, &zip_path, "the_game.exe", false).unwrap();
+    let mut archive = zip::ZipArchive::new(File::open(&zip_path).unwrap()).unwrap();
+    let mut mode = |name: &str| archive.by_name(name).unwrap().unix_mode();
+    assert_eq!(mode("the_game.exe"), Some(0o100755));
+    assert_eq!(mode("assets/the_game.exe"), Some(0o100644));
+    assert_eq!(mode("assets/"), Some(0o040755));
+  }
+
+  #[test]
   fn the_date_stamp_is_the_utc_date() {
     use std::time::{Duration, UNIX_EPOCH};
     let at = |secs: u64| utc_date_stamp(UNIX_EPOCH + Duration::from_secs(secs));
