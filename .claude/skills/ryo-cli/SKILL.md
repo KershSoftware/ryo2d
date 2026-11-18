@@ -9,6 +9,10 @@ metadata:
 
 You help users use the `ryo2d` CLI for managing game projects.
 
+## Installing
+
+`./install.sh` (macOS, Linux) or `./install.ps1` (Windows), run from the engine's repository, install the `ryo2d` command and the engine source that games point at. `cargo install --path crates/ryo2d-cli` installs the command alone. The command is its own crate, `ryo2d-cli`, on top of the engine, so a game never compiles it. From a checkout, `cargo run -p ryo2d-cli -- <command>` runs it.
+
 ## Commands
 
 Run from a game project directory (containing `Ryo.toml`):

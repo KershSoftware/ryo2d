@@ -2,7 +2,7 @@
 name: ryo-engine-dev
 description: Working on the Ryo2D engine - the frame's phases, module map, resources, public API, crates, the dev_tools build condition, logging in engine code, profiling scopes and testing (the build without tools included).
 metadata:
-  version: 2.12.0
+  version: 2.13.0
 ---
 
 # Ryo2D Engine Developer

@@ -438,9 +438,10 @@ The tools are in a build only under the cfg `dev_tools` (debug assertions, or th
 | `ryo2d export` | Package the release into a zip |
 | `ryo2d install-skills` | Install the agent skills to `.claude/skills/` or `.github/skills/` |
 | `ryo2d check-ui [files]` | Check UI files (`*.ui.ron`) without running the game |
+| `ryo2d sheet <file>` | Draw a skeleton's animations as a contact sheet PNG |
 | `ryo2d netplay` | Start a signalling server for netplay testing |
 
-The CLI finds the workspace by searching up for `Ryo.toml` and embeds its configuration at build time through `RYO_EMBED_*` variables. Each project setting is declared once (`src/core/config/project_table.rs`): the Ryo.toml reader, the embedding, the build script and the misspelt-key warning follow from it. A web build compiles its Ryo.toml in with `ryo2d::project!()` instead.
+The command is arguments read by clap, errors typed (`CliError`) with exit codes 0 (success), 1 (the command failed) and 2 (arguments it could not read), and `run` and `dev` exit with the game's own code. It asks a question only at a terminal; with none it changes nothing and names the flag that would. Cargo says where the target folder and the game's binary are. The CLI finds the workspace by searching up for `Ryo.toml` and embeds its configuration at build time through `RYO_EMBED_*` variables. Each project setting is declared once (`src/core/config/project_table.rs`): the Ryo.toml reader, the embedding, the build script and the misspelt-key warning follow from it. A web build compiles its Ryo.toml in with `ryo2d::project!()` instead.
 
 ### Ryo.toml
 

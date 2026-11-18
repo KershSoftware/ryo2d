@@ -4,6 +4,14 @@ Small issues found while building each sub-project and left for later: deferred 
 
 Items from 4f on were copied from their execution records. Items from earlier sub-projects come from notes kept at the time, and some may have been fixed since: check before working on one.
 
+## The ryo2d command
+
+- A macOS `.app` bundle and a Windows installer for `ryo2d export`: it writes a zip of the release folder only.
+- `ryo2d netplay` is parked with the networking rethink; it keeps its behaviour until then.
+- Ctrl-C under `ryo2d run` and `ryo2d dev`: the command waits for the game as a child, so the signal reaches both. Replacing the process (exec) or forwarding the signal would give the game sole say.
+- The init build test's Windows path handling (`tests/init_builds.rs`: the temporary `HOME`, `LOCALAPPDATA` and the engine path) has not been run on Windows.
+- A project with several bins and no `default-run` now errors, as `cargo run` does, naming the bins and asking for `default-run`; before, the command guessed.
+
 ## Line anti-aliasing
 
 - Owner decisions (2026-11-16 to 2026-11-18):

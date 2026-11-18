@@ -2,7 +2,7 @@
 name: ryo-profiler
 description: Profiling Ryo2D games and the engine - profile_scope! and profile_function! (puffin, with the engine's profiler feature, recorded while scopes are on), ryo2d dev -p and the profiler window (F10), the engine's own scopes, the frame timing overlay and FrameCost, and performance analysis.
 metadata:
-  version: 1.4.0
+  version: 1.5.0
 ---
 
 # Ryo2D Profiler Specialist
