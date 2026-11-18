@@ -40,29 +40,47 @@ const EMBEDDED_SKILLS: &[(&str, &str)] = include!(concat!(env!("OUT_DIR"), "/emb
 
 /// Execute the install-skills command
 pub fn execute(args: &InstallSkillsArgs) -> CliResult<()> {
-  execute_with(args, &mut Prompt::from_stdin())
-}
-
-fn execute_with(args: &InstallSkillsArgs, prompt: &mut Prompt) -> CliResult<()> {
   // Discover workspace from current directory
   let workspace = super::discover_workspace()?;
+  install_in(workspace.root(), args.skills, &mut Prompt::from_stdin())
+}
 
-  let choice = match args.skills {
+/// Installs into `project_dir` for the `choice` given, else the one `prompt`
+/// asks for
+fn install_in(
+  project_dir: &Path,
+  choice: Option<SkillsChoice>,
+  prompt: &mut Prompt,
+) -> CliResult<()> {
+  let choice = match choice {
     Some(choice) => choice,
     None => ask_skills(prompt, false).ok_or_else(|| {
       CliError::Other(
-        "no answer to which AI assistant, so nothing was installed: pass --skills claude, copilot or both"
+        "no valid answer to which AI assistant, so nothing was installed: pass --skills claude, copilot or both"
           .to_string(),
       )
     })?,
   };
 
-  install_choice(workspace.root(), choice, false)
+  if choice == SkillsChoice::None {
+    Output::status("Skipped", "Agent Skills: none were installed");
+  }
+  install_choice(project_dir, choice, false)
+}
+
+/// The platforms a choice installs for
+fn platforms(choice: SkillsChoice) -> &'static [SkillsPlatform] {
+  match choice {
+    SkillsChoice::Claude => &[SkillsPlatform::Claude],
+    SkillsChoice::Copilot => &[SkillsPlatform::Copilot],
+    SkillsChoice::Both => &[SkillsPlatform::Claude, SkillsPlatform::Copilot],
+    SkillsChoice::None => &[],
+  }
 }
 
 /// Installs the skills for every platform `choice` names
 pub fn install_choice(project_dir: &Path, choice: SkillsChoice, quiet: bool) -> CliResult<()> {
-  for platform in choice.platforms() {
+  for platform in platforms(choice) {
     install_skills_to_dir(project_dir, *platform, quiet)?;
   }
   Ok(())
@@ -214,7 +232,7 @@ mod tests {
   use std::path::Path;
 
   use super::{
-    EMBEDDED_SKILLS, SkillsChoice, SkillsPlatform, ask_skills, install_skills_to_dir,
+    EMBEDDED_SKILLS, SkillsChoice, SkillsPlatform, ask_skills, install_in, install_skills_to_dir,
     skill_description,
   };
   use crate::prompt::Prompt;
@@ -235,6 +253,39 @@ mod tests {
     );
     assert_eq!(ask_skills(&mut Prompt::scripted(true, "4\n"), false), None);
     assert_eq!(ask_skills(&mut Prompt::scripted(false, "1\n"), true), None);
+  }
+
+  #[test]
+  fn an_answer_in_a_terminal_picks_the_assistant() {
+    let project = tempfile::tempdir().unwrap();
+    install_in(project.path(), None, &mut Prompt::scripted(true, "2\n")).unwrap();
+    assert!(
+      project
+        .path()
+        .join(".github/skills/ryo-api/SKILL.md")
+        .exists()
+    );
+    assert!(!project.path().join(".claude").exists());
+  }
+
+  #[test]
+  fn no_valid_answer_installs_nothing_and_says_so() {
+    for prompt in [
+      Prompt::scripted(true, "9\n"),
+      Prompt::scripted(true, ""),
+      Prompt::scripted(false, "1\n"),
+    ] {
+      let project = tempfile::tempdir().unwrap();
+      let mut prompt = prompt;
+      let error = install_in(project.path(), None, &mut prompt).unwrap_err();
+      assert!(
+        error.report().contains("no valid answer"),
+        "{}",
+        error.report()
+      );
+      assert!(!project.path().join(".claude").exists());
+      assert!(!project.path().join(".github").exists());
+    }
   }
 
   #[test]

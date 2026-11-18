@@ -76,7 +76,7 @@ pub fn execute(args: &InitArgs) -> CliResult<()> {
 fn prompt_project_name(prompt: &mut Prompt) -> CliResult<String> {
   let Some(name) = prompt.ask("Project name: ") else {
     return Err(CliError::Other(
-      "no project name was given and there is no one to ask: run 'ryo2d init NAME'".to_string(),
+      "no project name was given: run 'ryo2d init NAME'".to_string(),
     ));
   };
 

@@ -166,6 +166,23 @@ fn shared_target() -> std::path::PathBuf {
   target
 }
 
+#[test]
+fn install_skills_none_says_it_installed_nothing() {
+  let (folder, output) = init_in_new_folder(&["my-game", "--skills", "none"]);
+  assert_eq!(output.status.code(), Some(0));
+  let game = folder.path().join("my-game");
+  let output = Command::new(env!("CARGO_BIN_EXE_ryo2d"))
+    .args(["install-skills", "--skills", "none"])
+    .current_dir(&game)
+    .stdin(std::process::Stdio::null())
+    .output()
+    .expect("the ryo2d binary runs");
+  assert_eq!(output.status.code(), Some(0));
+  let said = String::from_utf8_lossy(&output.stdout);
+  assert!(said.contains("none were installed"), "{said}");
+  assert!(!game.join(".claude").exists() && !game.join(".github").exists());
+}
+
 /// A game whose `main` is `main`, with a Ryo.toml, in a fresh folder; its
 /// builds go under the workspace's target folder, kept between runs
 fn game_with_main(

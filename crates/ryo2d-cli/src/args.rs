@@ -6,8 +6,6 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use ryo2d::ecs::UVec2;
 use ryo2d::testing::SheetOptions;
 
-use crate::commands::install_skills::SkillsPlatform;
-
 /// Ryo2D: create, run, build and package games
 #[derive(Debug, Parser)]
 #[command(name = "ryo2d", version = ryo2d::tooling::VERSION, arg_required_else_help = true)]
@@ -223,18 +221,6 @@ pub enum SkillsChoice {
   Both,
   /// No skills
   None,
-}
-
-impl SkillsChoice {
-  /// The platforms this choice installs for
-  pub fn platforms(self) -> &'static [SkillsPlatform] {
-    match self {
-      SkillsChoice::Claude => &[SkillsPlatform::Claude],
-      SkillsChoice::Copilot => &[SkillsPlatform::Copilot],
-      SkillsChoice::Both => &[SkillsPlatform::Claude, SkillsPlatform::Copilot],
-      SkillsChoice::None => &[],
-    }
-  }
 }
 
 /// `ryo2d dev`
