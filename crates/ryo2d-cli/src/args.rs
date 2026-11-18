@@ -68,7 +68,9 @@ pub enum Command {
   /// Package the release into a distributable zip
   ///
   /// Creates a zip from the release/ folder, named
-  /// {project-name}-v{version}-{YYYYMMDD}.zip. The version is Ryo.toml's
+  /// {project-name}-v{version}-{YYYYMMDD}.zip, where the date is today's UTC
+  /// date. The game's executable keeps its run permission (0o755) in the
+  /// zip, so it runs after unzipping on Mac and Linux. The version is Ryo.toml's
   /// [project].version, or else Cargo.toml's [package].version; when neither
   /// has one, the -v{version} part is left out. If a zip of that name
   /// exists, a suffix is added: -001, -002 and so on.

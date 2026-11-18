@@ -115,11 +115,9 @@ fn create_release_bundle(
 
   Output::status("Bundling", &format!("{} to release/...", display_name));
 
-  // Create release directory
-  if release_dir.exists() {
-    fs::remove_dir_all(&release_dir)
-      .map_err(|e| CliError::Other(format!("Failed to clean release directory: {}", e)))?;
-  }
+  // Replace everything in release/ but data/, where a portable build keeps
+  // its saves
+  clean_release_dir(&release_dir)?;
   fs::create_dir_all(&release_dir)
     .map_err(|e| CliError::Other(format!("Failed to create release directory: {}", e)))?;
 
@@ -201,6 +199,28 @@ fn create_release_bundle(
     &format!("release bundle at {}", release_dir.display()),
   );
 
+  Ok(())
+}
+
+/// Remove everything in `release_dir` except its `data` folder
+fn clean_release_dir(release_dir: &Path) -> CliResult<()> {
+  let Ok(entries) = fs::read_dir(release_dir) else {
+    return Ok(());
+  };
+  for entry in entries {
+    let entry =
+      entry.map_err(|e| CliError::Other(format!("Failed to clean release directory: {}", e)))?;
+    if entry.file_name() == "data" {
+      continue;
+    }
+    let path = entry.path();
+    let removed = if path.is_dir() {
+      fs::remove_dir_all(&path)
+    } else {
+      fs::remove_file(&path)
+    };
+    removed.map_err(|e| CliError::Other(format!("Failed to clean release directory: {}", e)))?;
+  }
   Ok(())
 }
 
@@ -437,5 +457,43 @@ mod tests {
       let expected = embedded_value(&embedded, key).map(OsString::from);
       assert_eq!(envs.get(OsStr::new(key)), Some(&expected), "{key}");
     }
+  }
+
+  #[test]
+  fn rebuilding_keeps_a_portable_build_s_saves() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+      dir.path().join("Ryo.toml"),
+      "[project]\nname = \"g\"\n\n[release]\nportable = true\n",
+    )
+    .unwrap();
+    let built = dir.path().join("built-game");
+    std::fs::write(&built, b"a game").unwrap();
+    let workspace = Workspace::from_path(dir.path()).unwrap();
+    let bundle = || {
+      create_release_bundle(
+        &workspace,
+        "g",
+        &built,
+        "g",
+        &dir.path().join("no-icon.png"),
+      )
+      .unwrap()
+    };
+    bundle();
+    let release = dir.path().join("release");
+    std::fs::write(release.join("data").join("save.json"), b"progress").unwrap();
+    std::fs::create_dir_all(release.join("old")).unwrap();
+    std::fs::write(release.join("old").join("stale.txt"), b"stale").unwrap();
+    std::fs::write(release.join("stale.txt"), b"stale").unwrap();
+    bundle();
+    assert_eq!(
+      std::fs::read(release.join("data").join("save.json"))
+        .ok()
+        .as_deref(),
+      Some(&b"progress"[..])
+    );
+    assert!(!release.join("stale.txt").exists());
+    assert!(!release.join("old").exists());
   }
 }
