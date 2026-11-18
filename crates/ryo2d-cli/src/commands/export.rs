@@ -261,11 +261,12 @@ mod tests {
   fn the_version_comes_from_the_workspace_s_ryo_toml() {
     // Read as the workspace read it, not from a file named Ryo.toml on disk
     let dir = tempfile::tempdir().unwrap();
-    let workspace = ryo2d::core::config::Workspace::from_toml_str(
+    fs::write(
+      dir.path().join("Ryo.toml"),
       "[project]\nversion = \"1.2.3\"\n",
-      dir.path().to_path_buf(),
     )
     .unwrap();
+    let workspace = ryo2d::core::config::Workspace::from_path(dir.path()).unwrap();
     assert_eq!(get_project_version(&workspace).as_deref(), Some("1.2.3"));
   }
 
@@ -277,8 +278,7 @@ mod tests {
       "[package]\nname = \"g\"\nversion = \"0.4.0\"\n",
     )
     .unwrap();
-    let workspace =
-      ryo2d::core::config::Workspace::from_toml_str("", dir.path().to_path_buf()).unwrap();
+    let workspace = ryo2d::core::config::Workspace::from_path(dir.path()).unwrap();
     assert_eq!(get_project_version(&workspace).as_deref(), Some("0.4.0"));
   }
 

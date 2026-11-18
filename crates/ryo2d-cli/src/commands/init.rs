@@ -259,8 +259,9 @@ mod tests {
   #[test]
   fn a_new_game_s_ryo_toml_reads_without_a_warning() {
     let log = ryo2d::logging::capture_log();
-    let read =
-      ryo2d::core::config::Workspace::from_toml_str(&ryo_toml(), std::path::PathBuf::from("game"));
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("Ryo.toml"), ryo_toml()).unwrap();
+    let read = ryo2d::core::config::Workspace::from_path(dir.path());
     assert!(read.is_ok());
     let warnings = log.warnings();
     assert!(warnings.is_empty(), "{warnings:?}");

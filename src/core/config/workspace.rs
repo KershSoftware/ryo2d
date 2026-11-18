@@ -221,7 +221,7 @@ impl Workspace {
   /// # Errors
   ///
   /// [`EngineError::WorkspaceError`] when the text is not TOML.
-  pub fn from_toml_str(text: &str, root: PathBuf) -> Result<Workspace, EngineError> {
+  pub(crate) fn from_toml_str(text: &str, root: PathBuf) -> Result<Workspace, EngineError> {
     Self::read_toml(text, root, &mut warn_once)
   }
 

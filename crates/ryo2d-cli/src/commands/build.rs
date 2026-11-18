@@ -323,9 +323,12 @@ mod tests {
   use ryo2d::core::config::{Workspace, WorkspaceConfig};
   use ryo2d::tooling::EMBED_KEYS;
 
-  /// A workspace from Ryo.toml text, with no folder on disk
-  fn workspace(toml: &str) -> Workspace {
-    Workspace::from_toml_str(toml, PathBuf::from("game")).unwrap()
+  /// A workspace from Ryo.toml text, in a temporary folder kept while it lives
+  fn workspace(toml: &str) -> (tempfile::TempDir, Workspace) {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("Ryo.toml"), toml).unwrap();
+    let workspace = Workspace::from_path(dir.path()).unwrap();
+    (dir, workspace)
   }
 
   fn embedded_value(env: &[(&'static str, String)], key: &str) -> Option<String> {
@@ -393,7 +396,7 @@ mod tests {
 
   #[test]
   fn dev_tools_adds_the_feature_and_one_warning() {
-    let ws = workspace("[project]\nname = \"g\"\n");
+    let (_dir, ws) = workspace("[project]\nname = \"g\"\n");
     let args = |options: BuildArgs| -> Vec<String> {
       release_build_command(&ws, &[], Path::new("icon.png"), options)
         .get_args()
@@ -439,7 +442,7 @@ mod tests {
   #[test]
   fn the_release_build_sets_or_clears_every_embed_key() {
     use std::ffi::{OsStr, OsString};
-    let ws = workspace("[project]\nname = \"g\"\n\n[system]\nvsync = false\n");
+    let (_dir, ws) = workspace("[project]\nname = \"g\"\n\n[system]\nvsync = false\n");
     let embedded = embedded_config_env(&ws);
 
     let command = release_build_command(
