@@ -34,7 +34,7 @@ fn cs_line_corners(
     for (var slot = 1; slot < 4; slot++) {
         var i = own + slot - 2;
         if closed {
-            i = ((i % count) + count) % count;
+            i = line_wrap(i, count);
         }
         if i >= 0 && i < count {
             w.p[slot] = line_pt(line_points[info.first + u32(i)]);

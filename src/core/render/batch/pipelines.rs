@@ -250,10 +250,14 @@ pub(crate) fn camera_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
 
 /// The layout the line stream is bound with (group 2 of the line
 /// pipelines), four storage arrays the vertex stage reads: the line table
-/// (`LineInfo`), the points (`LinePoint`), and each point's corner record
-/// and limits (the corner pass's).
+/// (`LineInfo`, which the fragment stage reads too), the points
+/// (`LinePoint`), and each point's corner record and limits (the corner
+/// pass's).
 pub(crate) fn line_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
-  line_layout_for(device, wgpu::ShaderStages::VERTEX)
+  line_layout_for(
+    device,
+    wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+  )
 }
 
 /// [`line_layout`] for the stages `visibility` names (tests read the line

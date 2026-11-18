@@ -1167,6 +1167,63 @@ fn soft_and_glow_shape_by_the_distance_over_the_half_width() {
   assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
+#[test]
+fn each_line_s_fragments_read_its_own_entry_in_the_line_table() {
+  // A vertex hands its fragments only what varies across its line; what
+  // the line shares (its style, a two-point line's half length between its
+  // caps, a textured line's slot) the fragments read by the line's number.
+  // Lines of different looks in one stream each draw as they do alone
+  let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+    return;
+  };
+  let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+  let painter = Painter::new(&device, &queue);
+  let size = (64u32, 64u32);
+  let centre = Vec2::new(32.0, 32.0);
+  let lines = [
+    (8.5, SOLID, LineCap::Round, 4.0),
+    (24.5, GLOW, LineCap::Butt, 5.0),
+    (40.5, SOFT, LineCap::Square, 3.0),
+    (55.5, SOLID, LineCap::Square, 2.5),
+  ];
+  let add = |stream: &mut LineStream, &(y, look, cap, hw): &(f32, f32, LineCap, f32)| {
+    // Two points: its caps measured as one strip along it
+    let ends = [Vec2::new(10.0 + hw, y), Vec2::new(50.0 - 2.0 * hw, y)];
+    let points = points_of(&ends, hw, Color::WHITE);
+    stream.polyline(&points, &style(LineJoin::Miter, cap, false, look));
+  };
+  let mut together = LineStream::default();
+  for line in &lines {
+    add(&mut together, line);
+  }
+  let all = painter.paint(&device, &queue, &together, (centre, 1.0), size, None);
+  let mut differ = Vec::new();
+  for (index, line) in lines.iter().enumerate() {
+    let mut alone = LineStream::default();
+    add(&mut alone, line);
+    let own = painter.paint(&device, &queue, &alone, (centre, 1.0), size, None);
+    let rows = (line.0 - line.3 - 2.0) as u32..(line.0 + line.3 + 2.0) as u32;
+    for y in rows {
+      for x in 0..size.0 {
+        if all.get_pixel(x, y) != own.get_pixel(x, y) {
+          differ.push(format!(
+            "line {index} at ({x}, {y}): {:?} among the others, {:?} alone",
+            all.get_pixel(x, y).0,
+            own.get_pixel(x, y).0
+          ));
+        }
+      }
+    }
+  }
+  let error = pollster::block_on(scope.pop());
+  assert!(error.is_none(), "{error:?}");
+  assert!(
+    differ.is_empty(),
+    "{}",
+    differ[..differ.len().min(20)].join("\n")
+  );
+}
+
 /// Where a column of `a_textured_line_s_texture_runs_on_across_the_fringe`
 /// runs: along a segment, through a join's corner point, through a cap
 #[derive(Clone, Copy)]

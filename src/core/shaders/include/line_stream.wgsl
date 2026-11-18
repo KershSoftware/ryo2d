@@ -50,6 +50,18 @@ struct LineCorner {
     after: f32,
 };
 
+// Point `i` of a closed line of `count`, `i` no more than `count` past
+// either end
+fn line_wrap(i: i32, count: i32) -> i32 {
+    if i < 0 {
+        return i + count;
+    }
+    if i >= count {
+        return i - count;
+    }
+    return i;
+}
+
 fn line_pt(point: LinePoint) -> LinePt {
     return LinePt(point.pos, point.half_width, point.u, unpack4x8unorm(point.color));
 }

@@ -31,22 +31,26 @@
 @group(2) @binding(2) var<storage, read> line_corners: array<LineCorner>;
 @group(2) @binding(3) var<storage, read> line_limits: array<vec2<f32>>;
 
+// A vertex's flags with `LINE_HARD` set when its line draws Hard
+const LINE_HARD: u32 = 8u;
+
+// What the fragment stage shares across a line (its params, the atlas slot
+// a textured line repeats, a two-point line's half length between its caps)
+// it reads from the line table by the line's number, so a vertex hands on
+// only what varies
 struct VertexOutput {
     @builtin(position) @invariant position: vec4<f32>,
     @location(0) color: vec4<f32>,
     @location(1) uv: vec2<f32>,
-    @location(2) @interpolate(flat) params: vec4<f32>,
-    @location(3) @interpolate(flat) bounds: vec4<f32>,
     // Across, inside the second edge and the half width (a round piece's
     // offset in the first two), in world units
-    @location(4) measure: vec3<f32>,
-    @location(5) @interpolate(flat) flags: u32,
-    @location(6) @interpolate(flat) k: f32,
-    @location(7) @interpolate(flat) along_half: f32,
+    @location(2) measure: vec3<f32>,
+    @location(3) @interpolate(flat) flags: u32,
+    @location(4) @interpolate(flat) k: f32,
+    @location(5) @interpolate(flat) line: u32,
     // Across over the normal's component on the image's nearest axis
     // (`line_axis`), in world units
-    @location(8) across_axis: f32,
-    @location(9) @interpolate(flat) hard: u32,
+    @location(6) across_axis: f32,
 };
 
 struct WorldVertex {
@@ -68,10 +72,12 @@ fn world_vertex(code: u32) -> WorldVertex {
     var w: LineWindow;
     w.present = 0u;
     w.seam = 0u;
+    // On a closed line (three points or more) a window slot lies at most
+    // one turn past either end, so one step round brings it back
     for (var k = 0; k < 5; k++) {
         var i = point + k - 2;
         if closed {
-            i = ((i % count) + count) % count;
+            i = line_wrap(i, count);
         }
         if i >= 0 && i < count {
             w.p[k] = line_pt(line_points[info.first + u32(i)]);
@@ -85,18 +91,18 @@ fn world_vertex(code: u32) -> WorldVertex {
     // (none past an open line's ends)
     var own = point;
     if closed {
-        own = ((own % count) + count) % count;
+        own = line_wrap(own, count);
     }
     var corner: LpCorner;
     corner.joint = line_joint_of(line_corners[info.first + u32(own)]);
     corner.prev_after = LINE_NO_EDGE;
     corner.next_before = LINE_NO_EDGE;
     if lp_has(w, -1) {
-        let prev = select(own - 1, (own + count - 1) % count, closed);
+        let prev = select(own - 1, line_wrap(own - 1, count), closed);
         corner.prev_after = line_limits[info.first + u32(prev)].y;
     }
     if lp_has(w, 1) {
-        let next = select(own + 1, (own + 1) % count, closed);
+        let next = select(own + 1, line_wrap(own + 1, count), closed);
         corner.next_before = line_limits[info.first + u32(next)].x;
     }
     let look = LineLook(info.join, info.cap, info.miter_limit);
@@ -204,14 +210,11 @@ fn vs_main(@builtin(vertex_index) code: u32) -> VertexOutput {
     }
     out.color = vec4<f32>(srgb_to_linear(vertex.color.rgb) * line.emission, vertex.color.a);
     out.uv = fringe.uv;
-    out.params = params;
-    out.bounds = line.bounds;
     out.measure = fringe.measure;
-    out.flags = vertex.flags;
+    out.flags = vertex.flags | select(0u, LINE_HARD, hard);
     out.k = vertex.k;
-    out.along_half = line.along_half;
+    out.line = world.line;
     out.across_axis = fringe.across_axis;
-    out.hard = u32(hard);
     if effect_type == 3u {
         out.uv.x += globals.real_time * params[1];
     }
@@ -221,14 +224,15 @@ fn vs_main(@builtin(vertex_index) code: u32) -> VertexOutput {
 // ========== Fragment Shaders ==========
 
 // What the fragment's line measures (`line_cover.wgsl`)
-fn line_measure(in: VertexOutput) -> LineMeasure {
-    return LineMeasure(in.measure, in.across_axis, in.flags, in.k, in.along_half, in.hard == 1u);
+fn line_measure(in: VertexOutput, info: LineInfo) -> LineMeasure {
+    return LineMeasure(in.measure, in.across_axis, in.flags & ~LINE_HARD, in.k, info.along_half, (in.flags & LINE_HARD) != 0u);
 }
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let pixel = line_pixel(line_measure(in), in.params, globals.px_per_unit);
-    return ui_out(styled(in.color, pixel.shape, in.params, pixel.cover));
+    let info = lines[in.line];
+    let pixel = line_pixel(line_measure(in, info), info.params, globals.px_per_unit);
+    return ui_out(styled(in.color, pixel.shape, info.params, pixel.cover));
 }
 
 @fragment
@@ -236,8 +240,9 @@ fn fs_textured(in: VertexOutput) -> @location(0) vec4<f32> {
     // Derivatives first, while control flow is uniform
     let ddx = dpdx(in.uv);
     let ddy = dpdy(in.uv);
-    let texel = sample_wrapped(line_texture, line_sampler, in.uv, in.bounds, ddx, ddy);
+    let info = lines[in.line];
+    let texel = sample_wrapped(line_texture, line_sampler, in.uv, info.bounds, ddx, ddy);
     let texture = vec4<f32>(srgb_to_linear(texel.rgb), texel.a);
-    let pixel = line_pixel(line_measure(in), in.params, globals.px_per_unit);
-    return ui_out(styled(texture * in.color, pixel.shape, in.params, pixel.cover));
+    let pixel = line_pixel(line_measure(in, info), info.params, globals.px_per_unit);
+    return ui_out(styled(texture * in.color, pixel.shape, info.params, pixel.cover));
 }

@@ -258,7 +258,7 @@ impl LineGpuTest {
     Self {
       layout: line_layout_for(
         device,
-        wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::COMPUTE,
+        wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE,
       ),
       corners: CornerPass::new(device),
       across,
