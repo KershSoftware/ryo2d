@@ -530,6 +530,8 @@ impl Default for StreamCap {
 
 /// A vertex's code, a value of the index buffer: its piece's point (in the
 /// point buffer), the piece's kind and its slot (`line.wgsl` reads it back).
+/// Past 131,071 points its values pass 2^24, which a Vulkan device draws
+/// only with full 32-bit index values (render module notes, Limits).
 pub(crate) fn vertex_code(point: u32, kind: PieceKind, slot: u32) -> u32 {
   let kind = match kind {
     PieceKind::Segment => 0,

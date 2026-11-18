@@ -4,6 +4,10 @@ Small issues found while building each sub-project and left for later: deferred 
 
 Items from 4f on were copied from their execution records. Items from earlier sub-projects come from notes kept at the time, and some may have been fixed since: check before working on one.
 
+## Line anti-aliasing
+
+- Limits recorded (the render module notes, Lines): a stream past 131,071 points draws with index values past 2^24 (a vertex code is its point shifted by 7 bits), which a Vulkan device without full 32-bit index values (`DownlevelFlags::FULL_DRAW_INDEX_UINT32`) would misdraw; nothing checks the flag or caps `StreamCap::points` at 2^17 for such a device. Hard corners: a miter's outer corner can stand past the narrower segment's drawn edge by under 0.3 of a pixel at 4 pixels wide, and a bevel's own edge is taken at the plain half width.
+
 ## Skeleton authoring
 
 - Owner decisions (2026-11-15 to 2026-11-16):
@@ -1123,7 +1127,7 @@ Items from 4f on were copied from their execution records. Items from earlier su
 ## Renderer (2a-2c)
 
 - 2a: device loss exits with Ok; a parented main camera converts in parent space.
-- 2b: the polyline builder allocates per trail per frame; `mip_chain` copies level 0; trails ignore `BlendMode::Premultiplied`; `BindGroupCache` resets past 64 entries; `Line2D` with a negative end width draws inverted; screen-fixed parallax shakes.
+- 2b: `mip_chain` copies level 0; trails ignore `BlendMode::Premultiplied`; `BindGroupCache` resets past 64 entries; `Line2D` with a negative end width draws inverted; screen-fixed parallax shakes.
 - 2c: the engine's light, ambient and atmosphere presets read warmer and darker; auto-exposure snaps on resize; ambient occlusion's edge bias sees light above 1; `VolumetricSettings` is not range-clamped; custom effect shaders get sRGB `Color` params.
 
 ## Engine-wide

@@ -8,7 +8,12 @@
 // line of a pixel is one pixel a column
 // (`a_hard_line_is_one_pixel_per_column_at_any_angle`,
 // `a_hard_line_is_its_width_in_pixels_per_column`,
-// `a_line_on_a_pixel_art_target_draws_whole_pixels_unless_smooth`).
+// `a_line_on_a_pixel_art_target_draws_whole_pixels_unless_smooth`), and its
+// corners follow its segments' drawn edges: each half of a miter's point
+// meets the other segment's drawn edge
+// (`a_hard_miter_tip_narrows_evenly_to_its_point`) and a round piece is as
+// wide as its segments are drawn
+// (`a_hard_round_piece_keeps_to_its_segments_drawn_width`).
 
 // A line's edge as the line table numbers it (`edge_code`)
 const LINE_EDGE_TARGET: u32 = 0u;
