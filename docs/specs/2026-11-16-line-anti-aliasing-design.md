@@ -138,3 +138,12 @@ Per-vertex records were found to move the cost into memory (10k mitered lines �
 - **The UI** keeps building in its vertex shader through the same function, taking its joints computed in place; if a different compile context moves the UI-equals-world comparison by a level, the test allows 1/255 and the limit is recorded.
 - **The bench** stamps time before the pre-pass, so it is counted.
 - **Target:** GPU time ≤ 1.15× main on the lines-only scenes, CPU gains kept, 100k lines still drawable.
+
+### The compute pre-pass: as built
+
+- **Slots.** A segment has 6 slots, a miter or bevel join 9, a round join 15, a square cap 4 and a round cap 10 (`piece_template`; `line_piece_slot` for the UI's unindexed instances). Each triangle keeps the reference's first vertex, which flat attributes come from; a right turn's other two are wound the other way, which no culled face shows, and the reference comparison takes them as a pair.
+- **The corner record** is 64 bytes a point (`LineCorner`), with its limits again in an array of two floats a point; the stream's points are capped by the record (2,097,152 under the default limits). The corner pass runs after the shadow atlas in the frame's encoder.
+- **The UI** works its corners out in place; it draws the world's pixels exactly, so no 1/255 allowance was needed.
+- **Fragments** read what a line shares from the line table (a textured line's slot, a two-point line's half length), the style riding in the vertex's flags: measured, the table read cost 18% of the vertex stage's outputs on large scenes.
+- **Round pieces' truth.** With arcs of 8 the drawn polygon is no longer close enough to the disc to stand for the line's exact area, so the coverage tests measure round pieces against true discs (`Triangles::true_shape`): within 0.108 (0.105 at 16 steps).
+- **The target** (GPU ≤ 1.15 × main) is met on 10,000 round lines and, in quieter runs, 10,000 mitered ones, and missed on the 1,000-line scenes and the mixed thousand (1.4 to 2.1 times); the figures and what would cut further are in `docs/backlog/lines.md`.

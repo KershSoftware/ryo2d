@@ -82,6 +82,74 @@ Loads before the runs: 14.0, 13.0, 9.4, 8.5, 6.7 and 6.2 (flagged: above 3; the 
 
 The first is in; the second was measured and left out.
 
-**Next: a compute pre-pass (owner, 2026-11-17).** The GPU figures above are over the bound and stand as they are. A compute pass will build each corner once per frame on the GPU, and the draw read what it built, to bring the GPU's time down; it is a task of its own.
+**Next: a compute pre-pass (owner, 2026-11-17).** The GPU figures above are over the bound and stand as they are. A compute pass will build each corner once per frame on the GPU, and the draw read what it built, to bring the GPU's time down; it is a task of its own (below).
 
 **The UI bench** (`benches/ui_render.rs`, the guard, 2,000 interleaved frames, three alternating runs each, loads 6.1 down to 4.9): unchanged within the machine's noise. One label changing over an empty frame: main +31.6, +29.0, +33.3 µs, this branch +29.7, +29.4, +31.3; scrolling: main +42.3, +37.3, +44.2, this branch +38.2, +37.9, +38.7; idle under 1.3 µs on both; the UI pass stepped alone: idle 16.4, 16.4, 16.1 against 15.8, 16.4, 16.5, one label 22.8, 23.1, 23.7 against 23.8, 22.6, 23.2. (The guard's own label and scrolling targets were missed on both, as the machine's load moves them.)
+
+## Indexed vertex codes and the corner pass (2026-11-17)
+
+Built as the design settled it (`docs/specs/2026-11-16-line-anti-aliasing-design.md`, "The compute pre-pass: settled at its builder check"), each step measured in turn: the line bench against main (one alternating round per step, loads of 7 to 18, flagged: main's own figures moved by up to 1.8 times between rounds), and a hand-run split of the GPU's time (`line_time_splits_into_vertex_and_fragment`, `batch/line_time_tests.rs`: the bench's scenes uploaded and drawn as the world pass does into a 1920 x 1080 scene image, timestamped from empty passes round the corner pass and the draw; `Full` the world pass's fragment stage, `Constant` a fragment stage writing a constant, which leaves the vertex stage only the position).
+
+**The split at the start:** vertex work. Scissored to one pixel the time hardly fell (10,000 mitered lines 877 against 875 µs, 100,000 11,028 against 11,053); with the constant fragment stage it halved (5,133), the vertex stage's attributes dropped by the compiler. Metal gave the one-pixel and empty runs a time only now and then, so they are not figures to lean on.
+
+GPU, line bench (µs; main in brackets, the same round):
+
+| Step | mixed | miter 1k | miter 10k | round 1k | round 10k | miter 100k | round 100k |
+|---|---|---|---|---|---|---|---|
+| Start | 256 (61) | 188 (40) | 1,119 (434) | 190 (57) | 1,759 (820) | 9,237 | 18,865 |
+| Indexed codes | 89 (47) | 123 (34) | 658 (370) | 104 (56) | 1,294 (766) | 5,950 | 10,141 |
+| Corner pass | 89 (50) | 77 (37) | 558 (393) | 108 (54) | 1,182 (786) | 6,112 | 9,494 |
+| Arcs of 8 | 83 (52) | 80 (44) | 530 (445) | 89 (65) | 668 (836) | 5,896 | 7,338 |
+| Cull, fragments read the table | 70 (41) | 93 (88) | 809 (711) | 90 (53) | 1,887 (1,124) | 5,645 | 5,760 |
+| No modulo, style in the flags | 64 (42) | 59 (34) | 383 (490) | 73 (56) | 528 (889) | 4,449 | 5,255 |
+
+The fifth row's round ran at a load of 15 and both sides' figures with it; the culling does not touch the bench (every line is in view).
+
+The split (`Full`, µs; the corner pass included):
+
+| Step | mixed | miter 1k | miter 10k | round 1k | round 10k | miter 100k |
+|---|---|---|---|---|---|---|
+| Start | — | 92 | 875 | 185 | 1,778 | 8,973 |
+| Indexed codes | 136 | 67 | 516 | 89 | 830 | 5,408 |
+| Corner pass | 133 | 94 | 523 | 96 | 796 | 5,419 |
+| Arcs of 8 | 127 | 117 | 484 | 77 | 606 | 5,108 |
+| Fragments read the table | — | 61 | 397 | 65 | 498 | 4,029 |
+| No modulo | — | 47 | 332 | 56 | 414 | 3,460 |
+| Style in the flags, Hard-only axis | 51 | 47 | 338 | 57 | 422 | 3,515 |
+
+(The mixed scene ran first and cold until the measure warmed the GPU up; its earlier figures are not comparable.)
+
+- **Indexed vertex codes** cut the vertex stage by about 40%: a piece's slots are shaded once each (a segment 6 vertices for its 12 corners, a miter or bevel join 9 for 12, a round join 23 for 54 then, a round cap 18 for 48).
+- **The corner pass** moved the three corners a vertex worked out into one compute thread a point, and changed little: 10,000 mitered lines 516 to 523 µs in the split. Working the corners out was not where the time went. The pass itself costs 5.5 to 6 µs for 6,000 points, mostly a dispatch's fixed cost, 18 to 27 µs for 60,000 and 250 µs for 600,000.
+- **Arcs of 8 triangles** took a round join from 23 slots to 15 and a round cap from 18 to 10, and 10,000 round lines 24% down in the split (796 to 606 µs); round pieces' coverage against true discs is within 0.108 (0.105 at 16), and an arc corner's texture coordinate across now runs on past the half width as its offset does, so a textured round cap keeps within 2/255.
+- **Fragments reading their line's shared values from the table** (params, slot, a two-point line's half length) took 8 floats out of what a vertex hands on: 18% down on 10,000 and 100,000 lines. Handing the style in the vertex's flags so that only the rare fragments that need the table read it, and working out the image axis only for Hard lines, measured the same in alternating runs (kept: the fragment stage reads no table for a plain line).
+- **A closed line's neighbours wrapped by a modulo** (`((i % n) + n) % n`, seven a vertex): replacing it with one step round saved 14 to 17%.
+- **Measured and not kept:** building only the place a join vertex's role asks for, rather than every candidate and then choosing, was 2% slower in alternating runs.
+
+**Final, three alternating rounds** (loads 10.5, 8.2 and 7.2, flagged; medians, µs):
+
+| Figure | Main | Branch | Change |
+|---|---|---|---|
+| mixed render | 836.6 | 328.7 | −61% |
+| mixed prepare | 368.1 | 104.2 | −72% |
+| mixed GPU | 41.9 | 67.0 | +60% |
+| miter 1k render | 649.7 | 267.1 | −59% |
+| miter 1k prepare | 276.0 | 85.6 | −69% |
+| miter 1k GPU | 39.5 | 81.4 | +106% |
+| miter 10k render | 5,397.5 | 1,430.7 | −73% |
+| miter 10k prepare | 2,656.5 | 680.4 | −74% |
+| miter 10k GPU | 384.0 | 474.6 | +24% |
+| round 1k render | 1,164.5 | 284.7 | −76% |
+| round 1k prepare | 562.7 | 109.2 | −81% |
+| round 1k GPU | 55.3 | 79.0 | +43% |
+| round 10k render | 10,731.8 | 1,765.8 | −84% |
+| round 10k prepare | 5,831.5 | 912.2 | −84% |
+| round 10k GPU | 776.2 | 521.2 | −33% |
+| miter 100k render / GPU | — | 12,867.5 / 4,570.8 | main cannot draw it |
+| round 100k render / GPU | — | 15,864.4 / 5,278.2 | main cannot draw it |
+
+Each round's GPU figures, branch (main): mixed 68.3, 67.0, 63.2 (41.9, 39.8, 43.5); miter 1k 98.3, 81.4, 60.0 (36.0, 53.5, 39.5); miter 10k 427.3, 682.1, 474.6 (384.0, 419.7, 371.9); round 1k 69.3, 79.0, 79.9 (55.3, 73.8, 54.9); round 10k 859.2, 521.2, 508.2 (773.0, 820.6, 776.2). The corner pass: 5.5 to 6.0 µs (mixed), 5.7 to 9.8 (1k), 19 to 27 (10k), 251 to 254 (100k).
+
+**Against the bound (1.15 times main):** met on 10,000 round lines (0.67) and, in the quieter rounds, on 10,000 mitered ones (0.78 in the round before the final three, 1.24 in their median); missed on the 1,000-line scenes and the mixed thousand (1.4 to 2.1). There the draw itself is about as long as main's whole frame of lines: the split's position-only vertex stage alone takes 33 µs for 1,000 mitered lines (main's world pass about 35 to 40), each vertex loading its line's entry and five points through two dependent reads, mixing segment, join and cap work in each group of vertices, and the corner pass adding its fixed 6. What would cut further: a vertex record the corner pass writes for the vertices a point's pieces share (the points' window loads would go), drawing a line's pieces sorted by kind so each group runs one kind's code, or skipping the corner pass below a few thousand points.
+
+**CPU:** still far under main, but less than before the indexed codes (render −65% to −88%, prepare −79% to −89% then): the index buffer is three codes a triangle where the codes were one.
