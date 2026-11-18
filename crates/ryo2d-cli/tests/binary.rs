@@ -66,7 +66,11 @@ fn a_bare_ryo2d_prints_the_help_and_exits_2() {
 fn version_is_a_flag_and_help_has_no_colour() {
   let output = ryo2d(&["--version"]);
   assert_eq!(output.status.code(), Some(0));
-  assert!(String::from_utf8_lossy(&output.stdout).starts_with("ryo2d "));
+  // The engine's version, which a game built with this command gets
+  assert_eq!(
+    String::from_utf8_lossy(&output.stdout).trim_end(),
+    format!("ryo2d {}", ryo2d::tooling::VERSION)
+  );
   assert!(!ryo2d(&["bogus"]).stderr.contains(&0x1b));
 }
 

@@ -53,6 +53,8 @@ pub mod core;
 /// For tools, not for games, and with no promise of stability.
 #[doc(hidden)]
 pub mod tooling {
+  /// The engine's version, which the `ryo2d` command reports
+  pub const VERSION: &str = env!("CARGO_PKG_VERSION");
   pub use crate::core::config::project::{EMBED_KEYS, embedded_config_env};
   pub use crate::core::config::save_location::{release_save_folder, valid_save_folder};
   pub use crate::core::logging::set_stderr;

@@ -10,7 +10,7 @@ use crate::commands::install_skills::SkillsPlatform;
 
 /// Ryo2D: create, run, build and package games
 #[derive(Debug, Parser)]
-#[command(name = "ryo2d", version, arg_required_else_help = true)]
+#[command(name = "ryo2d", version = ryo2d::tooling::VERSION, arg_required_else_help = true)]
 pub struct Cli {
   #[command(subcommand)]
   pub command: Command,
