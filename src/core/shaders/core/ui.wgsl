@@ -193,7 +193,11 @@ fn ui_line(instance: UiInstanceIn, index: u32, by: vec2<f32>, clip: vec4<u32>, b
     let look = LineLook(JOIN_MITER, CAP_BUTT, miter_limit);
     let vertex = line_piece_vertex(w, look, lp_corner_here(w, look), kind, slot);
     let hard = line_hard((bits >> LINE_EDGE_SHIFT) & 3u, globals.snap);
-    let axis = line_axis(vertex.normal, globals.view_proj, globals.resolution);
+    // Only a Hard line measures along the image's axis
+    var axis = LineAxis(vec2<f32>(0.0), 0.0);
+    if hard {
+        axis = line_axis(vertex.normal, globals.view_proj, globals.resolution);
+    }
     var fringe = line_fringe(vertex, vertex.position, ppu, axis.major);
     out.position = globals.view_proj * vec4<f32>(fringe.pos, 0.0, 1.0);
     if hard {
@@ -332,8 +336,9 @@ fn fs_ui(in: UiOut) -> @location(0) vec4<f32> {
         // line.wgsl's fs_main: covered by its distances in pixels
         case KIND_LINE: {
             let m = LineMeasure(in.measure, in.across_axis, u32(in.extra.z), in.extra.x, in.extra.y, in.extra.w > 0.5);
-            let pixel = line_pixel(m, in.params, globals.px_per_unit);
-            color = styled(in.color, pixel.shape, in.params, pixel.cover);
+            let style = line_style(in.params);
+            let pixel = line_pixel(m, style, globals.px_per_unit);
+            color = styled(in.color, pixel.shape, style, pixel.cover);
         }
         default: {}
     }

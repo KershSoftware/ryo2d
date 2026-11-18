@@ -77,12 +77,12 @@ fn style_shape(style: u32, d: f32, hw: f32) -> vec2<f32> {
     return mix(mean, boxed, clamp((hw - 1.0) * 0.5, 0.0, 1.0));
 }
 
-// `color` shaded across the line by its style, premultiplied by alpha:
+// `color` shaded across the line by its `style` (`line_style`),
+// premultiplied by alpha:
 // `shape` is Soft's or Glow's (alpha, brightness) at the pixel and `cover`
 // how much of the pixel the line covers, which multiplies the straight
 // alpha of every style
-fn styled(color_in: vec4<f32>, shape: vec2<f32>, params: vec4<f32>, cover: f32) -> vec4<f32> {
-    let style = line_style(params);
+fn styled(color_in: vec4<f32>, shape: vec2<f32>, style: u32, cover: f32) -> vec4<f32> {
     var color = color_in;
     if style == LINE_SOFT {
         color.a *= shape.x;

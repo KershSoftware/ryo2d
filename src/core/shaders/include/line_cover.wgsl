@@ -280,8 +280,7 @@ fn line_hard_pixel(m: LineMeasure, style: u32, ppu: f32) -> LinePixel {
 // one of half a pixel would, dimmed by the ratio of their widths, so it
 // stays whole wherever it lies, and its shape is averaged over each pixel
 // (`style_shape`). Solid takes its own coverage, which stays whole as it is
-fn line_pixel(m: LineMeasure, params: vec4<f32>, ppu: f32) -> LinePixel {
-    let style = line_style(params);
+fn line_pixel(m: LineMeasure, style: u32, ppu: f32) -> LinePixel {
     let half = m.measure.z;
     if m.hard {
         return line_hard_pixel(m, style, ppu);

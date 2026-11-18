@@ -31,13 +31,17 @@
 @group(2) @binding(2) var<storage, read> line_corners: array<LineCorner>;
 @group(2) @binding(3) var<storage, read> line_limits: array<vec2<f32>>;
 
-// A vertex's flags with `LINE_HARD` set when its line draws Hard
-const LINE_HARD: u32 = 8u;
+// What a vertex hands its fragments in `flags` besides its own (round,
+// second edge, along): its line's style in bits 4 and 5, and `LINE_HARD`
+// when its line draws Hard
+const LINE_OWN_FLAGS: u32 = 7u;
+const LINE_STYLE_SHIFT: u32 = 4u;
+const LINE_HARD: u32 = 64u;
 
-// What the fragment stage shares across a line (its params, the atlas slot
-// a textured line repeats, a two-point line's half length between its caps)
-// it reads from the line table by the line's number, so a vertex hands on
-// only what varies
+// What else the fragment stage shares across a line (the atlas slot a
+// textured line repeats, a two-point line's half length between its caps)
+// it reads from the line table by the line's number where it needs it, so
+// a vertex hands on only what varies
 struct VertexOutput {
     @builtin(position) @invariant position: vec4<f32>,
     @location(0) color: vec4<f32>,
@@ -200,7 +204,11 @@ fn vs_main(@builtin(vertex_index) code: u32) -> VertexOutput {
     // A Hard line's vertex on the rasteriser's grid, its distances moved
     // with it (`line_on_grid`)
     let hard = line_hard(line.edge, globals.snap);
-    let axis = line_axis(vertex.normal, globals.view_proj, globals.resolution);
+    // Only a Hard line measures along the image's axis
+    var axis = LineAxis(vec2<f32>(0.0), 0.0);
+    if hard {
+        axis = line_axis(vertex.normal, globals.view_proj, globals.resolution);
+    }
     var fringe = line_fringe(vertex, pos, globals.px_per_unit, axis.major);
     out.position = globals.view_proj * vec4<f32>(fringe.pos, 0.0, 1.0);
     if hard {
@@ -211,7 +219,7 @@ fn vs_main(@builtin(vertex_index) code: u32) -> VertexOutput {
     out.color = vec4<f32>(srgb_to_linear(vertex.color.rgb) * line.emission, vertex.color.a);
     out.uv = fringe.uv;
     out.measure = fringe.measure;
-    out.flags = vertex.flags | select(0u, LINE_HARD, hard);
+    out.flags = vertex.flags | (line_style(params) << LINE_STYLE_SHIFT) | select(0u, LINE_HARD, hard);
     out.k = vertex.k;
     out.line = world.line;
     out.across_axis = fringe.across_axis;
@@ -223,16 +231,26 @@ fn vs_main(@builtin(vertex_index) code: u32) -> VertexOutput {
 
 // ========== Fragment Shaders ==========
 
-// What the fragment's line measures (`line_cover.wgsl`)
-fn line_measure(in: VertexOutput, info: LineInfo) -> LineMeasure {
-    return LineMeasure(in.measure, in.across_axis, in.flags & ~LINE_HARD, in.k, info.along_half, (in.flags & LINE_HARD) != 0u);
+// What the fragment's line measures (`line_cover.wgsl`), a two-point
+// capped line's half length between its caps read from its entry only for
+// the fragments that measure it
+fn line_measure(in: VertexOutput) -> LineMeasure {
+    var along_half = 0.0;
+    if (in.flags & LINE_FLAG_ALONG) != 0u {
+        along_half = lines[in.line].along_half;
+    }
+    return LineMeasure(in.measure, in.across_axis, in.flags & LINE_OWN_FLAGS, in.k, along_half, (in.flags & LINE_HARD) != 0u);
+}
+
+fn line_style_of(in: VertexOutput) -> u32 {
+    return (in.flags >> LINE_STYLE_SHIFT) & 3u;
 }
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let info = lines[in.line];
-    let pixel = line_pixel(line_measure(in, info), info.params, globals.px_per_unit);
-    return ui_out(styled(in.color, pixel.shape, info.params, pixel.cover));
+    let style = line_style_of(in);
+    let pixel = line_pixel(line_measure(in), style, globals.px_per_unit);
+    return ui_out(styled(in.color, pixel.shape, style, pixel.cover));
 }
 
 @fragment
@@ -240,9 +258,9 @@ fn fs_textured(in: VertexOutput) -> @location(0) vec4<f32> {
     // Derivatives first, while control flow is uniform
     let ddx = dpdx(in.uv);
     let ddy = dpdy(in.uv);
-    let info = lines[in.line];
-    let texel = sample_wrapped(line_texture, line_sampler, in.uv, info.bounds, ddx, ddy);
+    let texel = sample_wrapped(line_texture, line_sampler, in.uv, lines[in.line].bounds, ddx, ddy);
     let texture = vec4<f32>(srgb_to_linear(texel.rgb), texel.a);
-    let pixel = line_pixel(line_measure(in, info), info.params, globals.px_per_unit);
-    return ui_out(styled(texture * in.color, pixel.shape, info.params, pixel.cover));
+    let style = line_style_of(in);
+    let pixel = line_pixel(line_measure(in), style, globals.px_per_unit);
+    return ui_out(styled(texture * in.color, pixel.shape, style, pixel.cover));
 }
