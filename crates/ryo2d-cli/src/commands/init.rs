@@ -87,15 +87,19 @@ fn prompt_project_name(prompt: &mut Prompt) -> CliResult<String> {
   Ok(name)
 }
 
-/// Words cargo refuses as a package name (Rust's keywords, and `test`, which
-/// conflicts with the built-in test library)
-const REFUSED_NAMES: [&str; 53] = [
+/// Words cargo refuses as a binary package's name: Rust's keywords, `test`
+/// (it conflicts with the built-in test library) and the names of cargo's own
+/// folders in `target/` (`ryo2d build` writes `target/release/<name>`)
+const REFUSED_NAMES: [&str; 51] = [
   "abstract", "as", "async", "await", "become", "box", "break", "const", "continue", "crate", "do",
-  "dyn", "else", "enum", "extern", "false", "final", "fn", "for", "gen", "if", "impl", "in", "let",
+  "dyn", "else", "enum", "extern", "false", "final", "fn", "for", "if", "impl", "in", "let",
   "loop", "macro", "match", "mod", "move", "mut", "override", "priv", "pub", "ref", "return",
   "self", "static", "struct", "super", "test", "trait", "true", "try", "type", "typeof", "unsafe",
-  "unsized", "use", "virtual", "where", "while", "yield", "union",
+  "unsized", "use", "virtual", "where", "while", "yield",
 ];
+
+/// Names that conflict with the folders cargo makes in `target/`
+const CARGO_FOLDERS: [&str; 4] = ["deps", "examples", "build", "incremental"];
 
 /// What is wrong with a project name for cargo (which names the package
 /// after it), or `Ok` when it is fine
@@ -111,6 +115,11 @@ fn check_project_name(name: &str) -> Result<(), String> {
   }
   if name.starts_with(|c: char| c.is_ascii_digit()) {
     return Err(format!("`{name}` cannot start with a digit"));
+  }
+  if CARGO_FOLDERS.contains(&name) {
+    return Err(format!(
+      "`{name}` conflicts with the names of cargo's build folders, so cargo refuses it as a package name"
+    ));
   }
   if REFUSED_NAMES.contains(&name) {
     return Err(format!(
@@ -233,7 +242,9 @@ mod tests {
 
   #[test]
   fn a_name_cargo_refuses_is_refused_before_anything_is_written() {
-    for name in ["my-game", "_x", "game2", "a"] {
+    for name in [
+      "my-game", "_x", "game2", "a", "union", "gen", "con", "nul", "core",
+    ] {
       assert!(check_project_name(name).is_ok(), "{name}");
     }
     for name in [
@@ -242,6 +253,10 @@ mod tests {
       "9a",
       "fn",
       "test",
+      "deps",
+      "examples",
+      "build",
+      "incremental",
       "Upper",
       "has space",
       "dot.name",

@@ -55,7 +55,10 @@ pub fn execute() -> CliResult<()> {
 
   // Create zip file
   let portable = workspace.config().release.portable;
-  if release_dir.join("data").is_dir() {
+  let has_saves = fs::read_dir(release_dir.join("data"))
+    .map(|mut entries| entries.next().is_some())
+    .unwrap_or(false);
+  if has_saves {
     Output::status(
       "Skipping",
       "release/data/ (saves and settings stay out of the zip)",
@@ -177,7 +180,7 @@ fn create_zip(
 
   zip
     .finish()
-    .map_err(|e| CliError::Other(format!("Failed to finalize zip: {}", e)))?;
+    .map_err(|e| CliError::Other(format!("Failed to finalise zip: {}", e)))?;
 
   Ok(())
 }
