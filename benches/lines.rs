@@ -28,8 +28,9 @@
 //!   `HeadlessEngine::stamp_line_corners`). It includes the world passes'
 //!   own load and store of the camera's image. It leaves out the gap
 //!   between the corner pass's end and the world pass's start, where the
-//!   camera's clear runs too: 3 to 6 µs in most frames, measured from
-//!   stamps on the world pass itself, on every scene.
+//!   camera's clear runs too: 3 to 6 µs, measured from stamps on the world
+//!   pass itself in the frames where those stamps held (on 1,000 lines
+//!   they did not in up to 170 of 300).
 //!
 //! Every frame must have drawn something: a draw call and a prepare time
 //! above nothing (a scene that drew no line would measure nothing and look
