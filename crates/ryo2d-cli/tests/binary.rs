@@ -92,6 +92,11 @@ fn init_with_no_terminal_and_no_flag_installs_no_skills_and_says_how() {
   assert!(!game.join(".claude").exists() && !game.join(".github").exists());
   let said = String::from_utf8_lossy(&output.stdout);
   assert!(said.contains("--skills"), "{said}");
+  // The command it suggests works with no terminal too
+  assert!(
+    said.contains("ryo2d install-skills --skills <claude|copilot|both|none>"),
+    "{said}"
+  );
 }
 
 #[test]
@@ -133,4 +138,72 @@ fn install_skills_with_no_terminal_and_no_flag_installs_nothing() {
   assert_eq!(output.status.code(), Some(1));
   assert!(String::from_utf8_lossy(&output.stderr).contains("--skills"));
   assert!(!game.join(".claude").exists());
+}
+
+/// A game whose `main` is `main`, with a Ryo.toml, in a fresh folder; its
+/// builds go under the workspace's target folder, kept between runs
+fn game_with_main(
+  name: &str,
+  main: &str,
+) -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+  let folder = tempfile::tempdir().expect("a temporary folder");
+  let root = folder.path().canonicalize().unwrap().join(name);
+  std::fs::create_dir_all(root.join("src")).unwrap();
+  std::fs::write(
+    root.join("Cargo.toml"),
+    format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"),
+  )
+  .unwrap();
+  std::fs::write(
+    root.join("Ryo.toml"),
+    format!("[project]\nname = \"{name}\"\n"),
+  )
+  .unwrap();
+  std::fs::write(root.join("src/main.rs"), main).unwrap();
+  let target =
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/cli-test-crates");
+  std::fs::create_dir_all(&target).unwrap();
+  (folder, root, target.canonicalize().unwrap())
+}
+
+/// `ryo2d args` in the game's folder, building into `target`
+fn ryo2d_in(root: &std::path::Path, target: &std::path::Path, args: &[&str]) -> Output {
+  Command::new(env!("CARGO_BIN_EXE_ryo2d"))
+    .args(args)
+    .current_dir(root)
+    .env("CARGO_TARGET_DIR", target)
+    .stdin(std::process::Stdio::null())
+    .output()
+    .expect("the ryo2d binary runs")
+}
+
+#[test]
+fn a_game_s_exit_code_passes_through_run_and_dev() {
+  let (_folder, root, target) =
+    game_with_main("cli_exits3", "fn main() { std::process::exit(3); }");
+  let built = Command::new("cargo")
+    .args(["build", "--release"])
+    .current_dir(&root)
+    .env("CARGO_TARGET_DIR", &target)
+    .output()
+    .expect("cargo runs");
+  assert!(built.status.success());
+  for args in [&["run"][..], &["dev", "--skip-opt-check"]] {
+    let output = ryo2d_in(&root, &target, args);
+    assert_eq!(output.status.code(), Some(3), "{args:?}");
+    let said = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+      said.matches("the game exited with code 3").count(),
+      1,
+      "{args:?}: {said}"
+    );
+  }
+}
+
+#[test]
+fn run_without_a_build_says_to_build() {
+  let (_folder, root, target) = game_with_main("cli_unbuilt", "fn main() {}");
+  let output = ryo2d_in(&root, &target, &["run"]);
+  assert_eq!(output.status.code(), Some(1));
+  assert!(String::from_utf8_lossy(&output.stderr).contains("ryo2d build"));
 }

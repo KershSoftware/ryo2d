@@ -37,6 +37,7 @@
 //! ```
 
 mod args;
+mod cargo;
 mod commands;
 mod error;
 mod prompt;

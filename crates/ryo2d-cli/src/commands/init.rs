@@ -54,7 +54,12 @@ pub fn execute(args: &InitArgs) -> CliResult<()> {
     _ => {
       Output::status("Skipped", "Agent Skills: none were installed");
       println!("             Install them with 'ryo2d init --skills claude|copilot|both'");
-      println!("             for a new project, or 'ryo2d install-skills' in this one.");
+      if prompt.interactive {
+        println!("             for a new project, or 'ryo2d install-skills' in this one.");
+      } else {
+        println!("             for a new project, or in this one:");
+        println!("             ryo2d install-skills --skills <claude|copilot|both|none>");
+      }
     }
   }
 

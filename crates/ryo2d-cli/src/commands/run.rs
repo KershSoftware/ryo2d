@@ -1,10 +1,7 @@
 //! Run command - executes the production build
 
-use std::fs;
-use std::path::PathBuf;
-use std::process::Command;
-
 use super::{CliError, CliResult, Output, discover_workspace, get_cargo_package_name};
+use crate::cargo;
 
 /// Execute the run command
 pub fn execute() -> CliResult<()> {
@@ -12,7 +9,7 @@ pub fn execute() -> CliResult<()> {
   let package_name = get_cargo_package_name(&workspace)?;
   let display_name = workspace.name();
 
-  // Determine the binary path - check release bundle first
+  // Determine the binary path - the release bundle first
   let binary_name = if cfg!(windows) {
     format!("{}.exe", package_name)
   } else {
@@ -21,25 +18,17 @@ pub fn execute() -> CliResult<()> {
 
   let release_bundle_binary = workspace.root().join("release").join(&binary_name);
 
-  // Check local target directory
-  let local_target_binary = workspace
-    .root()
-    .join("target")
-    .join("release")
-    .join(&binary_name);
-
-  // Check workspace root's shared target directory
-  let workspace_target_dir = find_workspace_target_dir(workspace.root());
-  let workspace_target_binary = workspace_target_dir.join("release").join(&binary_name);
-
   let (binary_path, from_bundle) = if release_bundle_binary.exists() {
     (release_bundle_binary, true)
-  } else if workspace_target_binary.exists() {
-    (workspace_target_binary, false)
-  } else if local_target_binary.exists() {
-    (local_target_binary, false)
   } else {
-    return Err(CliError::NoBuild(release_bundle_binary));
+    // Cargo says where its target folder is (a workspace's, a configured one)
+    let built = cargo::target_dir(workspace.root())?
+      .join("release")
+      .join(&binary_name);
+    if !built.exists() {
+      return Err(CliError::NoBuild(release_bundle_binary));
+    }
+    (built, false)
   };
 
   if !from_bundle {
@@ -56,44 +45,5 @@ pub fn execute() -> CliResult<()> {
     workspace.root().to_path_buf()
   };
 
-  // Execute the binary
-  let status = Command::new(&binary_path)
-    .current_dir(&working_dir)
-    .status()
-    .map_err(|e| CliError::spawn(&binary_path.display().to_string(), e))?;
-
-  if !status.success() {
-    let code = status.code().unwrap_or(-1);
-    Output::warning(&format!("Game exited with code {}", code));
-  }
-
-  Ok(())
-}
-
-/// Find the workspace root's target directory for shared dependency caching.
-/// Searches parent directories for a Cargo.toml with a [workspace] section.
-fn find_workspace_target_dir(start_dir: &std::path::Path) -> PathBuf {
-  let mut search_dir = start_dir.to_path_buf();
-
-  // Search up to 10 parent directories for workspace root
-  for _ in 0..10 {
-    let cargo_toml = search_dir.join("Cargo.toml");
-    if cargo_toml.exists() {
-      // Check if this Cargo.toml has a [workspace] section
-      if let Ok(content) = fs::read_to_string(&cargo_toml)
-        && content.contains("[workspace]")
-      {
-        return search_dir.join("target");
-      }
-    }
-
-    if let Some(parent) = search_dir.parent() {
-      search_dir = parent.to_path_buf();
-    } else {
-      break;
-    }
-  }
-
-  // Fallback to local target directory
-  start_dir.join("target")
+  cargo::run_game(&binary_path, &working_dir)
 }

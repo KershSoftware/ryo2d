@@ -1,12 +1,13 @@
 //! Dev command - development mode with automatic rebuilding
 
+use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, Write};
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::Path;
 
 use super::{CliError, CliResult, Output, discover_workspace};
 use crate::args::DevArgs;
+use crate::cargo;
 use crate::prompt::Prompt;
 
 /// Execute the dev command
@@ -49,36 +50,21 @@ pub fn execute(args: &DevArgs) -> CliResult<()> {
     Output::status("Starting", &format!("{} in dev mode...", project_name));
   }
 
-  // Find workspace root's target directory for shared dependency caching
-  let target_dir = find_workspace_target_dir(workspace.root());
-
-  // Build cargo command
-  let mut cmd = Command::new("cargo");
-  cmd.arg("run");
-
   // The engine's own profiler feature, so the game needs none of its own
+  let mut build_args = Vec::new();
   if enable_profiler_feature {
-    cmd.arg("--features").arg("ryo2d/profiler");
+    build_args.extend(["--features", "ryo2d/profiler"]);
   }
+  let exe = cargo::build(workspace.root(), &build_args)?;
 
-  // Set auto-open env var only when -p flag is explicitly used
+  // The auto-open variable only when -p is explicitly used
+  let mut env = Vec::new();
   if profiler_flag {
-    cmd.env("RYO_PROFILER_AUTO_OPEN", "1");
+    env.push(("RYO_PROFILER_AUTO_OPEN", Some(OsStr::new("1"))));
   }
 
-  // Use shared target directory for dependency caching
-  cmd.env("CARGO_TARGET_DIR", &target_dir);
-  cmd.current_dir(workspace.root());
-
-  // For now, just run cargo run (debug build)
-  // Future: Add file watching with notify crate
-  let status = cmd.status().map_err(|e| CliError::spawn("cargo run", e))?;
-
-  if !status.success() {
-    return Err(CliError::Build { status });
-  }
-
-  Ok(())
+  // From the project folder, as `cargo run` ran it: assets and Ryo.toml are found there
+  cargo::run_game_with(&exe, workspace.root(), &env)
 }
 
 /// Check if the project has dev profile optimization configured
@@ -112,6 +98,14 @@ fn offer_dev_profile(
     return Ok(());
   }
 
+  if !prompt.interactive {
+    let _ = writeln!(
+      out,
+      "Hint: dev builds are slow without [profile.dev.package.\"*\"] opt-level = 2 in Cargo.toml: add it yourself, or pass --skip-opt-check to silence this."
+    );
+    return Ok(());
+  }
+
   Output::warning("Dev build may be slow - dependencies are not optimized!");
   let _ = write!(
     out,
@@ -126,14 +120,6 @@ fn offer_dev_profile(
 
 "
   );
-
-  if !prompt.interactive {
-    let _ = writeln!(
-      out,
-      "  No terminal to ask, so Cargo.toml is unchanged: add the lines above yourself,\n  or pass --skip-opt-check to silence this.\n"
-    );
-    return Ok(());
-  }
 
   if prompt.yes_no("Add this setting to Cargo.toml now?", true) {
     let addition = r#"
@@ -156,34 +142,6 @@ opt-level = 2
   Ok(())
 }
 
-/// Find the workspace root's target directory for shared dependency caching.
-/// Searches parent directories for a Cargo.toml with a [workspace] section.
-fn find_workspace_target_dir(start_dir: &std::path::Path) -> PathBuf {
-  let mut search_dir = start_dir.to_path_buf();
-
-  // Search up to 10 parent directories for workspace root
-  for _ in 0..10 {
-    let cargo_toml = search_dir.join("Cargo.toml");
-    if cargo_toml.exists() {
-      // Check if this Cargo.toml has a [workspace] section
-      if let Ok(content) = fs::read_to_string(&cargo_toml)
-        && content.contains("[workspace]")
-      {
-        return search_dir.join("target");
-      }
-    }
-
-    if let Some(parent) = search_dir.parent() {
-      search_dir = parent.to_path_buf();
-    } else {
-      break;
-    }
-  }
-
-  // Fallback to local target directory
-  start_dir.join("target")
-}
-
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -202,6 +160,11 @@ mod tests {
     let said = String::from_utf8(said).unwrap();
     assert!(said.contains("[profile.dev.package.\"*\"]"), "{said}");
     assert!(said.contains("Cargo.toml"), "{said}");
+    assert_eq!(
+      said.lines().count(),
+      1,
+      "one line, not the warning block: {said}"
+    );
   }
 
   #[test]

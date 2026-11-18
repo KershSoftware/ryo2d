@@ -9,6 +9,7 @@ use ryo2d::tooling::embedded_config_env;
 use super::licenses::write_font_licenses;
 use super::{CliError, CliResult, Output, discover_workspace, get_cargo_package_name};
 use crate::args::BuildArgs;
+use crate::cargo;
 
 /// Execute the build command
 pub fn execute(options: BuildArgs) -> CliResult<()> {
@@ -28,25 +29,18 @@ pub fn execute(options: BuildArgs) -> CliResult<()> {
   // Resolve icon path: custom from [release].logo, or default Ryo2D logo
   let icon_path = resolve_icon_path(&workspace, release.logo.as_ref())?;
 
-  // Find workspace root's target directory for shared dependency caching
-  // This allows all examples to share compiled dependencies
-  let target_dir = find_workspace_target_dir(workspace.root());
-
   for warning in build_warnings(options) {
     Output::warning(warning);
   }
   let embedded = embedded_config_env(&workspace);
 
-  let status = release_build_command(&workspace, &target_dir, &embedded, &icon_path, options)
-    .status()
-    .map_err(|e| CliError::spawn("cargo build", e))?;
-
-  if !status.success() {
-    return Err(CliError::Build { status });
-  }
+  let built = cargo::execute(
+    release_build_command(&workspace, &embedded, &icon_path, options),
+    workspace.root(),
+  )?;
 
   // Create release bundle
-  create_release_bundle(&workspace, &package_name, project_name, &icon_path)?;
+  create_release_bundle(&workspace, &package_name, &built, project_name, &icon_path)?;
 
   Output::success(&format!("release build of {}", project_name));
 
@@ -60,7 +54,6 @@ pub fn execute(options: BuildArgs) -> CliResult<()> {
 /// shipped game.
 fn release_build_command(
   workspace: &ryo2d::core::config::Workspace,
-  target_dir: &Path,
   embedded: &[(&'static str, String)],
   icon_path: &Path,
   options: BuildArgs,
@@ -70,8 +63,6 @@ fn release_build_command(
   if options.dev_tools {
     command.arg("--features").arg("ryo2d/dev-tools");
   }
-  // Use shared target directory for dependency caching
-  command.env("CARGO_TARGET_DIR", target_dir);
   for key in ryo2d::tooling::EMBED_KEYS {
     command.env_remove(key);
   }
@@ -115,6 +106,7 @@ fn checked_save_folder(config: &ryo2d::core::config::WorkspaceConfig) -> CliResu
 fn create_release_bundle(
   workspace: &ryo2d::core::config::Workspace,
   package_name: &str,
+  source_binary: &Path,
   display_name: &str,
   icon_path: &PathBuf,
 ) -> CliResult<()> {
@@ -138,50 +130,9 @@ fn create_release_bundle(
     package_name.to_string()
   };
 
-  // Find all candidate binaries and use the newest one
-  // (handles workspace members where binary is in parent workspace's target)
-  let local_binary = workspace_root
-    .join("target")
-    .join("release")
-    .join(&binary_name);
-
-  let mut candidates: Vec<PathBuf> = vec![];
-
-  // Check local target directory
-  if local_binary.exists() {
-    candidates.push(local_binary.clone());
-  }
-
-  // Check parent directories for workspace root's target
-  let mut search_dir = workspace_root.to_path_buf();
-  for _ in 0..10 {
-    if let Some(parent) = search_dir.parent() {
-      search_dir = parent.to_path_buf();
-      let candidate = search_dir.join("target").join("release").join(&binary_name);
-      if candidate.exists() {
-        candidates.push(candidate);
-      }
-    } else {
-      break;
-    }
-  }
-
-  // Use the most recently modified binary
-  let source_binary = candidates
-    .into_iter()
-    .filter_map(|path| {
-      fs::metadata(&path)
-        .and_then(|m| m.modified())
-        .ok()
-        .map(|mtime| (path, mtime))
-    })
-    .max_by_key(|(_, mtime)| *mtime)
-    .map(|(path, _)| path)
-    .unwrap_or(local_binary); // Fall back to local path for error message
-
   let dest_binary = release_dir.join(&binary_name);
 
-  fs::copy(&source_binary, &dest_binary).map_err(|e| {
+  fs::copy(source_binary, &dest_binary).map_err(|e| {
     CliError::Other(format!(
       "Failed to copy executable from {} to {}: {}",
       source_binary.display(),
@@ -287,34 +238,6 @@ fn copy_dir_recursive(src: &PathBuf, dest: &PathBuf) -> CliResult<()> {
   }
 
   Ok(())
-}
-
-/// Find the workspace root's target directory for shared dependency caching.
-/// Searches parent directories for a Cargo.toml with a [workspace] section.
-fn find_workspace_target_dir(start_dir: &std::path::Path) -> PathBuf {
-  let mut search_dir = start_dir.to_path_buf();
-
-  // Search up to 10 parent directories for workspace root
-  for _ in 0..10 {
-    let cargo_toml = search_dir.join("Cargo.toml");
-    if cargo_toml.exists() {
-      // Check if this Cargo.toml has a [workspace] section
-      if let Ok(content) = fs::read_to_string(&cargo_toml)
-        && content.contains("[workspace]")
-      {
-        return search_dir.join("target");
-      }
-    }
-
-    if let Some(parent) = search_dir.parent() {
-      search_dir = parent.to_path_buf();
-    } else {
-      break;
-    }
-  }
-
-  // Fallback to local target directory
-  start_dir.join("target")
 }
 
 /// Resolve the icon path for embedding.
@@ -444,16 +367,10 @@ mod tests {
   fn dev_tools_adds_the_feature_and_one_warning() {
     let ws = workspace("[project]\nname = \"g\"\n");
     let args = |options: BuildArgs| -> Vec<String> {
-      release_build_command(
-        &ws,
-        Path::new("target"),
-        &[],
-        Path::new("icon.png"),
-        options,
-      )
-      .get_args()
-      .map(|arg| arg.to_string_lossy().into_owned())
-      .collect()
+      release_build_command(&ws, &[], Path::new("icon.png"), options)
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect()
     };
     let plain = BuildArgs { dev_tools: false };
     let tools = BuildArgs { dev_tools: true };
@@ -473,12 +390,17 @@ mod tests {
   fn the_release_bundle_carries_the_font_licences() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("Ryo.toml"), "[project]\nname = \"g\"\n").unwrap();
-    let binary = if cfg!(windows) { "g.exe" } else { "g" };
-    let target = dir.path().join("target").join("release");
-    std::fs::create_dir_all(&target).unwrap();
-    std::fs::write(target.join(binary), b"a game").unwrap();
+    let built = dir.path().join("built-game");
+    std::fs::write(&built, b"a game").unwrap();
     let workspace = Workspace::from_path(dir.path()).unwrap();
-    create_release_bundle(&workspace, "g", "g", &dir.path().join("no-icon.png")).unwrap();
+    create_release_bundle(
+      &workspace,
+      "g",
+      &built,
+      "g",
+      &dir.path().join("no-icon.png"),
+    )
+    .unwrap();
     let licenses = dir
       .path()
       .join("release")
@@ -501,7 +423,6 @@ mod tests {
 
     let command = release_build_command(
       &ws,
-      std::path::Path::new("target"),
       &embedded,
       std::path::Path::new("icon.png"),
       BuildArgs { dev_tools: false },
