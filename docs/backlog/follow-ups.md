@@ -6,6 +6,22 @@ Items from 4f on were copied from their execution records. Items from earlier su
 
 ## Line anti-aliasing
 
+- Owner decisions (2026-11-16 to 2026-11-18):
+  - The design and plan were approved together and ran subagent-driven. The speed allowance is about 15% of main's (the plan's 5% guard set aside). Inner corners were accepted and recorded as a limit.
+  - Building lines on the CPU cost +40% a frame, so the owner chose to build them on the GPU. The GPU then took 2.2–3.6 times main's time, so the owner chose a compute pre-pass. Built from its builder check, it became indexed vertex codes, a corner pass, round arcs of 8 triangles and culling before the copy. After that, one more speed round (shared bevel slots; small streams skip the corner pass).
+  - **The GPU bound was accepted as missed on the small scenes** (owner, 2026-11-18). On the final code (`docs/backlog/lines.md`, "Final, on the last code"; loads 7 to 11): 1,000 mitred lines 1.35× main, the mixed thousand 1.34×, 1,000 round lines 1.31× (1.10× in the sitting before); 10,000 mitred 0.67× and round 0.77×. The CPU's render step is 63–81% under main's, and 100,000 lines draw in about 5 ms of GPU time (main cannot draw them). Untried ideas for the small scenes: a per-point vertex record for small streams, and a cheaper vertex for the fringe.
+  - **Hand-play: lines are Smooth by default on every target**, pixel art included, and UI lines always. Hard (crisp, major-axis) only through `LineEdge::Hard`. The design had made pixel-art targets Hard by default; the owner found the text demo's zigzag, the physics colliders and the UI's ticks and chevrons "not smooth". `LineEdge` defaults to `Smooth`, and the edge no longer reads the camera's snap. Pixel-art games' lines now look soft when the image is scaled up, and there is no game-wide switch to Hard.
+  - Disk: the owner approved deleting `target/debug` as needed until the merge.
+- Rulings the owner may revisit:
+  - **A segment is 4 triangles**, so a split inner corner gets its own vertex (no T-junction). The cost is two empty triangles' vertex work a segment.
+  - **Debug polylines snap odd widths onto pixel centres with `ceil() − 0.5`** (ties up and left, as sprites and `Line2D` fall), on every target.
+  - **Bevel slots 1, 4 and 7 stay**: a miter past its limit takes the bevel role on the miter's layout and names them.
+- Not hand-checked at merge: any GPU backend but Metal; the web build in a browser; a quiet machine (every speed sitting ran at loads above 3). The release suite's five failures (the console demo's pages, four; the demo kit's `a_reserved_key_listed_later_is_caught_in_debug_builds`) also failed on the skeleton authoring branch. The asset watcher's timing tests time out under heavy load and pass alone.
+- Deferred findings:
+  - The miter-tip test stops at the first empty row past the tip, so a stray pixel beyond a gap is not checked (`line_cover_tests.rs`).
+  - Under Hard, a miter's corner-point vertex snaps its second-edge distance along the other segment's axis (at most 1/512 of a pixel).
+  - Two over-wide `format!` lines in `line_cover_tests.rs` and a lopsided rewrap at the top of `lines.rs`.
+  - `line_piece_slot` (the UI's path) indexes a local array by a variable, as it did before.
 - Limits recorded (the render module notes, Lines): a stream past 131,071 points draws with index values past 2^24 (a vertex code is its point shifted by 7 bits), which a Vulkan device without full 32-bit index values (`DownlevelFlags::FULL_DRAW_INDEX_UINT32`) would misdraw; nothing checks the flag or caps `StreamCap::points` at 2^17 for such a device. Hard corners: a miter's outer corner can stand past the narrower segment's drawn edge by under 0.3 of a pixel at 4 pixels wide, and a bevel's own edge is taken at the plain half width.
 
 ## Skeleton authoring
