@@ -938,7 +938,7 @@ mod lines {
     let mut instances = Vec::new();
     for (z, command) in (0..).zip(lines) {
       let (style, look) = line_of(command, z, &mut points, None).expect("a line");
-      push_polyline(&mut list, batch.lines(), &points, &style, look);
+      push_polyline(&mut list, batch.lines(), &points, &style, look, &cameras);
       instances.extend(line_instances(command.clone(), px_scale, IMAGE));
     }
     list.sorted();
@@ -1363,7 +1363,7 @@ mod bound {
         layer: 0,
       };
       let (style, look) = line_of(&command, z, &mut points, None).expect("a line");
-      push_polyline(&mut list, batch.lines(), &points, &style, look);
+      push_polyline(&mut list, batch.lines(), &points, &style, look, &cameras);
     }
     list.sorted();
     let mut uniforms = CameraUniforms::default();

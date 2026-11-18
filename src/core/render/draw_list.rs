@@ -594,15 +594,10 @@ impl DrawList {
           && camera.view.is_visible(sprite.min, sprite.max)
           && (sprite.shows.is_none() || sprite.shows != camera.target)
       }),
-      DrawPayload::Triangles(index) => self.triangles.get(index).is_some_and(|triangles| {
-        // Grown by one of the camera's pixels, which the fringe pushes out
-        let ppu = pixels_per_unit(&camera.view, camera.rect.size());
-        let pixel = Vec2::splat(if ppu > 0.0 { 1.0 / ppu } else { 0.0 });
-        triangles.layers.intersects(&camera.layers)
-          && camera
-            .view
-            .is_visible(triangles.min - pixel, triangles.max + pixel)
-      }),
+      DrawPayload::Triangles(index) => self
+        .triangles
+        .get(index)
+        .is_some_and(|triangles| sees_line(camera, triangles.layers, triangles.min, triangles.max)),
       DrawPayload::Glyph(index) => self.glyphs.get(index).is_some_and(|glyph| {
         glyph.layers.intersects(&camera.layers) && camera.view.is_visible(glyph.min, glyph.max)
       }),
@@ -617,6 +612,14 @@ impl DrawList {
       }),
     }
   }
+}
+
+/// Whether `camera` sees a line on `layers` whose box is `min..max`, grown
+/// by one of the camera's pixels, which the fringe pushes out
+pub(crate) fn sees_line(camera: &CameraDraw, layers: RenderLayers, min: Vec2, max: Vec2) -> bool {
+  let ppu = pixels_per_unit(&camera.view, camera.rect.size());
+  let pixel = Vec2::splat(if ppu > 0.0 { 1.0 / ppu } else { 0.0 });
+  layers.intersects(&camera.layers) && camera.view.is_visible(min - pixel, max + pixel)
 }
 
 /// The world box `instance`'s quad stays inside at any rotation: its centre

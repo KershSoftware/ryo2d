@@ -271,7 +271,14 @@ impl DebugDraw {
           emission: 1.0,
           edge: shape.edge,
         };
-        push_polyline(list, lines, scratch, &style, look);
+        push_polyline(
+          list,
+          lines,
+          scratch,
+          &style,
+          look,
+          std::slice::from_ref(camera),
+        );
       };
       match (shape.kind, points) {
         (ShapeKind::Line, &[a, b]) => add(&[centre(a), centre(b)], false, true),

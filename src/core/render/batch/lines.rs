@@ -34,7 +34,11 @@
 //! - **Culling** grows a line's box by `MITER_LIMIT` times its widest half
 //!   width (a miter's tip, a square cap's corner) and its effect's reach,
 //!   and each camera grows it by one of its pixels for the fringe
-//!   (`a_miter_tip_reaching_into_view_is_drawn`, e2e).
+//!   (`a_miter_tip_reaching_into_view_is_drawn`, e2e). A line no camera
+//!   sees (by its view and layers, as each camera's draws keep it, and the
+//!   one camera a debug shape is for) is not copied into the stream, so the
+//!   CPU, the upload and the GPU spend nothing on it
+//!   (`a_line_no_camera_sees_is_not_copied`).
 //! - **Limit: a miter's tip can reach a little past the box.** Its coverage
 //!   reaches `m · (hw + 0.5 px)` from the corner point (`m` the miter's
 //!   length, at most `MITER_LIMIT`), while the box grows by `4 hw + 1 px`, so
@@ -61,7 +65,8 @@ use super::corners::CORNER_BYTES;
 use super::{BlendMode, Filter};
 use crate::core::ecs::Entity;
 use crate::core::graphics::{RenderLayers, TextureId};
-use crate::core::render::{DrawList, DrawTriangles};
+use crate::core::render::draw_list::sees_line;
+use crate::core::render::{CameraDraw, DrawList, DrawTriangles};
 use crate::core::trail::{
   Line2D, LineCap, LineEdge, LineJoin, TextureMode, Trail2D, TrailEffect, TrailStyle,
 };
@@ -621,19 +626,17 @@ impl LineStream {
 /// Add the line through `points` to `lines` and to `list` as one item, seen
 /// by the cameras whose view meets its points' box grown by `MITER_LIMIT`
 /// times its widest half width and how far its effect moves it (each
-/// camera grows it by one of its pixels more, for the fringe).
+/// camera grows it by one of its pixels more, for the fringe). A line none
+/// of `cameras` sees (on its layers, and the one it is for when it is for
+/// one) is not copied at all.
 pub(crate) fn push_polyline(
   list: &mut DrawList,
   lines: &mut LineStream,
   points: &[PolyPoint],
   style: &PolyStyle,
   look: LineLook,
+  cameras: &[CameraDraw],
 ) {
-  let line = lines.lines.len() as u32;
-  let indices = lines.polyline(points, style);
-  if indices.is_empty() {
-    return;
-  }
   let (mut min, mut max) = (Vec2::splat(f32::INFINITY), Vec2::splat(f32::NEG_INFINITY));
   let mut reach = 0.0f32;
   for point in points.iter().filter(|point| point.pos.is_finite()) {
@@ -644,6 +647,19 @@ pub(crate) fn push_polyline(
     }
   }
   let reach = Vec2::splat(MITER_LIMIT * reach + effect_reach(&style.params));
+  let (min, max) = (min - reach, max + reach);
+  let seen = cameras.iter().any(|camera| {
+    look.only_camera.is_none_or(|only| only == camera.entity)
+      && sees_line(camera, look.layers, min, max)
+  });
+  if !seen {
+    return;
+  }
+  let line = lines.lines.len() as u32;
+  let indices = lines.polyline(points, style);
+  if indices.is_empty() {
+    return;
+  }
   list.push_triangles(
     look.lit,
     look.z,
@@ -653,8 +669,8 @@ pub(crate) fn push_polyline(
       blend: look.blend,
       filter: look.filter,
       layers: look.layers,
-      min: min - reach,
-      max: max + reach,
+      min,
+      max,
       indices,
       line,
     },
@@ -874,6 +890,125 @@ mod tests {
       (13, 186, 5)
     );
     assert!(stream.points.len() <= cap.points && stream.indices.len() <= cap.indices);
+  }
+
+  /// A camera of `entity` over (0, 0) to (100, 100), a pixel a unit, on
+  /// `layers`
+  fn camera_over(entity: Entity, layers: RenderLayers) -> CameraDraw {
+    use crate::core::graphics::{Camera2d, CameraView};
+    let camera = Camera2d::default();
+    let view = CameraView::compute(
+      Vec2::new(50.0, 50.0),
+      0.0,
+      &camera,
+      Vec2::ZERO,
+      Vec2::new(100.0, 100.0),
+    );
+    let (mut cameras, mut targetless) = (Vec::new(), Vec::new());
+    crate::core::render::plan_cameras(
+      [(entity, &camera, &view, None)].into_iter(),
+      (100, 100),
+      true,
+      None,
+      &mut cameras,
+      &mut targetless,
+    );
+    let mut drawn = cameras[0];
+    drawn.layers = layers;
+    drawn
+  }
+
+  #[test]
+  fn a_line_no_camera_sees_is_not_copied() {
+    // Culled by every camera's view and layers before its points are
+    // copied: nothing in the stream, no item; one a camera sees, or whose
+    // miter tip, fringe or effect reaches into a view, is copied whole
+    let mut world = crate::core::ecs::World::new();
+    let (a, b) = (world.spawn_empty().id(), world.spawn_empty().id());
+    let cameras = [
+      camera_over(a, RenderLayers::default()),
+      camera_over(b, RenderLayers::layer(3)),
+    ];
+    let look = LineLook {
+      lit: true,
+      z: 0,
+      texture: None,
+      blend: BlendMode::Alpha,
+      filter: Filter::Default,
+      layers: RenderLayers::default(),
+      only_camera: None,
+    };
+    let style = PolyStyle {
+      join: LineJoin::Miter,
+      cap: crate::core::trail::LineCap::Butt,
+      closed: false,
+      params: [0.0; 4],
+      emission: 1.0,
+      edge: None,
+    };
+    let line = |from: Vec2, to: Vec2, half_width: f32| -> Vec<PolyPoint> {
+      [from, to]
+        .map(|pos| PolyPoint {
+          pos,
+          half_width,
+          color: Color::WHITE,
+          u: 0.0,
+        })
+        .to_vec()
+    };
+    let pushed =
+      |points: &[PolyPoint], style: &PolyStyle, look: LineLook, cameras: &[CameraDraw]| {
+        let (mut list, mut stream) = (DrawList::default(), LineStream::default());
+        push_polyline(&mut list, &mut stream, points, style, look, cameras);
+        (
+          stream.points.len(),
+          stream.indices.len(),
+          list.items().len(),
+        )
+      };
+    let inside = line(Vec2::new(10.0, 10.0), Vec2::new(90.0, 10.0), 1.0);
+    let outside = line(Vec2::new(200.0, 10.0), Vec2::new(300.0, 10.0), 1.0);
+    assert_eq!(pushed(&inside, &style, look, &cameras), (2, 12, 1));
+    assert_eq!(pushed(&outside, &style, look, &cameras), (0, 0, 0));
+    // No camera at all
+    assert_eq!(pushed(&inside, &style, look, &[]), (0, 0, 0));
+    // Its miter's reach (four half widths), and the fringe's pixel
+    let reaching = line(Vec2::new(107.0, 10.0), Vec2::new(150.0, 10.0), 2.0);
+    assert_eq!(pushed(&reaching, &style, look, &cameras).0, 2);
+    let beyond = line(Vec2::new(109.5, 10.0), Vec2::new(150.0, 10.0), 2.0);
+    assert_eq!(pushed(&beyond, &style, look, &cameras).0, 0);
+    // An effect's reach
+    let lightning = PolyStyle {
+      params: build_effect_params(
+        Some(&TrailEffect::Lightning {
+          jitter: 5.0,
+          speed: 1.0,
+          detail: 2,
+        }),
+        TrailStyle::Solid,
+      ),
+      ..style
+    };
+    assert_eq!(pushed(&beyond, &lightning, look, &cameras).0, 2);
+    // On a layer only the second camera draws, which sees it; on one no
+    // camera draws, which none does
+    let on = |layers| LineLook { layers, ..look };
+    assert_eq!(
+      pushed(&inside, &style, on(RenderLayers::layer(3)), &cameras).0,
+      2
+    );
+    assert_eq!(
+      pushed(&inside, &style, on(RenderLayers::layer(5)), &cameras).0,
+      0
+    );
+    // A shape for one camera, which is not among them
+    let for_camera = |only_camera| LineLook {
+      only_camera,
+      layers: RenderLayers::layer(3),
+      ..look
+    };
+    assert_eq!(pushed(&inside, &style, for_camera(Some(b)), &cameras).0, 2);
+    assert_eq!(pushed(&inside, &style, for_camera(Some(a)), &cameras).0, 0);
   }
 
   #[test]

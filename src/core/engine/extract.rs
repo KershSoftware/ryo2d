@@ -346,7 +346,7 @@ impl Engine {
       }
       // Trails (world-space points), lines (at their entity) and the debug
       // overlays join the line stream as their points, one draw-list item
-      // each; the GPU builds their triangles
+      // each, unless no camera sees them; the GPU builds their triangles
       let line_stream = batch.lines();
       // The shadowed lights the lit cameras see, each with its casting edges
       // from the occluder index, read where they are drawn and on their
@@ -411,7 +411,14 @@ impl Engine {
             layers: layers.copied().unwrap_or_default(),
             only_camera: None,
           };
-          push_polyline(&mut self.draw_list, line_stream, &points, &style, look);
+          push_polyline(
+            &mut self.draw_list,
+            line_stream,
+            &points,
+            &style,
+            look,
+            &self.camera_draws,
+          );
         }
         let line_look = |line: &Line2D, layers: Option<&RenderLayers>| LineLook {
           lit: line.lighting(),
@@ -435,7 +442,14 @@ impl Engine {
           let at = render_global(global, previous, alpha).translation();
           if let Some(style) = line_points(line, at, &mut points) {
             let look = line_look(line, layers);
-            push_polyline(&mut self.draw_list, line_stream, &points, &style, look);
+            push_polyline(
+              &mut self.draw_list,
+              line_stream,
+              &points,
+              &style,
+              look,
+              &self.camera_draws,
+            );
           }
         }
       }
