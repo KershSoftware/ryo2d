@@ -91,9 +91,20 @@ pub(crate) const LINE: &str = concat!(
   "\n",
   include_str!("include/line_pieces.wgsl"),
   "\n",
+  include_str!("include/line_stream.wgsl"),
+  "\n",
   include_str!("include/line_cover.wgsl"),
   "\n",
   include_str!("core/line.wgsl"),
+);
+
+/// The corner pass over the world's lines: each point's corner, once a frame
+pub(crate) const LINE_CORNERS: &str = concat!(
+  include_str!("include/line_pieces.wgsl"),
+  "\n",
+  include_str!("include/line_stream.wgsl"),
+  "\n",
+  include_str!("core/line_corners.wgsl"),
 );
 
 /// The line module with the tests' own entries: `fs_count`, counting each
@@ -111,6 +122,8 @@ pub(crate) const LINE_TEST: &str = concat!(
   include_str!("include/line_style.wgsl"),
   "\n",
   include_str!("include/line_pieces.wgsl"),
+  "\n",
+  include_str!("include/line_stream.wgsl"),
   "\n",
   include_str!("include/line_cover.wgsl"),
   "\n",
@@ -242,6 +255,7 @@ pub(crate) fn built_in() -> Vec<(&'static str, String)> {
     ("light", LIGHT),
     ("shadow_map", SHADOW_MAP),
     ("line", LINE),
+    ("line_corners", LINE_CORNERS),
     ("line_test", LINE_TEST),
     ("lighting_compose", LIGHTING_COMPOSE),
     ("transition", TRANSITION),

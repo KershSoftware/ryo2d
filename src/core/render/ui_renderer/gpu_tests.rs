@@ -684,6 +684,7 @@ fn a_render_target_sprite_draws_with_the_linear_body() {
   let (_, target_image) = sprites.target_image(target).expect("the target's image");
   let new = ui_image(&device);
   let mut encoder = device.create_command_encoder(&Default::default());
+  batch.encode_corners(&mut encoder);
   {
     let mut pass = begin(&mut encoder, target_image);
     let mut bound = Bound::default();
@@ -971,6 +972,7 @@ mod lines {
     };
     let (world, ui) = (image(), image());
     let mut encoder = device.create_command_encoder(&Default::default());
+    batch.encode_corners(&mut encoder);
     {
       let view = world.create_view(&Default::default());
       let mut pass = begin(&mut encoder, &view);
@@ -1392,6 +1394,7 @@ mod bound {
     };
     let (together, apart) = (image(), image());
     let mut encoder = device.create_command_encoder(&Default::default());
+    batch.encode_corners(&mut encoder);
     {
       let view = together.create_view(&Default::default());
       let mut pass = pass(&mut encoder, &view, true);

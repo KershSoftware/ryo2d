@@ -917,6 +917,16 @@ impl HeadlessEngine {
     self.engine.batch_prepare_time()
   }
 
+  /// Timestamp the line corner pass's start and end into `set`, at `at`
+  /// and `at + 1`, every frame it runs (`benches/lines.rs`, which counts it
+  /// with the world passes); `None` stops it
+  #[doc(hidden)]
+  pub fn stamp_line_corners(&mut self, stamps: Option<(wgpu::QuerySet, u32)>) {
+    if let Some(batch) = self.engine.batch.as_mut() {
+      batch.stamp_corners(stamps);
+    }
+  }
+
   /// `calls` runs of the skeletons' frame pass (`pose_new_skeletons`) outside
   /// a frame, on a system initialised once: their time, altogether. A call
   /// looks through the skeletons only if one was added since the last (as a

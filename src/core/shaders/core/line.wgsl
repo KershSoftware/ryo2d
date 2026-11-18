@@ -24,36 +24,12 @@
 @group(1) @binding(0) var line_texture: texture_2d<f32>;
 @group(1) @binding(1) var line_sampler: sampler;
 
-// `LineInfo` (render/batch/lines.rs)
-struct LineInfo {
-    params: vec4<f32>,
-    bounds: vec4<f32>,
-    emission: f32,
-    along_half: f32,
-    first: u32,
-    count: u32,
-    join: u32,
-    cap: u32,
-    closed: u32,
-    edge: u32,
-    miter_limit: f32,
-    pad0: u32,
-    pad1: u32,
-    pad2: u32,
-};
-
-// `LinePoint` (render/batch/lines.rs)
-struct LinePoint {
-    pos: vec2<f32>,
-    half_width: f32,
-    u: f32,
-    // sRGB bytes, straight alpha
-    color: u32,
-    line: u32,
-};
-
 @group(2) @binding(0) var<storage, read> lines: array<LineInfo>;
 @group(2) @binding(1) var<storage, read> line_points: array<LinePoint>;
+// Each point's corner, and the limits it sets the quads beside it, as the
+// corner pass worked them out this frame (`line_corners.wgsl`)
+@group(2) @binding(2) var<storage, read> line_corners: array<LineCorner>;
+@group(2) @binding(3) var<storage, read> line_limits: array<vec2<f32>>;
 
 struct VertexOutput {
     @builtin(position) @invariant position: vec4<f32>,
@@ -78,11 +54,6 @@ struct WorldVertex {
     line: u32,
 };
 
-fn line_point(at: u32) -> LinePt {
-    let point = line_points[at];
-    return LinePt(point.pos, point.half_width, point.u, unpack4x8unorm(point.color));
-}
-
 // The world line vertex of `code`, a value of the line index buffer: its
 // piece's point << 7 | the piece's kind << 5 | the piece's slot
 fn world_vertex(code: u32) -> WorldVertex {
@@ -97,21 +68,39 @@ fn world_vertex(code: u32) -> WorldVertex {
     var w: LineWindow;
     w.present = 0u;
     w.seam = 0u;
-    for (var slot = 0; slot < 5; slot++) {
-        var i = point + slot - 2;
+    for (var k = 0; k < 5; k++) {
+        var i = point + k - 2;
         if closed {
             i = ((i % count) + count) % count;
         }
         if i >= 0 && i < count {
-            w.p[slot] = line_point(info.first + u32(i));
-            w.present |= 1u << u32(slot);
+            w.p[k] = line_pt(line_points[info.first + u32(i)]);
+            w.present |= 1u << u32(k);
             if closed && i == 0 {
-                w.seam |= 1u << u32(slot);
+                w.seam |= 1u << u32(k);
             }
         }
     }
+    // The corner at the vertex's point, and the limits its neighbours set
+    // (none past an open line's ends)
+    var own = point;
+    if closed {
+        own = ((own % count) + count) % count;
+    }
+    var corner: LpCorner;
+    corner.joint = line_joint_of(line_corners[info.first + u32(own)]);
+    corner.prev_after = LINE_NO_EDGE;
+    corner.next_before = LINE_NO_EDGE;
+    if lp_has(w, -1) {
+        let prev = select(own - 1, (own + count - 1) % count, closed);
+        corner.prev_after = line_limits[info.first + u32(prev)].y;
+    }
+    if lp_has(w, 1) {
+        let next = select(own + 1, (own + 1) % count, closed);
+        corner.next_before = line_limits[info.first + u32(next)].x;
+    }
     let look = LineLook(info.join, info.cap, info.miter_limit);
-    return WorldVertex(line_piece_vertex(w, look, kind, slot), line_id);
+    return WorldVertex(line_piece_vertex(w, look, corner, kind, slot), line_id);
 }
 
 // ========== Noise Functions ==========

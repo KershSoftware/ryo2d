@@ -5,6 +5,7 @@
 use glam::Vec2;
 use wgpu::util::DeviceExt;
 
+use super::corners::{CORNER_BYTES, CornerPass, LIMIT_BYTES, MAX_ACROSS};
 use super::gpu::line_group;
 use super::lines::{LineStream, MITER_LIMIT, PieceKind, piece_template};
 use super::lines::{PolyPoint, PolyStyle};
@@ -225,16 +226,21 @@ fn buffer(
   })
 }
 
-/// The tests' one way to draw a line stream: upload it, encode what the
-/// frame encodes before its passes, and draw it in a pass whose pipeline
-/// and other groups the caller set
+/// The tests' one way to draw a line stream: upload it, encode the corner
+/// pass as the frame does before its passes, and draw it in a pass whose
+/// pipeline and other groups the caller set
 pub(super) struct LineGpuTest {
   layout: wgpu::BindGroupLayout,
+  corners: CornerPass,
+  /// The corner pass's workgroups a row
+  across: u32,
 }
 
 /// A stream uploaded for drawing
 pub(super) struct UploadedLines {
   group: wgpu::BindGroup,
+  corner_group: wgpu::BindGroup,
+  points: u32,
   /// Its vertex codes, the draw's index buffer (and a storage array the
   /// dump reads)
   indices: wgpu::Buffer,
@@ -244,11 +250,18 @@ pub(super) struct UploadedLines {
 
 impl LineGpuTest {
   pub(super) fn new(device: &wgpu::Device) -> Self {
+    Self::across(device, MAX_ACROSS)
+  }
+
+  /// One whose corner pass goes on in rows past `across` workgroups
+  pub(super) fn across(device: &wgpu::Device, across: u32) -> Self {
     Self {
       layout: line_layout_for(
         device,
         wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::COMPUTE,
       ),
+      corners: CornerPass::new(device),
+      across,
     }
   }
 
@@ -276,6 +289,23 @@ impl LineGpuTest {
       bytemuck::cast_slice(&stream.points),
       storage,
     );
+    let room = |label, element: usize| {
+      device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(label),
+        size: (stream.points.len().max(1) * element) as u64,
+        usage: storage,
+        mapped_at_creation: false,
+      })
+    };
+    let corners = room("Test Line Corners", CORNER_BYTES);
+    let limits = room("Test Line Limits", LIMIT_BYTES);
+    let count = stream.points.len() as u32;
+    let count_buffer = buffer(
+      device,
+      "Test Line Count",
+      bytemuck::cast_slice(&[count, 0, 0, 0]),
+      wgpu::BufferUsages::UNIFORM,
+    );
     let indices = buffer(
       device,
       "Test Line Indices",
@@ -283,14 +313,26 @@ impl LineGpuTest {
       wgpu::BufferUsages::INDEX | storage,
     );
     UploadedLines {
-      group: line_group(device, &self.layout, [&table, &points]),
+      group: line_group(device, &self.layout, [&table, &points, &corners, &limits]),
+      corner_group: self
+        .corners
+        .group(device, [&table, &points, &corners, &limits, &count_buffer]),
+      points: count,
       indices,
       vertices: stream.indices.len() as u32,
     }
   }
 
-  /// What the frame encodes before its passes
-  pub(super) fn encode(&self, _encoder: &mut wgpu::CommandEncoder, _lines: &UploadedLines) {}
+  /// What the frame encodes before its passes: the corner pass
+  pub(super) fn encode(&self, encoder: &mut wgpu::CommandEncoder, lines: &UploadedLines) {
+    self.corners.encode(
+      encoder,
+      &lines.corner_group,
+      lines.points,
+      self.across,
+      None,
+    );
+  }
 
   /// Draw every line of `lines` in `pass`, binding the stream as group 2
   pub(super) fn draw<'a>(&self, pass: &mut wgpu::RenderPass<'a>, lines: &'a UploadedLines) {
@@ -352,7 +394,17 @@ fn module(device: &wgpu::Device) -> wgpu::ShaderModule {
 /// Every vertex `stream` draws, three a triangle in its index buffer's
 /// order, as the GPU builds it
 fn dump(device: &wgpu::Device, queue: &wgpu::Queue, stream: &LineStream) -> Vec<Dumped> {
-  let gpu = LineGpuTest::new(device);
+  dump_across(device, queue, stream, MAX_ACROSS)
+}
+
+/// [`dump`], the corner pass going on in rows past `across` workgroups
+fn dump_across(
+  device: &wgpu::Device,
+  queue: &wgpu::Queue,
+  stream: &LineStream,
+  across: u32,
+) -> Vec<Dumped> {
+  let gpu = LineGpuTest::across(device, across);
   let lines = gpu.upload(device, queue, stream);
   let count = lines.vertices as usize;
   let storage = |binding, read_only| wgpu::BindGroupLayoutEntry {
@@ -555,7 +607,10 @@ fn the_gpu_builds_the_reference_s_vertices() {
       }
     }
   }
-  let dumped = paired(&reference, &dump(&device, &queue, &stream));
+  // The corner pass in rows of three workgroups, as it goes on past
+  // 65,535 (`the_corner_pass_goes_on_in_rows_past_its_width`)
+  assert!(stream.points.len() > 3 * 64 * 4, "rows to go on in");
+  let dumped = paired(&reference, &dump_across(&device, &queue, &stream, 3));
   let error = pollster::block_on(scope.pop());
   assert!(error.is_none(), "{error:?}");
   assert_eq!(dumped.len(), reference.indices.len());

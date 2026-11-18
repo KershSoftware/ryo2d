@@ -1,6 +1,7 @@
 //! The 2D batch: what the world draws, keyed for merging, planned per camera.
 
 mod chunks;
+mod corners;
 #[cfg(test)]
 mod coverage;
 mod gpu;

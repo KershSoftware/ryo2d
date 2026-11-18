@@ -191,7 +191,7 @@ fn ui_line(instance: UiInstanceIn, index: u32, by: vec2<f32>, clip: vec4<u32>, b
     let slot = line_piece_slot(kind, JOIN_MITER, CAP_BUTT, tri, corner);
     let w = ui_line_window(instance, line_piece_corner(kind, slot), offset);
     let look = LineLook(JOIN_MITER, CAP_BUTT, miter_limit);
-    let vertex = line_piece_vertex(w, look, kind, slot);
+    let vertex = line_piece_vertex(w, look, lp_corner_here(w, look), kind, slot);
     let hard = line_hard((bits >> LINE_EDGE_SHIFT) & 3u, globals.snap);
     let axis = line_axis(vertex.normal, globals.view_proj, globals.resolution);
     var fringe = line_fringe(vertex, vertex.position, ppu, axis.major);

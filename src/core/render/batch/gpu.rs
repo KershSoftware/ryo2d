@@ -8,6 +8,7 @@ use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
 use super::chunks::{ChunkBuffers, ChunkStore, SLOT_STRIDE};
+use super::corners::{CORNER_BYTES, CornerPass, LIMIT_BYTES, MAX_ACROSS};
 use super::lines::{LineInfo, LinePoint, LineStream};
 use super::mesh::{MeshStream, MeshVertex};
 use super::pipelines::{self, PipelineKey, Pipelines};
@@ -92,14 +93,26 @@ pub(crate) struct Batch2D {
   // change, drawn through the frame's tile slots
   chunks: ChunkStore,
   chunk_buffers: ChunkBuffers,
-  // The line stream's buffers, and the bind group of its table and points
-  // (group 2 of the line pipelines), made again only when one grows; its
-  // vertex codes are the line draws' index buffer
+  // The line stream's buffers: its table and points, and each point's
+  // corner record and limits, which the corner pass writes (`corners.rs`);
+  // the bind group of all four (group 2 of the line pipelines) and the
+  // corner pass's, made again only when one grows; and its vertex codes,
+  // the line draws' index buffer
   line_table: GrowingBuffer,
   line_points: GrowingBuffer,
+  line_corners: GrowingBuffer,
+  line_limits: GrowingBuffer,
   line_indices: GrowingBuffer,
   line_layout: wgpu::BindGroupLayout,
   line_group: wgpu::BindGroup,
+  corner_pass: CornerPass,
+  corner_group: wgpu::BindGroup,
+  // The point count the corner pass reads, and the count it holds
+  line_count: wgpu::Buffer,
+  line_count_held: u32,
+  // Timestamps at the corner pass's start and end, from this index (the
+  // line bench)
+  corner_stamps: Option<(wgpu::QuerySet, u32)>,
   mesh_vertices: GrowingBuffer,
   mesh_indices: GrowingBuffer,
   // Makes the new versions of game sprite shaders already drawn, while the
@@ -154,14 +167,20 @@ impl GrowingBuffer {
   /// Upload `bytes`, growing to the next power of two elements if need be;
   /// whether it grew (a new buffer).
   fn write(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, bytes: &[u8]) -> bool {
-    let needed = bytes.len() / self.element;
+    let grows = self.reserve(device, bytes.len() / self.element);
+    if !bytes.is_empty() {
+      queue.write_buffer(&self.buffer, 0, bytes);
+    }
+    grows
+  }
+
+  /// Room for `needed` elements, growing to the next power of two if need
+  /// be; whether it grew (a new buffer, its contents not kept)
+  fn reserve(&mut self, device: &wgpu::Device, needed: usize) -> bool {
     let grows = needed > self.capacity;
     if grows {
       self.capacity = needed.next_power_of_two().min(self.max).max(needed);
       self.buffer = buffer(device, self.label, self.capacity * self.element, self.usage);
-    }
-    if !bytes.is_empty() {
-      queue.write_buffer(&self.buffer, 0, bytes);
     }
     grows
   }
@@ -217,10 +236,34 @@ impl Batch2D {
       wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
     )
     .capped(cap.indices);
+    let line_corners = storage("Batch Line Corners", CORNER_BYTES).capped(cap.points);
+    let line_limits = storage("Batch Line Limits", LIMIT_BYTES).capped(cap.points);
     let line_group = line_group(
       device,
       &line_layout,
-      [&line_table.buffer, &line_points.buffer],
+      [
+        &line_table.buffer,
+        &line_points.buffer,
+        &line_corners.buffer,
+        &line_limits.buffer,
+      ],
+    );
+    let corner_pass = CornerPass::new(device);
+    let line_count = buffer(
+      device,
+      "Batch Line Count",
+      16,
+      wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    );
+    let corner_group = corner_pass.group(
+      device,
+      [
+        &line_table.buffer,
+        &line_points.buffer,
+        &line_corners.buffer,
+        &line_limits.buffer,
+        &line_count,
+      ],
     );
     // Tile chunks' pipeline for a plain layer, made now rather than in the
     // frame the first map lands (about 0.85 ms there, measured headless)
@@ -251,9 +294,16 @@ impl Batch2D {
       chunk_buffers,
       line_table,
       line_points,
+      line_corners,
+      line_limits,
       line_indices,
       line_layout,
       line_group,
+      corner_pass,
+      corner_group,
+      line_count,
+      line_count_held: 0,
+      corner_stamps: None,
       mesh_vertices: GrowingBuffer::new(
         device,
         "Batch Mesh Vertices",
@@ -788,13 +838,27 @@ impl Batch2D {
       self
         .line_points
         .write(device, queue, bytemuck::cast_slice(&lines.points)),
+      self.line_corners.reserve(device, lines.points.len()),
+      self.line_limits.reserve(device, lines.points.len()),
     ];
     if grew.contains(&true) {
-      self.line_group = line_group(
-        device,
-        &self.line_layout,
-        [&self.line_table.buffer, &self.line_points.buffer],
-      );
+      let buffers = [
+        &self.line_table.buffer,
+        &self.line_points.buffer,
+        &self.line_corners.buffer,
+        &self.line_limits.buffer,
+      ];
+      self.line_group = line_group(device, &self.line_layout, buffers);
+      let [table, points, corners, limits] = buffers;
+      self.corner_group = self
+        .corner_pass
+        .group(device, [table, points, corners, limits, &self.line_count]);
+    }
+    // The corner pass's point count, written when it changes
+    let count = lines.points.len() as u32;
+    if count != self.line_count_held {
+      queue.write_buffer(&self.line_count, 0, bytemuck::cast_slice(&[count, 0, 0, 0]));
+      self.line_count_held = count;
     }
     self
       .line_indices
@@ -807,6 +871,27 @@ impl Batch2D {
     // A new version this frame's sprites found waits for its pipelines,
     // made for what was made this frame: sent now, it starts a frame sooner
     self.compile_next(device, textures);
+  }
+
+  /// Work out every corner of the frame's lines (`corners.rs`), once a
+  /// frame after [`prepare`](Self::prepare) uploaded them and before the
+  /// first camera pass draws them; nothing with no lines.
+  pub(crate) fn encode_corners(&self, encoder: &mut wgpu::CommandEncoder) {
+    let points = self.lines.points.len() as u32;
+    if points == 0 {
+      return;
+    }
+    let stamps = self.corner_stamps.as_ref().map(|(set, at)| (set, *at));
+    self
+      .corner_pass
+      .encode(encoder, &self.corner_group, points, MAX_ACROSS, stamps);
+  }
+
+  /// Timestamp the corner pass's start and end into `set` from `at` (the
+  /// line bench), or not
+  #[cfg(not(target_arch = "wasm32"))]
+  pub(crate) fn stamp_corners(&mut self, stamps: Option<(wgpu::QuerySet, u32)>) {
+    self.corner_stamps = stamps;
   }
 
   /// The draws [`prepare`](Self::prepare) laid out for `camera`, in order:
@@ -1160,13 +1245,14 @@ fn instance_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
   buffer(device, "Batch Instances", size, usage)
 }
 
-/// The line stream's bind group over its line table and points.
+/// The line stream's bind group over its line table, points, corner
+/// records and limits.
 pub(crate) fn line_group(
   device: &wgpu::Device,
   layout: &wgpu::BindGroupLayout,
-  buffers: [&wgpu::Buffer; 2],
+  buffers: [&wgpu::Buffer; 4],
 ) -> wgpu::BindGroup {
-  let [table, points] = buffers;
+  let [table, points, corners, limits] = buffers;
   crate::core::graphics::bind_groups::create(
     device,
     &wgpu::BindGroupDescriptor {
@@ -1180,6 +1266,14 @@ pub(crate) fn line_group(
         wgpu::BindGroupEntry {
           binding: 1,
           resource: points.as_entire_binding(),
+        },
+        wgpu::BindGroupEntry {
+          binding: 2,
+          resource: corners.as_entire_binding(),
+        },
+        wgpu::BindGroupEntry {
+          binding: 3,
+          resource: limits.as_entire_binding(),
         },
       ],
     },

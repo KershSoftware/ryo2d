@@ -40,14 +40,15 @@
 //!   length, at most `MITER_LIMIT`), while the box grows by `4 hw + 1 px`, so
 //!   where the tip of a line just outside the view points into it, a sliver
 //!   of coverage under 0.1 can be culled at the view's edge.
-//! - **Limit: the stream holds what the device binds.** Its points and
-//!   line table are each one storage binding, so each holds as many as the
-//!   device's `max_storage_buffer_binding_size` (and `max_buffer_size`)
-//!   fits, the points never past the 2^25 a code can name and the table
-//!   never past `MAX_LINES`, and its index buffer as many as
-//!   `max_buffer_size` holds (`StreamCap`, `LineStream::for_device`: under
-//!   the `Limits::default()` the engine asks for, 5,592,405 points,
-//!   67,108,864 indices and 1,048,576 lines); a line that would
+//! - **Limit: the stream holds what the device binds.** Its points, their
+//!   corner records (64 bytes a point, `corners.rs`) and its line table are
+//!   each one storage binding, so each holds as many as the device's
+//!   `max_storage_buffer_binding_size` (and `max_buffer_size`) fits, the
+//!   points never past the 2^25 a code can name and the table never past
+//!   `MAX_LINES`, and its index buffer as many as `max_buffer_size` holds
+//!   (`StreamCap`, `LineStream::for_device`: under the `Limits::default()`
+//!   the engine asks for, 2,097,152 points, 67,108,864 indices and
+//!   1,048,576 lines); a line that would
 //!   take any past it draws nothing, and the log is warned once a run
 //!   (`a_line_past_the_stream_s_cap_draws_nothing_and_warns_once`). Past it
 //!   the bind group would fail validation, which ends the run.
@@ -56,6 +57,7 @@ use std::ops::Range;
 
 use glam::Vec2;
 
+use super::corners::CORNER_BYTES;
 use super::{BlendMode, Filter};
 use crate::core::ecs::Entity;
 use crate::core::graphics::{RenderLayers, TextureId};
@@ -474,9 +476,9 @@ pub(crate) struct LinePoint {
 /// more points than this
 const CODE_POINTS: usize = 1 << 25;
 
-/// The most the stream holds a frame: as many points and lines as one
-/// storage binding of the device holds, and as many indices as one of its
-/// buffers
+/// The most the stream holds a frame: as many points (and their corner
+/// records) and lines as one storage binding of the device holds, and as
+/// many indices as one of its buffers
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct StreamCap {
   pub(crate) points: usize,
@@ -493,8 +495,10 @@ impl StreamCap {
       .min(limits.max_buffer_size);
     let fits =
       |bytes: u64, element: usize| usize::try_from(bytes / element as u64).unwrap_or(usize::MAX);
+    // A point takes a corner record too, the stream's largest element
+    let point = std::mem::size_of::<LinePoint>().max(CORNER_BYTES);
     Self {
-      points: fits(binding, std::mem::size_of::<LinePoint>()).min(CODE_POINTS),
+      points: fits(binding, point).min(CODE_POINTS),
       indices: fits(limits.max_buffer_size, std::mem::size_of::<u32>()),
       lines: fits(binding, std::mem::size_of::<LineInfo>()).min(MAX_LINES),
     }
@@ -788,41 +792,45 @@ mod tests {
 
   #[test]
   fn a_line_past_the_stream_s_cap_draws_nothing_and_warns_once() {
-    // Each buffer holds what one storage binding of the device does
+    // The points and line table hold what one storage binding of the
+    // device does, a point taking its corner record's 64 bytes, and the
+    // index buffer what one buffer does
     assert_eq!(
       StreamCap::default(),
       StreamCap {
-        points: 5_592_405,
+        points: 2_097_152,
         indices: 67_108_864,
         lines: 1_048_576,
       }
     );
     let limits = wgpu::Limits {
-      max_storage_buffer_binding_size: 400,
+      max_storage_buffer_binding_size: 1280,
       ..wgpu::Limits::default()
     };
-    let mut stream = LineStream::for_device(&limits);
-    let indices = 300;
-    let small = StreamCap {
-      points: 16,
+    let bound = StreamCap {
+      points: 20,
       indices: 67_108_864,
-      lines: 5,
+      lines: 16,
     };
-    assert_eq!(stream.cap(), small);
-    // A buffer may be no bigger than the device makes one, either, and the
-    // index buffer is one
+    let mut stream = LineStream::for_device(&limits);
+    assert_eq!(stream.cap(), bound);
+    // A buffer may be no bigger than the device makes one, either
     let buffer = wgpu::Limits {
-      max_buffer_size: 400,
+      max_buffer_size: 1280,
       ..wgpu::Limits::default()
     };
     assert_eq!(
       StreamCap::of(&buffer),
       StreamCap {
-        indices: 100,
-        ..small
+        indices: 320,
+        ..bound
       }
     );
-    stream.cap.indices = indices;
+    stream.cap = StreamCap {
+      points: 16,
+      indices: 300,
+      lines: 5,
+    };
     let line = |count: usize| -> Vec<PolyPoint> {
       (0..count)
         .map(|i| PolyPoint {

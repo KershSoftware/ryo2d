@@ -863,6 +863,11 @@ impl WgpuRenderer {
     if let Some(lighting) = scene.lighting.as_mut() {
       lighting.renderer.encode_shadows(&mut encoder, &self.queue);
     }
+    // Every line corner, once a frame, before any camera pass draws a line
+    // (internal work, skipped with no lines)
+    if let Some(batch) = scene.batch {
+      batch.encode_corners(&mut encoder);
+    }
     let captured;
     let ui_drawn;
     {

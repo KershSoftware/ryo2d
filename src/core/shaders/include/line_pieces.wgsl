@@ -8,14 +8,17 @@
 // corner's decisions alone, so every triangle naming a slot uses it alike
 // and the world draws a piece's vertices once each, indexed. A vertex lies
 // at one of the line's points, the piece's own or, for the far end of a
-// segment, the next (`line_piece_corner`); the caller hands
+// segment, the next (`line_piece_corner`). The caller hands
 // `line_piece_vertex` the five points about that one (`LineWindow`, slot 2
-// the point itself), so the world (from its storage buffers) and the UI
-// (from its instances) build alike. Every piece that touches a point asks the one corner function
-// (`lp_joint`) about it with the same points in the same order, and every
-// position is made by one expression at the end (`lp_assemble`), so the
-// copies of a place agree bit for bit. Nothing here makes or tests an
-// infinity or a NaN: degenerate corners carry flags.
+// the point itself) and the corner there (`LpCorner`: the one corner
+// function's answer at the point, `lp_joint`, and the limits its
+// neighbours' corners set the quads beside it), so the world and the UI
+// build alike, each loading them its own way: the world works every corner
+// out once a frame, in a compute pass, for its vertices to read; the UI
+// works them out in place (`lp_corner_here`). Every position is made by one
+// expression at the end (`lp_assemble`), from the one record of its corner,
+// so the copies of a place agree bit for bit. Nothing here makes or tests
+// an infinity or a NaN: degenerate corners carry flags.
 
 const LINE_FLAG_ROUND: u32 = 1u;
 const LINE_FLAG_SECOND: u32 = 2u;
@@ -126,6 +129,15 @@ struct LpJoint {
     turn: LpTurn,
     before: f32,
     after: f32,
+};
+
+// The corner a vertex lies at: its joint, and the limits the corners
+// before and after it set the quads between them (the one before's
+// `after`, the one after's `before`)
+struct LpCorner {
+    joint: LpJoint,
+    prev_after: f32,
+    next_before: f32,
 };
 
 const LP_SECOND_NONE: u32 = 0u;
@@ -475,18 +487,24 @@ fn lp_collapse(point: LinePt) -> LpPlace {
     return lp_placed(lp_centre(point.half_width), vec2<f32>(0.0), 0.0, vec2<f32>(point.u, 0.5), vec2<f32>(0.0));
 }
 
+// The corner at the window's point and its neighbours' limits, each asked
+// of the one corner function in place (the UI's way)
+fn lp_corner_here(w: LineWindow, look: LineLook) -> LpCorner {
+    return LpCorner(lp_joint(w, 0, look), lp_joint(w, -1, look).after, lp_joint(w, 1, look).before);
+}
+
 // The most a vertex of the quad from point `j` (-1 or 0) may push
-fn lp_quad_limit(joints: array<LpJoint, 3>, j: i32) -> f32 {
+fn lp_quad_limit(corner: LpCorner, j: i32) -> f32 {
     if j == 0 {
-        return min(joints[1].after, joints[2].before);
+        return min(corner.joint.after, corner.next_before);
     }
-    return min(joints[0].after, joints[1].before);
+    return min(corner.prev_after, corner.joint.before);
 }
 
 // The most a vertex both quads at the corner share may push
-fn lp_both(w: LineWindow, joints: array<LpJoint, 3>) -> f32 {
-    let before = select(LINE_NO_EDGE, lp_quad_limit(joints, -1), lp_has(w, -1));
-    let after = select(LINE_NO_EDGE, lp_quad_limit(joints, 0), lp_has(w, 1));
+fn lp_both(w: LineWindow, corner: LpCorner) -> f32 {
+    let before = select(LINE_NO_EDGE, lp_quad_limit(corner, -1), lp_has(w, -1));
+    let after = select(LINE_NO_EDGE, lp_quad_limit(corner, 0), lp_has(w, 1));
     return min(before, after);
 }
 
@@ -521,16 +539,16 @@ fn lp_open_pair(
 
 // The vertex `which` at the corner as an end of the segment beside it:
 // the one after it (`start`) or the one before
-fn lp_end(w: LineWindow, look: LineLook, joints: array<LpJoint, 3>, start: bool, which: u32) -> LpPlace {
+fn lp_end(w: LineWindow, look: LineLook, corner: LpCorner, start: bool, which: u32) -> LpPlace {
     let point = lp_pt(w, 0);
     let j = select(-1, 0, start);
     let segment = lp_segment(lp_pt(w, j).pos, lp_pt(w, j + 1).pos);
-    let limit = lp_quad_limit(joints, j);
+    let limit = lp_quad_limit(corner, j);
     let second = lp_segment_second(w, j, look.cap);
     let hw = point.half_width;
     let n = segment.normal;
     let u = select(lp_end_u(w, 0), point.u, start);
-    let joint = joints[1];
+    let joint = corner.joint;
     if joint.shape == LP_END {
         if which == LP_SPLIT {
             return lp_placed(lp_centre(hw), vec2<f32>(0.0), 0.0, vec2<f32>(u, 0.5), n);
@@ -538,7 +556,7 @@ fn lp_end(w: LineWindow, look: LineLook, joints: array<LpJoint, 3>, start: bool,
         return lp_open_pair(point, segment, limit, second, start, look.cap, which);
     }
     if joint.shape == LP_STRAIGHT {
-        let both = lp_both(w, joints);
+        let both = lp_both(w, corner);
         let normal = joint.normal;
         let left = which == LP_LEFT;
         let side = select(-1.0, 1.0, left);
@@ -567,7 +585,7 @@ fn lp_end(w: LineWindow, look: LineLook, joints: array<LpJoint, 3>, start: bool,
         return lp_placed(edge, m, hw, vec2<f32>(u, v_out), n);
     }
     if turn.shares_inside {
-        let both = lp_both(w, joints);
+        let both = lp_both(w, corner);
         let edge = lp_shared(lp_with_second(lp_edge(-side, hw, n, -side * turn.miter, both), second));
         return lp_placed(edge, -(side * turn.miter), hw, vec2<f32>(u, v_in), turn.bisector);
     }
@@ -605,7 +623,7 @@ fn line_piece_corner(kind: u32, slot: u32) -> i32 {
     return select(0, 1, slot == LP_FAN || slot == LP_TO_LEFT || slot == LP_TO_RIGHT);
 }
 
-fn lp_segment_vertex(w: LineWindow, look: LineLook, joints: array<LpJoint, 3>, slot: u32) -> LpPlace {
+fn lp_segment_vertex(w: LineWindow, look: LineLook, corner: LpCorner, slot: u32) -> LpPlace {
     let start = !(slot == LP_FAN || slot == LP_TO_LEFT || slot == LP_TO_RIGHT);
     let j = select(-1, 0, start);
     if !(lp_has(w, j) && lp_has(w, j + 1)) {
@@ -614,10 +632,10 @@ fn lp_segment_vertex(w: LineWindow, look: LineLook, joints: array<LpJoint, 3>, s
     var which = LP_LEFT;
     if slot == LP_FROM_RIGHT || slot == LP_TO_RIGHT {
         which = LP_RIGHT;
-    } else if (slot == LP_FAN || slot == LP_START_SPLIT) && lp_splits(look, joints[1]) {
+    } else if (slot == LP_FAN || slot == LP_START_SPLIT) && lp_splits(look, corner.joint) {
         which = LP_SPLIT;
     }
-    return lp_end(w, look, joints, start, which);
+    return lp_end(w, look, corner, start, which);
 }
 
 // A join's vertices
@@ -742,9 +760,9 @@ fn lp_join_role(look: LineLook, turn: LpTurn, slot: u32) -> u32 {
     }
 }
 
-fn lp_join_vertex(w: LineWindow, look: LineLook, joints: array<LpJoint, 3>, slot: u32) -> LpPlace {
+fn lp_join_vertex(w: LineWindow, look: LineLook, corner: LpCorner, slot: u32) -> LpPlace {
     let point = lp_pt(w, 0);
-    let joint = joints[1];
+    let joint = corner.joint;
     if !(lp_has(w, -1) && lp_has(w, 0) && lp_has(w, 1)) || joint.shape != LP_TURN {
         return lp_collapse(point);
     }
@@ -764,9 +782,9 @@ fn lp_join_vertex(w: LineWindow, look: LineLook, joints: array<LpJoint, 3>, slot
     let v_in = select(0.0, 1.0, side > 0.0);
     let m0 = side * n0;
     let m1 = side * n1;
-    let limit0 = lp_quad_limit(joints, -1);
-    let limit1 = lp_quad_limit(joints, 0);
-    let both = lp_both(w, joints);
+    let limit0 = lp_quad_limit(corner, -1);
+    let limit1 = lp_quad_limit(corner, 0);
+    let both = lp_both(w, corner);
     let centre_uv = vec2<f32>(u, 0.5);
     let zero = vec2<f32>(0.0);
 
@@ -898,7 +916,7 @@ fn lp_cap_role(cap: u32, start: bool, slot: u32) -> u32 {
     return select(LC_ARC + slot - 2u, LC_LAST, slot == LINE_ARC_STEPS + 2u);
 }
 
-fn lp_cap_vertex(w: LineWindow, look: LineLook, joints: array<LpJoint, 3>, start: bool, slot: u32) -> LpPlace {
+fn lp_cap_vertex(w: LineWindow, look: LineLook, corner: LpCorner, start: bool, slot: u32) -> LpPlace {
     let point = lp_pt(w, 0);
     let near_at = select(-1, 1, start);
     if !lp_has(w, near_at) {
@@ -911,12 +929,12 @@ fn lp_cap_vertex(w: LineWindow, look: LineLook, joints: array<LpJoint, 3>, start
     var scale: f32;
     if start {
         segment = lp_segment(point.pos, near.pos);
-        limit = lp_quad_limit(joints, 0);
+        limit = lp_quad_limit(corner, 0);
         second = lp_end_second(point, near, look.cap, true, !lp_has(w, 2));
         scale = -lp_u_scale(w, 0);
     } else {
         segment = lp_segment(near.pos, point.pos);
-        limit = lp_quad_limit(joints, -1);
+        limit = lp_quad_limit(corner, -1);
         second = lp_end_second(near, point, look.cap, !lp_has(w, -2), true);
         scale = lp_u_scale(w, -1);
     }
@@ -995,20 +1013,18 @@ fn line_piece_slot(kind: u32, join: u32, cap: u32, tri: u32, corner: u32) -> u32
 }
 
 // The vertex a piece of `kind` holds in `slot`, given the window about the
-// point it lies at (`line_piece_corner`)
-fn line_piece_vertex(w: LineWindow, look: LineLook, kind: u32, slot: u32) -> PieceVertex {
-    // The corner and its neighbours, each asked once, from one place
-    let joints = array<LpJoint, 3>(lp_joint(w, -1, look), lp_joint(w, 0, look), lp_joint(w, 1, look));
+// point it lies at (`line_piece_corner`) and the corner there
+fn line_piece_vertex(w: LineWindow, look: LineLook, corner: LpCorner, kind: u32, slot: u32) -> PieceVertex {
     var place: LpPlace;
     switch kind {
         case PIECE_SEGMENT: {
-            place = lp_segment_vertex(w, look, joints, slot);
+            place = lp_segment_vertex(w, look, corner, slot);
         }
         case PIECE_JOIN: {
-            place = lp_join_vertex(w, look, joints, slot);
+            place = lp_join_vertex(w, look, corner, slot);
         }
         default: {
-            place = lp_cap_vertex(w, look, joints, kind == PIECE_START_CAP, slot);
+            place = lp_cap_vertex(w, look, corner, kind == PIECE_START_CAP, slot);
         }
     }
     return lp_assemble(lp_pt(w, 0), place);
