@@ -243,7 +243,8 @@ impl Batch2D {
       device,
       "Batch Line Count",
       16,
-      wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+      // Read back by the tests
+      wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
     );
     let line_group = line_group(
       device,
@@ -864,7 +865,11 @@ impl Batch2D {
     let count = lines.points.len() as u32;
     if count != self.line_count_held {
       let built = u32::from(builds_corners(lines.points.len()));
-      queue.write_buffer(&self.line_count, 0, bytemuck::cast_slice(&[count, built, 0, 0]));
+      queue.write_buffer(
+        &self.line_count,
+        0,
+        bytemuck::cast_slice(&[count, built, 0, 0]),
+      );
       self.line_count_held = count;
     }
     self
@@ -894,6 +899,13 @@ impl Batch2D {
     self
       .corner_pass
       .encode(encoder, &self.corner_group, points, MAX_ACROSS, stamps);
+  }
+
+  /// The uniform holding the frame's point count and whether the corner
+  /// pass runs for it (tests read it back)
+  #[cfg(test)]
+  pub(crate) fn line_frame(&self) -> &wgpu::Buffer {
+    &self.line_count
   }
 
   /// Whether the corner pass runs for this frame's lines (the line bench)

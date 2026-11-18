@@ -27,12 +27,21 @@
 //!   (`vertices_working_their_corners_out_in_place_equal_the_corner_pass_s`;
 //!   the count draw draws both ways). It binds the stream's own buffers, so
 //!   it needs no copy (`Batch2D::encode_corners`).
+//! - **The stream's uniform** holds the point count and whether the pass
+//!   runs, written by `Batch2D::prepare` only when the count changes; the
+//!   stream's and the pass's bind groups are made again together whenever
+//!   a buffer grows. One batch drawing frame after frame (a stream over the
+//!   threshold, none, one under it, one that grows its buffers, none) writes
+//!   them so and draws the harness's pixels each frame, nothing with no
+//!   lines (`lines_drawn_through_the_batch_cross_the_corner_pass_s_threshold_frame_to_frame`).
 
 /// The fewest points the corner pass runs for: below it each vertex works
-/// its corners out in place (`lp_corner_here`, as the UI does), which costs
-/// a small stream less than a dispatch and its wait (measured: 6,000 points
-/// draw 3% to 11% faster in place, 60,000 and 600,000 up to 8% slower; the
-/// threshold lies between, not measured closer)
+/// its corners out in place (`lp_corner_here`, as the UI does), saving a
+/// small stream the dispatch and its wait, about 5 to 7 µs at 6,000 points.
+/// The A/B against the pass was within the bench's noise (6,000 points 3%
+/// to 11% faster in place; 60,000 and 600,000 mitered up to 8% slower,
+/// round 600,000 3% faster); the threshold lies between the sizes measured,
+/// not measured closer (`docs/backlog/lines.md`)
 pub(crate) const CORNER_PASS_FROM: usize = 16_384;
 
 /// Whether the corner pass runs for a stream of `points` points

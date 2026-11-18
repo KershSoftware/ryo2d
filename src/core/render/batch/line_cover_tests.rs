@@ -7,6 +7,7 @@
 use glam::Vec2;
 use wgpu::util::DeviceExt;
 
+use super::corners::{CORNER_PASS_FROM, builds_corners};
 use super::coverage::{area_in_pixel, cover_strip};
 use super::line_gpu_tests::LineGpuTest;
 use super::lines::LineStream;
@@ -1580,6 +1581,205 @@ fn a_line_on_a_pixel_art_target_draws_whole_pixels_unless_smooth() {
       );
     }
   }
+  let error = pollster::block_on(scope.pop());
+  assert!(error.is_none(), "{error:?}");
+}
+
+/// `buffer`'s 16 bytes, read back
+fn read_words(device: &wgpu::Device, queue: &wgpu::Queue, buffer: &wgpu::Buffer) -> [u32; 4] {
+  let read = device.create_buffer(&wgpu::BufferDescriptor {
+    label: Some("Line Frame Readback"),
+    size: 16,
+    usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+    mapped_at_creation: false,
+  });
+  let mut encoder = device.create_command_encoder(&Default::default());
+  encoder.copy_buffer_to_buffer(buffer, 0, &read, 0, 16);
+  queue.submit([encoder.finish()]);
+  let slice = read.slice(..);
+  slice.map_async(wgpu::MapMode::Read, |_| {});
+  let _ = device.poll(wgpu::PollType::wait_indefinitely());
+  let words = {
+    let view = slice.get_mapped_range().expect("the uniform maps");
+    let words: &[u32] = bytemuck::cast_slice(&view);
+    [words[0], words[1], words[2], words[3]]
+  };
+  read.unmap();
+  words
+}
+
+#[test]
+fn lines_drawn_through_the_batch_cross_the_corner_pass_s_threshold_frame_to_frame() {
+  // One batch, frame after frame, as the engine draws: a stream just over
+  // the corner pass's threshold, none, just under it, then one twice as
+  // large (its buffers grow, so the stream's bind groups are made again),
+  // then none. Each frame the batch writes the point count and whether the
+  // pass runs when the count changes, runs the pass or skips it, and draws
+  // the pixels the harness draws from the same stream with its own corner
+  // pass; with no lines it writes a count of none and draws nothing
+  let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+    return;
+  };
+  use crate::core::ecs::Entity;
+  use crate::core::graphics::SpriteGpuRenderer;
+  use crate::core::graphics::camera_gpu::CameraUniforms;
+  use crate::core::graphics::{Presentation, RenderLayers};
+  use crate::core::render::batch::{Batch2D, BlendMode, Bound, Filter, LineLook, push_polyline};
+  use crate::core::render::{DrawList, plan_cameras};
+  let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+  let painter = Painter::new(&device, &queue);
+  let size = (96u32, 64u32);
+  let centre = Vec2::new(48.0, 32.0);
+  let full = Vec2::new(size.0 as f32, size.1 as f32);
+  let camera = Camera2d::default();
+  let view = CameraView::compute(centre, 0.0, &camera, Vec2::ZERO, full);
+  let entity = Entity::PLACEHOLDER;
+  let (mut cameras, mut targetless) = (Vec::new(), Vec::new());
+  plan_cameras(
+    [(entity, &camera, &view, None)].into_iter(),
+    size,
+    false,
+    None,
+    &mut cameras,
+    &mut targetless,
+  );
+  let mut uniforms = CameraUniforms::default();
+  let globals = CameraGlobals::new(&view, size, 0.0, 0.0, false);
+  uniforms.sync(&device, &queue, &[(entity, globals)]);
+  let mut batch = Batch2D::new(&device, UI_FORMAT, Presentation::default());
+  batch.sync_cameras(&device, &uniforms);
+  let mut sprites = SpriteGpuRenderer::new(&device, &queue);
+  let look = LineLook {
+    lit: false,
+    z: 0,
+    texture: None,
+    blend: BlendMode::Alpha,
+    filter: Filter::Default,
+    layers: RenderLayers::default(),
+    only_camera: None,
+  };
+  // Lines of six points, zigzagging over each other across the view, so
+  // a vertex built wrong shows
+  let line = |index: usize| -> Vec<PolyPoint> {
+    let at = Vec2::new(
+      (index * 37 % 90) as f32 + 3.0,
+      (index * 53 % 58) as f32 + 3.0,
+    );
+    let points: Vec<Vec2> = (0..6)
+      .map(|i| {
+        at + Vec2::new(
+          i as f32 * 1.7,
+          if (i + index).is_multiple_of(2) {
+            0.0
+          } else {
+            2.3
+          },
+        )
+      })
+      .collect();
+    let color = Color::new(200, (index * 7 % 255) as u8, 90, 120);
+    points_of(&points, 0.6 + (index % 3) as f32 * 0.4, color)
+  };
+  let over = CORNER_PASS_FROM.div_ceil(6) + 1;
+  let under = (CORNER_PASS_FROM - 1) / 6;
+  let mut drawn = 0;
+  for (frame, count) in [over, 0, under, 2 * over, 0].into_iter().enumerate() {
+    batch.lines().clear();
+    let mut list = DrawList::default();
+    for index in 0..count {
+      let style = style(JOINS[index % 3], CAPS[index / 3 % 3], false, SOLID);
+      push_polyline(
+        &mut list,
+        batch.lines(),
+        &line(index),
+        &style,
+        look,
+        &cameras,
+      );
+    }
+    list.sorted();
+    let points = batch.lines().points.len();
+    assert_eq!(points, 6 * count, "frame {frame}: every point copied");
+    batch.prepare(&device, &queue, &list, &cameras, &mut sprites, &[]);
+    let words = read_words(&device, &queue, batch.line_frame());
+    assert_eq!(
+      [words[0], words[1]],
+      [points as u32, u32::from(builds_corners(points))],
+      "frame {frame}: {points} points, the pass {}",
+      if builds_corners(points) {
+        "runs"
+      } else {
+        "skipped"
+      }
+    );
+    let image = device.create_texture(&wgpu::TextureDescriptor {
+      label: Some("Batch Line Image"),
+      size: wgpu::Extent3d {
+        width: size.0,
+        height: size.1,
+        depth_or_array_layers: 1,
+      },
+      mip_level_count: 1,
+      sample_count: 1,
+      dimension: wgpu::TextureDimension::D2,
+      format: UI_FORMAT,
+      usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+      view_formats: &[],
+    });
+    let mut encoder = device.create_command_encoder(&Default::default());
+    batch.encode_corners(&mut encoder);
+    {
+      let target = image.create_view(&Default::default());
+      let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("Batch Line Pass"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+          view: &target,
+          depth_slice: None,
+          resolve_target: None,
+          ops: wgpu::Operations {
+            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+            store: wgpu::StoreOp::Store,
+          },
+        })],
+        depth_stencil_attachment: None,
+        timestamp_writes: None,
+        occlusion_query_set: None,
+        multiview_mask: None,
+      });
+      let mut bound = Bound::default();
+      for draw in batch.draws(entity, false) {
+        batch.draw(&mut pass, draw, entity, &sprites, size, &mut bound);
+      }
+    }
+    queue.submit([encoder.finish()]);
+    let got = crate::core::capture::read_texture_rgba(&device, &queue, &image).expect("read back");
+    let lit = got.pixels().filter(|pixel| pixel.0[3] > 0).count();
+    if count == 0 {
+      assert_eq!(lit, 0, "frame {frame}: no lines, nothing drawn");
+      continue;
+    }
+    drawn += 1;
+    assert!(lit > 1000, "frame {frame}: {lit} pixels drawn");
+    let want = painter.paint(&device, &queue, batch.lines(), (centre, 1.0), size, None);
+    let apart: Vec<String> = got
+      .enumerate_pixels()
+      .filter(|&(x, y, pixel)| pixel.0 != want.get_pixel(x, y).0)
+      .take(10)
+      .map(|(x, y, pixel)| {
+        format!(
+          "({x}, {y}): {:?}, the harness {:?}",
+          pixel.0,
+          want.get_pixel(x, y).0
+        )
+      })
+      .collect();
+    assert!(
+      apart.is_empty(),
+      "frame {frame}, {points} points: the batch draws otherwise than the harness:\n{}",
+      apart.join("\n")
+    );
+  }
+  assert_eq!(drawn, 3);
   let error = pollster::block_on(scope.pop());
   assert!(error.is_none(), "{error:?}");
 }
