@@ -259,6 +259,8 @@ mod tests {
 
     let s = resolve_settings(&project, &BuilderOverrides::default());
 
+    // The default itself: the mix as designed, not a constant compared to itself
+    assert_eq!(DEFAULT_MASTER_VOLUME, 1.0);
     assert_eq!(s.master_volume, DEFAULT_MASTER_VOLUME);
     assert_eq!(s.music_volume, 1.0);
     assert_eq!(s.sfx_volume, 0.0);

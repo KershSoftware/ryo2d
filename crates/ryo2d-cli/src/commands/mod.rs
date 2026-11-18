@@ -13,73 +13,13 @@ mod netplay;
 mod run;
 mod sheet;
 
-use std::env;
-use std::fmt;
-use std::io;
-use std::path::PathBuf;
 use std::process::ExitCode;
 
+use clap::Parser;
 use ryo2d::core::config::Workspace;
 
-/// CLI-specific error type
-#[derive(Debug)]
-pub enum CliError {
-  /// Workspace discovery failed
-  WorkspaceNotFound(String),
-  /// Build failed
-  BuildFailed(String),
-  /// No production build exists
-  NoBuildExists(PathBuf),
-  /// Command execution failed
-  CommandFailed { command: String, message: String },
-  /// IO error
-  Io(io::Error),
-  /// Generic error with message
-  Other(String),
-}
-
-impl fmt::Display for CliError {
-  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    match self {
-      CliError::WorkspaceNotFound(msg) => {
-        write!(f, "Could not find Ryo2D workspace: {}", msg)
-      }
-      CliError::BuildFailed(msg) => {
-        write!(f, "Build failed: {}", msg)
-      }
-      CliError::NoBuildExists(path) => {
-        write!(
-          f,
-          "No production build found at {:?}. Run 'ryo2d build' first.",
-          path
-        )
-      }
-      CliError::CommandFailed { command, message } => {
-        write!(f, "Command '{}' failed: {}", command, message)
-      }
-      CliError::Io(e) => write!(f, "IO error: {}", e),
-      CliError::Other(msg) => write!(f, "{}", msg),
-    }
-  }
-}
-
-impl std::error::Error for CliError {
-  fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-    match self {
-      CliError::Io(e) => Some(e),
-      _ => None,
-    }
-  }
-}
-
-impl From<io::Error> for CliError {
-  fn from(e: io::Error) -> Self {
-    CliError::Io(e)
-  }
-}
-
-/// Result type for CLI operations
-pub type CliResult<T> = Result<T, CliError>;
+use crate::args::{Cli, Command, NetplayCommand};
+use crate::error::{CliError, CliResult};
 
 /// CLI output helpers
 struct Output;
@@ -104,86 +44,55 @@ impl Output {
 }
 
 /// Runs the command `args` name (the first is the program's name), printing
-/// its error once: success is 0, a failure 1.
+/// its error once. The exit code is 0 for success, clap's (2) for arguments it
+/// cannot read, and [`CliError::exit_code`] for a failure.
 pub fn run_cli(args: Vec<String>) -> ExitCode {
-  match run_with(&args) {
-    Ok(()) => ExitCode::SUCCESS,
-    Err(e) => {
-      eprintln!("{}", e);
-      ExitCode::FAILURE
-    }
-  }
+  ExitCode::from(run_with(&args))
 }
 
-/// [`run_cli`] with these arguments (the first is the program's name).
-fn run_with(args: &[String]) -> CliResult<()> {
+/// [`run_cli`]'s exit code for these arguments (the first is the program's name).
+fn run_with(args: &[String]) -> u8 {
   // The installed CLI is a build without tools, which writes no log file:
   // the engine's warnings (Ryo.toml's) go to the terminal
   ryo2d::tooling::set_stderr(true);
-  if args.len() < 2 {
-    print_help();
-    return Ok(());
-  }
-
-  match args[1].as_str() {
-    "init" => init::execute(&args[2..]),
-    "build" => build::execute(&args[2..]),
-    "run" => run::execute(&args[2..]),
-    "dev" => dev::execute(&args[2..]),
-    "export" => export::execute(&args[2..]),
-    "install-skills" => install_skills::execute(&args[2..]),
-    "netplay" => netplay::execute(&args[2..]),
-    "check-ui" => check_ui::execute(&args[2..]),
-    "sheet" => sheet::execute(&args[2..]),
-    "help" | "--help" | "-h" => {
-      print_help();
-      Ok(())
+  let cli = match Cli::try_parse_from(args) {
+    Ok(cli) => cli,
+    Err(error) => {
+      let code = error.exit_code();
+      // A closed terminal leaves nowhere to say it
+      let _ = error.print();
+      return u8::try_from(code).unwrap_or(2);
     }
-    "version" | "--version" | "-V" => {
-      print_version();
-      Ok(())
-    }
-    unknown => {
-      Output::error(&format!("Unknown command: {}", unknown));
-      print_help();
-      Err(CliError::Other(format!("Unknown command: {}", unknown)))
+  };
+  match dispatch(cli.command) {
+    Ok(()) => 0,
+    Err(error) => {
+      eprintln!("{error}");
+      error.exit_code()
     }
   }
 }
 
-fn print_help() {
-  println!(
-    r#"
-ryo2d - Ryo2D Game Engine CLI
-
-USAGE:
-    ryo2d <COMMAND>
-
-COMMANDS
-    init            Create a new Ryo2D project
-    build           Build a production release
-    run             Run the production build
-    dev             Development mode (build + run with watching)
-    export          Package release into distributable zip
-    install-skills  Install Agent Skills for AI assistants
-    netplay         Start a signaling server for netplay testing
-    check-ui        Check UI files (*.ui.ron) without running the game
-    sheet           Draw a skeleton's animations as a contact sheet (PNG)
-    help            Show this help message
-    version         Show version information
-
-Run 'ryo2d <COMMAND> --help' for more information about a command.
-"#
-  );
-}
-
-fn print_version() {
-  println!("ryo2d {}", env!("CARGO_PKG_VERSION"));
+fn dispatch(command: Command) -> CliResult<()> {
+  match command {
+    Command::Init(args) => init::execute(&args),
+    Command::Build(args) => build::execute(args),
+    Command::Run => run::execute(),
+    Command::Dev(args) => dev::execute(&args),
+    Command::Export => export::execute(),
+    Command::InstallSkills => install_skills::execute(),
+    Command::Netplay { command } => match command {
+      NetplayCommand::Start => netplay::execute_start(),
+      NetplayCommand::Ip => netplay::execute_ip(),
+    },
+    Command::CheckUi(args) => check_ui::execute(&args),
+    Command::Sheet(args) => sheet::execute(&args),
+  }
 }
 
 /// Discover the current workspace
 fn discover_workspace() -> CliResult<Workspace> {
-  Workspace::discover().map_err(|e| CliError::WorkspaceNotFound(e.to_string()))
+  Workspace::discover().map_err(CliError::Workspace)
 }
 
 /// Get the Cargo package name from Cargo.toml
@@ -245,10 +154,10 @@ mod tests {
     let _restore = Restore(stderr_on());
     // As the installed CLI starts: a build without tools, stderr off
     set_stderr(false);
-    run_with(&args(&["ryo2d", "version"])).unwrap();
+    assert_eq!(run_with(&args(&["ryo2d", "--version"])), 0);
     assert!(stderr_on(), "Ryo.toml's warnings reach the terminal");
 
-    run_with(&args(&["ryo2d", "check-ui", "--help"])).unwrap();
+    assert_eq!(run_with(&args(&["ryo2d", "check-ui", "--help"])), 0);
     assert!(stderr_on());
     // check-ui prints the mistakes itself
     let assets = tempfile::tempdir().unwrap();

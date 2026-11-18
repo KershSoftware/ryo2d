@@ -10,13 +10,7 @@ use super::licenses::write_font_licenses;
 use super::{CliError, CliResult, Output, discover_workspace, get_cargo_package_name};
 
 /// Execute the export command
-pub fn execute(args: &[String]) -> CliResult<()> {
-  // Handle --help
-  if args.iter().any(|a| a == "--help" || a == "-h") {
-    print_help();
-    return Ok(());
-  }
-
+pub fn execute() -> CliResult<()> {
   let workspace = discover_workspace()?;
   let project_name = workspace.name();
   let package_name = get_cargo_package_name(&workspace)?;
@@ -24,7 +18,7 @@ pub fn execute(args: &[String]) -> CliResult<()> {
 
   // Check that release folder exists
   if !release_dir.exists() {
-    return Err(CliError::NoBuildExists(release_dir));
+    return Err(CliError::NoBuild(release_dir));
   }
 
   // Verify the executable exists
@@ -292,47 +286,6 @@ fn add_directory_to_zip(
   }
 
   Ok(())
-}
-
-fn print_help() {
-  println!(
-    r#"
-ryo2d-export - Package release bundle into a distributable zip
-
-USAGE:
-    ryo2d export [OPTIONS]
-
-OPTIONS:
-    -h, --help    Show this help message
-
-DESCRIPTION:
-    Creates a distributable zip file from the release/ directory.
-    The zip file is named: {{project-name}}-v{{version}}-{{datestamp}}.zip
-
-    Version is read from:
-    1. Ryo.toml [project].version (if present)
-    2. Cargo.toml [package].version (fallback)
-    3. If no version found, the -v{{version}} part is omitted
-
-    Datestamp format: YYYYMMDD
-
-    The zip always carries licenses/ with the licences of the fonts
-    the engine builds in (written into release/ first if missing).
-
-    If a zip with the same name already exists, an incremental suffix
-    is appended: -001, -002, etc.
-
-PREREQUISITES:
-    Run 'ryo2d build' first to create the release bundle.
-
-EXAMPLE:
-    ryo2d build    # Create release bundle
-    ryo2d export   # Package into zip
-
-    # Output: MyGame-v1.0.0-20260203.zip (if version found)
-    # Or:     MyGame-20260203.zip (if no version)
-"#
-  );
 }
 
 #[cfg(test)]

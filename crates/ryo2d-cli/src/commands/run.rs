@@ -7,13 +7,7 @@ use std::process::Command;
 use super::{CliError, CliResult, Output, discover_workspace, get_cargo_package_name};
 
 /// Execute the run command
-pub fn execute(args: &[String]) -> CliResult<()> {
-  // Handle --help
-  if args.iter().any(|a| a == "--help" || a == "-h") {
-    print_help();
-    return Ok(());
-  }
-
+pub fn execute() -> CliResult<()> {
   let workspace = discover_workspace()?;
   let package_name = get_cargo_package_name(&workspace)?;
   let display_name = workspace.name();
@@ -47,7 +41,7 @@ pub fn execute(args: &[String]) -> CliResult<()> {
   } else {
     Output::warning(&format!("No production build found for '{}'", display_name));
     Output::status("Hint", "Run 'ryo2d build' first to create a release build");
-    return Err(CliError::NoBuildExists(release_bundle_binary));
+    return Err(CliError::NoBuild(release_bundle_binary));
   };
 
   if !from_bundle {
@@ -68,10 +62,7 @@ pub fn execute(args: &[String]) -> CliResult<()> {
   let status = Command::new(&binary_path)
     .current_dir(&working_dir)
     .status()
-    .map_err(|e| CliError::CommandFailed {
-      command: binary_path.display().to_string(),
-      message: e.to_string(),
-    })?;
+    .map_err(|e| CliError::spawn(&binary_path.display().to_string(), e))?;
 
   if !status.success() {
     let code = status.code().unwrap_or(-1);
@@ -107,26 +98,4 @@ fn find_workspace_target_dir(start_dir: &std::path::Path) -> PathBuf {
 
   // Fallback to local target directory
   start_dir.join("target")
-}
-
-fn print_help() {
-  println!(
-    r#"
-ryo2d-run - Run the production build
-
-USAGE:
-    ryo2d run [OPTIONS]
-
-OPTIONS:
-    -h, --help    Show this help message
-
-DESCRIPTION:
-    Runs the production build of your game. If no build exists,
-    you'll be prompted to run 'ryo2d build' first.
-
-EXAMPLE:
-    ryo2d build
-    ryo2d run
-"#
-  );
 }

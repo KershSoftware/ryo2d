@@ -715,7 +715,6 @@ mod tests {
 
   #[test]
   fn embedded_display_title_and_volumes_round_trip() {
-    
     let ws = workspace(
       "[project]\ntitle = \"Hopper\"\n\n[system]\ndisplay_mode = \"borderless_fullscreen\"\n\
        resolution = \"800x600\"\nmaster_volume = 0.3\nmusic_volume = 0.4\nsfx_volume = 0.5\n\

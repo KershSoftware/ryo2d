@@ -38,13 +38,7 @@ impl SkillsPlatform {
 const EMBEDDED_SKILLS: &[(&str, &str)] = include!(concat!(env!("OUT_DIR"), "/embedded_skills.rs"));
 
 /// Execute the install-skills command
-pub fn execute(args: &[String]) -> CliResult<()> {
-  // Handle --help
-  if args.iter().any(|a| a == "--help" || a == "-h") {
-    print_help();
-    return Ok(());
-  }
-
+pub fn execute() -> CliResult<()> {
   // Discover workspace from current directory
   let workspace = super::discover_workspace()?;
   let project_dir = workspace.root();
@@ -105,10 +99,14 @@ pub fn install_skills_to_dir(
 /// Returns None if user declines, Some(platform) if they want to install
 pub fn prompt_install_skills() -> CliResult<Option<SkillsPlatform>> {
   print!("Install Agent Skills for AI assistants? (Y/n): ");
-  io::stdout().flush().map_err(CliError::Io)?;
+  io::stdout()
+    .flush()
+    .map_err(|e| CliError::io("could not write to the terminal", e))?;
 
   let mut input = String::new();
-  io::stdin().read_line(&mut input).map_err(CliError::Io)?;
+  io::stdin()
+    .read_line(&mut input)
+    .map_err(|e| CliError::io("could not read from the terminal", e))?;
 
   let response = input.trim().to_lowercase();
   if !response.is_empty() && !response.starts_with('y') {
@@ -128,10 +126,14 @@ fn prompt_platform_selection() -> CliResult<SkillsPlatform> {
   println!("  2) Copilot   (.github/skills)");
   println!();
   print!("Choice (1/2): ");
-  io::stdout().flush().map_err(CliError::Io)?;
+  io::stdout()
+    .flush()
+    .map_err(|e| CliError::io("could not write to the terminal", e))?;
 
   let mut input = String::new();
-  io::stdin().read_line(&mut input).map_err(CliError::Io)?;
+  io::stdin()
+    .read_line(&mut input)
+    .map_err(|e| CliError::io("could not read from the terminal", e))?;
 
   let choice = input.trim();
   match choice {
@@ -215,34 +217,6 @@ fn skill_description(skill: &str) -> &str {
     .take_while(|line| *line != "---")
     .find_map(|line| line.strip_prefix("description: "))
     .map_or("", |description| description.trim_matches('"'))
-}
-
-fn print_help() {
-  println!(
-    r#"
-ryo2d install-skills - Install Agent Skills for AI assistants
-
-USAGE:
-    ryo2d install-skills [OPTIONS]
-
-DESCRIPTION:
-    Installs all Ryo2D Agent Skills into your project so AI assistants
-    can better help you develop your game.
-
-    You'll be prompted to choose your AI assistant:
-      - Claude:  installs to .claude/skills/
-      - Copilot: installs to .github/skills/
-
-    All skills are installed automatically.
-
-OPTIONS:
-    -h, --help    Show this help message
-
-EXAMPLES:
-    # Install all skills (will prompt for platform)
-    ryo2d install-skills
-"#
-  );
 }
 
 #[cfg(test)]

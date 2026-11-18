@@ -8,16 +8,10 @@ use ryo2d::tooling::embedded_config_env;
 
 use super::licenses::write_font_licenses;
 use super::{CliError, CliResult, Output, discover_workspace, get_cargo_package_name};
+use crate::args::BuildArgs;
 
 /// Execute the build command
-pub fn execute(args: &[String]) -> CliResult<()> {
-  // Handle --help
-  if args.iter().any(|a| a == "--help" || a == "-h") {
-    print_help();
-    return Ok(());
-  }
-
-  let options = BuildOptions::from_args(args)?;
+pub fn execute(options: BuildArgs) -> CliResult<()> {
   let workspace = discover_workspace()?;
   let project_name = workspace.name();
   let package_name = get_cargo_package_name(&workspace)?;
@@ -45,15 +39,10 @@ pub fn execute(args: &[String]) -> CliResult<()> {
 
   let status = release_build_command(&workspace, &target_dir, &embedded, &icon_path, options)
     .status()
-    .map_err(|e| CliError::CommandFailed {
-      command: "cargo build".to_string(),
-      message: e.to_string(),
-    })?;
+    .map_err(|e| CliError::spawn("cargo build", e))?;
 
   if !status.success() {
-    return Err(CliError::BuildFailed(
-      "Cargo build failed. See output above for details.".to_string(),
-    ));
+    return Err(CliError::Build { status });
   }
 
   // Create release bundle
@@ -74,7 +63,7 @@ fn release_build_command(
   target_dir: &Path,
   embedded: &[(&'static str, String)],
   icon_path: &Path,
-  options: BuildOptions,
+  options: BuildArgs,
 ) -> Command {
   let mut command = Command::new("cargo");
   command.arg("build").arg("--release");
@@ -94,38 +83,9 @@ fn release_build_command(
   command
 }
 
-/// What `ryo2d build` was asked for on its command line.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct BuildOptions {
-  /// `--dev-tools`: keep the developer tools (the console, the dev windows,
-  /// the debug keys) in the release build
-  dev_tools: bool,
-}
-
-impl BuildOptions {
-  /// The options in `args` (after `build`). An argument it does not know is
-  /// an error naming it, so a misspelt `--dev-tool` cannot quietly make a
-  /// plain build.
-  fn from_args(args: &[String]) -> CliResult<Self> {
-    let mut options = Self { dev_tools: false };
-    for arg in args {
-      match arg.as_str() {
-        "--dev-tools" => options.dev_tools = true,
-        "--help" | "-h" => {}
-        other => {
-          return Err(CliError::Other(format!(
-            "unknown argument `{other}` for `ryo2d build`; valid flags: --dev-tools, --help (-h)"
-          )));
-        }
-      }
-    }
-    Ok(options)
-  }
-}
-
 /// The warnings printed before the build: one for a build with the tools,
 /// which is not for players.
-fn build_warnings(options: BuildOptions) -> Vec<&'static str> {
+fn build_warnings(options: BuildArgs) -> Vec<&'static str> {
   if options.dev_tools {
     vec!["this build includes developer tools: do not ship it"]
   } else {
@@ -144,7 +104,7 @@ fn checked_save_folder(config: &ryo2d::core::config::WorkspaceConfig) -> CliResu
   } else {
     "[project] name; set [release] save_folder to choose another".to_string()
   };
-  Err(CliError::BuildFailed(format!(
+  Err(CliError::Other(format!(
     "Invalid save folder \"{folder}\" (from {source}). \
      Use a relative name like \"MyStudio/MyGame\" without \"..\", a drive, any of <>:\"|?*\\ \
      or a reserved Windows name (CON, PRN, AUX, NUL, COM1-9, LPT1-9)"
@@ -406,49 +366,6 @@ fn resolve_icon_path(
   Ok(logo_path)
 }
 
-fn print_help() {
-  println!(
-    r#"
-ryo2d-build - Build a production release
-
-USAGE:
-    ryo2d build [OPTIONS]
-
-OPTIONS:
-    --dev-tools   Keep the developer tools (the console, the dev windows,
-                  the debug keys and overlays) in the build, for testing a
-                  release build. Not for players
-    -h, --help    Show this help message
-
-    Any other argument is an error.
-
-DESCRIPTION:
-    Builds a production-optimized release of your game and creates
-    a distributable bundle in the 'release/' directory. The build has
-    no developer tools: no console, dev windows or debug keys (F5 and
-    the FPS counter setting stay). --dev-tools keeps them.
-
-    The bundle includes:
-    - Executable binary (with config baked in at compile time)
-    - Assets directory
-    - Levels directory (if present)
-    - Data directory (empty, for save files)
-    - README.md (if present)
-    - licenses/ (the licences of the fonts the engine builds in)
-
-    Note: Ryo.toml is NOT included in the release bundle. All
-    configuration values (paths, env variables) are compiled into
-    the binary at build time.
-
-EXAMPLE:
-    ryo2d build
-
-    # The release bundle will be in ./release/
-    # You can distribute this entire folder
-"#
-  );
-}
-
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -486,7 +403,7 @@ mod tests {
     config.name = "..".to_string();
     assert!(matches!(
       checked_save_folder(&config),
-      Err(CliError::BuildFailed(_))
+      Err(CliError::Other(_))
     ));
   }
 
@@ -496,7 +413,7 @@ mod tests {
     config.release.save_folder = Some("../escape".to_string());
     assert!(matches!(
       checked_save_folder(&config),
-      Err(CliError::BuildFailed(_))
+      Err(CliError::Other(_))
     ));
 
     config.release.save_folder = None;
@@ -508,7 +425,7 @@ mod tests {
   fn invalid_save_folder_error_names_where_it_came_from() {
     let mut config = WorkspaceConfig::default();
     config.release.save_folder = Some("../escape".to_string());
-    let Err(CliError::BuildFailed(message)) = checked_save_folder(&config) else {
+    let Err(CliError::Other(message)) = checked_save_folder(&config) else {
       panic!("expected an invalid save folder error");
     };
     assert!(message.contains("[release] save_folder"), "{message}");
@@ -516,7 +433,7 @@ mod tests {
 
     config.release.save_folder = None;
     config.name = "CON".to_string();
-    let Err(CliError::BuildFailed(message)) = checked_save_folder(&config) else {
+    let Err(CliError::Other(message)) = checked_save_folder(&config) else {
       panic!("expected an invalid save folder error");
     };
     assert!(message.contains("[project] name"), "{message}");
@@ -524,20 +441,9 @@ mod tests {
   }
 
   #[test]
-  fn an_unknown_flag_is_an_error_that_names_it_and_the_valid_flags() {
-    let Err(CliError::Other(message)) = BuildOptions::from_args(&["--dev-tool".to_string()]) else {
-      panic!("a misspelt flag must not build");
-    };
-    assert!(message.contains("`--dev-tool`"), "{message}");
-    assert!(message.contains("--dev-tools"), "{message}");
-    assert!(message.contains("--help"), "{message}");
-    assert!(BuildOptions::from_args(&["release".to_string()]).is_err());
-  }
-
-  #[test]
   fn dev_tools_adds_the_feature_and_one_warning() {
     let ws = workspace("[project]\nname = \"g\"\n");
-    let args = |options: BuildOptions| -> Vec<String> {
+    let args = |options: BuildArgs| -> Vec<String> {
       release_build_command(
         &ws,
         Path::new("target"),
@@ -549,8 +455,8 @@ mod tests {
       .map(|arg| arg.to_string_lossy().into_owned())
       .collect()
     };
-    let plain = BuildOptions::from_args(&[]).unwrap();
-    let tools = BuildOptions::from_args(&["--dev-tools".to_string()]).unwrap();
+    let plain = BuildArgs { dev_tools: false };
+    let tools = BuildArgs { dev_tools: true };
     assert_eq!(args(plain), ["build", "--release"]);
     assert_eq!(
       args(tools),
@@ -598,7 +504,7 @@ mod tests {
       std::path::Path::new("target"),
       &embedded,
       std::path::Path::new("icon.png"),
-      BuildOptions::from_args(&[]).unwrap(),
+      BuildArgs { dev_tools: false },
     );
 
     let envs: std::collections::HashMap<OsString, Option<OsString>> = command

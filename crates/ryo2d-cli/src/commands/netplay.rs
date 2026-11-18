@@ -12,96 +12,12 @@ use std::time::Duration;
 
 use super::{CliError, CliResult, Output};
 
-/// Execute the netplay command
-pub fn execute(args: &[String]) -> CliResult<()> {
-  if args.is_empty() {
-    print_help();
-    return Ok(());
-  }
-
-  match args[0].as_str() {
-    "start" => execute_start(&args[1..]),
-    "ip" => execute_ip(),
-    "help" | "--help" | "-h" => {
-      print_help();
-      Ok(())
-    }
-    unknown => {
-      Output::error(&format!("Unknown subcommand: {}", unknown));
-      println!();
-      print_help();
-      Err(CliError::Other(format!("Unknown subcommand: {}", unknown)))
-    }
-  }
-}
-
-fn print_help() {
-  println!(
-    r#"
-ryo2d netplay - Tools for testing multiplayer/netplay
-
-USAGE:
-    ryo2d netplay <COMMAND>
-
-COMMANDS:
-    start       Start a temporary signaling server for testing with friends
-    ip          Show your LAN and WAN IP addresses
-    help        Show this help message
-
-NOTE:
-    'netplay start' creates a temporary tunnel that closes when you stop it.
-    For production games, deploy your own signaling server (see docs/).
-
-EXAMPLES:
-    ryo2d netplay start
-    ryo2d netplay ip
-
-Run 'ryo2d netplay <COMMAND> --help' for more information.
-"#
-  );
-}
-
 // =============================================================================
 // netplay start
 // =============================================================================
 
-fn execute_start(args: &[String]) -> CliResult<()> {
-  for arg in args {
-    if arg == "--help" || arg == "-h" {
-      print_start_help();
-      return Ok(());
-    }
-  }
-
+pub fn execute_start() -> CliResult<()> {
   run_netplay_server()
-}
-
-fn print_start_help() {
-  println!(
-    r#"
-ryo2d netplay start - Start a TEMPORARY signaling server for testing
-
-USAGE:
-    ryo2d netplay start
-
-DESCRIPTION:
-    Creates a temporary tunnel for testing multiplayer with friends over the
-    internet. The tunnel URL changes each time and closes when you press Ctrl+C.
-
-    NOT FOR PRODUCTION - For shipped games, deploy your own signaling server.
-    See: docs/architecture/matchbox-server.md
-
-    Press Ctrl+C to stop the server and close the tunnel.
-
-REQUIREMENTS:
-    - matchbox_server (auto-installed via cargo)
-    - cloudflared: https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/install-and-setup/installation/
-
-      Windows:   winget install Cloudflare.cloudflared
-      macOS:     brew install cloudflared
-      Linux:     See Cloudflare docs for your distro
-"#
-  );
 }
 
 fn run_netplay_server() -> CliResult<()> {
@@ -142,16 +58,12 @@ fn run_netplay_server() -> CliResult<()> {
       let status = Command::new("cargo")
         .args(["install", "matchbox_server"])
         .status()
-        .map_err(|e| CliError::CommandFailed {
-          command: "cargo install".to_string(),
-          message: e.to_string(),
-        })?;
+        .map_err(|e| CliError::spawn("cargo install", e))?;
 
       if !status.success() {
-        return Err(CliError::CommandFailed {
-          command: "cargo install matchbox_server".to_string(),
-          message: "Installation failed".to_string(),
-        });
+        return Err(CliError::Other(
+          "cargo install matchbox_server failed".to_string(),
+        ));
       }
     }
 
@@ -191,10 +103,7 @@ fn run_netplay_server() -> CliResult<()> {
     .stdout(Stdio::null())
     .stderr(Stdio::piped())
     .spawn()
-    .map_err(|e| CliError::CommandFailed {
-      command: matchbox_cmd.clone(),
-      message: e.to_string(),
-    })?;
+    .map_err(|e| CliError::spawn(&matchbox_cmd, e))?;
 
   // Give it a moment to start
   thread::sleep(Duration::from_millis(500));
@@ -222,17 +131,14 @@ fn run_netplay_server() -> CliResult<()> {
         format!("Exited immediately: {}", detail)
       };
 
-      return Err(CliError::CommandFailed {
-        command: matchbox_cmd,
-        message,
-      });
+      return Err(CliError::Other(format!("{matchbox_cmd}: {message}")));
     }
     Ok(None) => {} // Still running, good
     Err(e) => {
-      return Err(CliError::CommandFailed {
-        command: matchbox_cmd,
-        message: e.to_string(),
-      });
+      return Err(CliError::io(
+        format!("could not check on {matchbox_cmd}"),
+        e,
+      ));
     }
   }
 
@@ -244,10 +150,7 @@ fn run_netplay_server() -> CliResult<()> {
     .stdout(Stdio::piped())
     .stderr(Stdio::piped())
     .spawn()
-    .map_err(|e| CliError::CommandFailed {
-      command: cloudflared_cmd.clone(),
-      message: e.to_string(),
-    })?;
+    .map_err(|e| CliError::spawn(&cloudflared_cmd, e))?;
 
   // Set up running flag for shutdown coordination
   let running = Arc::new(AtomicBool::new(true));
@@ -385,7 +288,7 @@ fn extract_url(line: &str) -> Option<String> {
 // netplay ip
 // =============================================================================
 
-fn execute_ip() -> CliResult<()> {
+pub fn execute_ip() -> CliResult<()> {
   println!();
   println!("  Network Addresses");
   println!("  =================");

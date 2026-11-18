@@ -36,6 +36,9 @@
 //! ryo2d export
 //! ```
 
+mod args;
 mod commands;
+mod error;
 
-pub use commands::{CliError, CliResult, run_cli};
+pub use commands::run_cli;
+pub use error::{CliError, CliResult};

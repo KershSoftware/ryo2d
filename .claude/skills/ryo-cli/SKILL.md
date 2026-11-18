@@ -2,7 +2,7 @@
 name: ryo-cli
 description: Using the ryo2d CLI for building, running and developing games - init, dev (and -p for the profiler), build (a release without developer tools; --dev-tools keeps them), run, export, check-ui, sheet (a skeleton's animations as a contact sheet PNG), netplay, the release bundle, RYO_LOG, frame capture and scripted headless runs (RYO_CAPTURE_*, RYO_INPUT, RYO_HEADLESS).
 metadata:
-  version: 1.6.0
+  version: 1.7.0
 ---
 
 # Ryo2D CLI Specialist
@@ -104,6 +104,7 @@ show_colliders = false
 - **A release has no developer tools**: no console, no logger or profiler window, no debug keys (F1-F4, F9, F10, F12 and the backquote key reach the game; F5's borderless toggle stays) and no debug overlays, whatever Ryo.toml's `[debug]` section says; a plain build ignores those settings without a word. The FPS counter stays, as the player's setting. `ryo2d::DEV_TOOLS` is `false` in it.
 - **`ryo2d build --dev-tools`** keeps the tools (it builds with `--features ryo2d/dev-tools`), to test a release build with the console and the dev windows. It prints `this build includes developer tools: do not ship it`.
 - `ryo2d build` takes no other argument: an unknown one (a misspelt `--dev-tool`) is an error naming it and the valid flags, and nothing is built.
+- Every command reads its arguments the same way: an unknown flag or command is one error line naming it, with exit code 2, and `ryo2d <command> --help` lists a command's flags. Exit codes: 0 success, 1 the command failed, 2 arguments it could not read.
 - The `ryo2d` command has no web build: a game you build for the web yourself must ship the same licence files (copy `release/licenses/` from a `ryo2d build`), and hands the engine its Ryo.toml with `EngineBuilder::project(ryo2d::project!())`, since the browser has none to read (`ryo-config-save`).
 
 ## Development Workflow

@@ -5,20 +5,14 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use super::{CliError, CliResult, Output};
+use crate::args::InitArgs;
 
 /// Execute the init command
-pub fn execute(args: &[String]) -> CliResult<()> {
-  // Handle --help
-  if args.iter().any(|a| a == "--help" || a == "-h") {
-    print_help();
-    return Ok(());
-  }
-
+pub fn execute(args: &InitArgs) -> CliResult<()> {
   // Get project name from args or prompt
-  let project_name = if args.is_empty() {
-    prompt_project_name()?
-  } else {
-    args[0].clone()
+  let project_name = match &args.name {
+    Some(name) => name.clone(),
+    None => prompt_project_name()?,
   };
 
   // Validate project name
@@ -67,10 +61,14 @@ pub fn execute(args: &[String]) -> CliResult<()> {
 /// Prompt user for project name
 fn prompt_project_name() -> CliResult<String> {
   print!("Project name: ");
-  io::stdout().flush().map_err(CliError::Io)?;
+  io::stdout()
+    .flush()
+    .map_err(|e| CliError::io("could not write to the terminal", e))?;
 
   let mut input = String::new();
-  io::stdin().read_line(&mut input).map_err(CliError::Io)?;
+  io::stdin()
+    .read_line(&mut input)
+    .map_err(|e| CliError::io("could not read from the terminal", e))?;
 
   let name = input.trim().to_string();
 
@@ -497,39 +495,6 @@ fn main() {
     }
 }
 "#
-}
-
-fn print_help() {
-  println!(
-    r#"
-ryo2d-init - Create a new Ryo2D project
-
-USAGE:
-    ryo2d init [PROJECT_NAME]
-
-ARGUMENTS:
-    PROJECT_NAME    Name of the project (lowercase, hyphens, underscores)
-                    If not provided, you will be prompted
-
-DESCRIPTION:
-    Creates a new Ryo2D game project with the following structure:
-
-    project-name/
-    ├── main.rs          # Game entry point with basic scene
-    ├── build.rs         # Build script (Windows icon embedding)
-    ├── Cargo.toml       # Rust package configuration
-    ├── Ryo.toml         # Ryo2D project settings
-    ├── README.md        # Project documentation
-    ├── .gitignore       # Git ignore patterns
-    ├── assets/          # Game assets (images, audio)
-    ├── data/            # Save data (auto-generated at runtime)
-    └── src/             # Additional modules (create as needed)
-
-EXAMPLES:
-    ryo2d init my-game
-    ryo2d init
-"#
-  );
 }
 
 #[cfg(test)]

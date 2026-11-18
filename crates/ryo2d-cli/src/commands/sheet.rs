@@ -3,51 +3,36 @@
 use std::path::{Path, PathBuf};
 
 use image::RgbaImage;
-use ryo2d::ecs::UVec2;
 
 use super::{CliError, CliResult, Output};
+use crate::args::SheetArgs;
 use ryo2d::core::config::Workspace;
 use ryo2d::testing::{SheetError, SheetOptions, SheetSkeleton, skeleton_sheet};
 
-/// The flags the command takes, for the message about one it does not
-const FLAGS: &str = "--animations, --moments, --skins, --once, --bones, --cell, --hz, --out";
-
-/// What the command was asked for
-#[derive(Debug, Clone, PartialEq)]
-struct SheetArgs {
-  file: PathBuf,
-  options: SheetOptions,
-  out: Option<PathBuf>,
-}
-
 /// Execute the sheet command
-pub fn execute(args: &[String]) -> CliResult<()> {
-  if args.iter().any(|a| a == "--help" || a == "-h") {
-    print_help();
-    return Ok(());
-  }
-  let cwd = std::env::current_dir().map_err(CliError::Io)?;
+pub fn execute(args: &SheetArgs) -> CliResult<()> {
+  let cwd =
+    std::env::current_dir().map_err(|e| CliError::io("could not find the current folder", e))?;
   let out = run(args, &cwd, skeleton_sheet)?;
   Output::success(&format!("wrote {}", out.display()));
   Ok(())
 }
 
-/// Reads the arguments, finds the file's project and draws its sheet with
-/// `draw`, writing the PNG; relative paths are from `cwd`. The path
-/// written, or why not
+/// Finds the file's project and draws its sheet with `draw`, writing the
+/// PNG; relative paths are from `cwd`. The path written, or why not
 fn run(
-  args: &[String],
+  args: &SheetArgs,
   cwd: &Path,
   draw: impl FnOnce(SheetSkeleton, &SheetOptions) -> Result<RgbaImage, SheetError>,
 ) -> CliResult<PathBuf> {
-  let parsed = parse(args).map_err(CliError::Other)?;
-  let file = cwd.join(&parsed.file);
+  let file = cwd.join(&args.file);
   let file = file
     .canonicalize()
     .map_err(|error| CliError::Other(format!("cannot read {}: {error}", file.display())))?;
   let (assets, path) = asset_path(&file)?;
-  let out = parsed
+  let out = args
     .out
+    .as_ref()
     .map_or_else(|| cwd.join(default_out(&file)), |out| cwd.join(out));
   // The folder is made, or found unusable, before anything is drawn
   if let Some(folder) = out.parent().filter(|folder| !folder.as_os_str().is_empty()) {
@@ -62,7 +47,7 @@ fn run(
     Output::warning(&warning);
   }
   Output::status("Drawing", &format!("{path} from {}", assets.display()));
-  let sheet = draw(SheetSkeleton::file(&assets, &path), &parsed.options).map_err(|error| {
+  let sheet = draw(SheetSkeleton::file(&assets, &path), &args.options()).map_err(|error| {
     CliError::Other(match error {
       SheetError::NoGpu => {
         "no GPU found: `ryo2d sheet` draws with the GPU, and this machine has none it can use"
@@ -81,8 +66,7 @@ fn run(
 /// in it (`/` between folders); an error for a file outside it
 fn asset_path(file: &Path) -> CliResult<(PathBuf, String)> {
   let folder = file.parent().unwrap_or(file);
-  let workspace = Workspace::discover_from(folder)
-    .map_err(|error| CliError::WorkspaceNotFound(error.to_string()))?;
+  let workspace = Workspace::discover_from(folder).map_err(CliError::Workspace)?;
   let assets = workspace.assets_dir();
   let outside = || {
     CliError::Other(format!(
@@ -125,119 +109,19 @@ fn default_out(file: &Path) -> PathBuf {
   PathBuf::from(format!("{stem}.sheet.png"))
 }
 
-fn parse(args: &[String]) -> Result<SheetArgs, String> {
-  let mut file = None;
-  let mut options = SheetOptions::default();
-  let mut out = None;
-  let mut words = args.iter();
-  while let Some(word) = words.next() {
-    let mut value = |flag: &str| {
-      words
-        .next()
-        .cloned()
-        .ok_or_else(|| format!("{flag} needs a value"))
-    };
-    match word.as_str() {
-      "--animations" => options.animations = Some(list(&value(word)?)),
-      "--skins" => options.skins = list(&value(word)?),
-      "--once" => options.once = list(&value(word)?),
-      "--moments" => {
-        let given = value(word)?;
-        options.moments = given
-          .parse()
-          .map_err(|_| format!("--moments takes a whole number, not {given:?}"))?;
-      }
-      "--cell" => options.cell = Some(cell(&value(word)?)?),
-      "--hz" => {
-        let given = value(word)?;
-        let hz = given
-          .parse()
-          .map_err(|_| format!("--hz takes a whole number of steps a second, not {given:?}"))?;
-        options.fixed_hz = Some(hz);
-      }
-      "--out" => out = Some(PathBuf::from(value(word)?)),
-      "--bones" => options.bones = true,
-      flag if flag.starts_with('-') => {
-        return Err(format!("unknown option {flag} (the options are {FLAGS})"));
-      }
-      path if file.is_none() => file = Some(PathBuf::from(path)),
-      extra => return Err(format!("one skeleton file at a time: {extra} is a second")),
-    }
-  }
-  let file = file.ok_or("which skeleton? ryo2d sheet <file.skeleton.ron>")?;
-  Ok(SheetArgs { file, options, out })
-}
-
-/// `a,b` as names, empty ones dropped
-fn list(value: &str) -> Vec<String> {
-  value
-    .split(',')
-    .map(str::trim)
-    .filter(|name| !name.is_empty())
-    .map(str::to_owned)
-    .collect()
-}
-
-/// `WxH` in pixels
-fn cell(value: &str) -> Result<UVec2, String> {
-  let bad = || format!("--cell takes WIDTHxHEIGHT in pixels (200x240), not {value:?}");
-  let (width, height) = value.split_once(['x', 'X']).ok_or_else(bad)?;
-  let side = |side: &str| side.trim().parse::<u32>().map_err(|_| bad());
-  Ok(UVec2::new(side(width)?, side(height)?))
-}
-
-fn print_help() {
-  println!(
-    r#"
-ryo2d-sheet - Draw a skeleton's animations as a contact sheet
-
-USAGE:
-    ryo2d sheet <FILE.skeleton.ron> [OPTIONS]
-
-OPTIONS:
-    --animations a,b   The animations, a row each (default: every one)
-    --moments N        The moments of each, a column each (default: 8)
-    --skins x,y        The skins to put on, in order
-    --once a,b         Animations played once, not looped: no loop round
-                       first, and a last cell at their length
-    --bones            Draw the bones overlay over the art
-    --cell WxH         Each cell's size in pixels, label included
-                       (default: sized to fit the poses)
-    --hz N             The fixed rate to step at, as the game's
-                       EngineBuilder::fixed_hz (default: 60)
-    --out PATH         Where to write the PNG, its folder made if missing
-                       (default: NAME.sheet.png in the current folder)
-    -h, --help         Show this help message
-
-DESCRIPTION:
-    Draws each animation at evenly spaced moments, k x length / N for k
-    from 0, each cell labelled with the animation's name and the time. A
-    moment is reached by stepping the animation from its start, at the
-    engine's default 60 steps a second unless --hz says otherwise, after
-    one loop round (none for an animation given to --once, which also gets
-    a cell at its end), so springs and constraints show as in play. Every
-    cell has one scale and the skeleton's origin at one place, on a faint
-    ground line, so root motion reads. A skeleton with no animations shows
-    its setup pose.
-
-    The file must be in a project's assets folder: its images are paths
-    from there. A sheet written into the assets folder is written with a
-    warning, since a release would ship it. The sheet draws with the GPU.
-
-EXAMPLE:
-    ryo2d sheet assets/hero.skeleton.ron
-    ryo2d sheet assets/hero.skeleton.ron --animations walk,run \
-        --moments 6 --bones
-"#
-  );
-}
-
 #[cfg(test)]
 mod tests {
   use super::*;
 
-  fn args(words: &[&str]) -> Vec<String> {
-    words.iter().map(|word| (*word).to_owned()).collect()
+  /// The arguments `ryo2d sheet` is run with, read by the real parser
+  fn args(words: &[&str]) -> SheetArgs {
+    use clap::Parser;
+    let cli =
+      crate::args::Cli::try_parse_from(["ryo2d", "sheet"].into_iter().chain(words.iter().copied()));
+    match cli.map(|cli| cli.command) {
+      Ok(crate::args::Command::Sheet(args)) => args,
+      other => panic!("sheet {words:?} does not parse: {other:?}"),
+    }
   }
 
   fn message(result: CliResult<PathBuf>) -> String {
@@ -260,67 +144,6 @@ mod tests {
     std::fs::create_dir_all(&rigs).unwrap();
     std::fs::write(rigs.join("hero.skeleton.ron"), "()").unwrap();
     root
-  }
-
-  #[test]
-  fn help_prints_and_succeeds() {
-    assert!(execute(&args(&["--help"])).is_ok());
-  }
-
-  #[test]
-  fn the_arguments_become_the_sheet_s_options() {
-    let parsed = parse(&args(&[
-      "hero.skeleton.ron",
-      "--animations",
-      "walk, run",
-      "--moments",
-      "6",
-      "--skins",
-      "dark,cape",
-      "--bones",
-      "--once",
-      "jump",
-      "--cell",
-      "200x240",
-      "--hz",
-      "30",
-      "--out",
-      "sheets/hero.png",
-    ]))
-    .unwrap();
-    assert_eq!(
-      parsed,
-      SheetArgs {
-        file: PathBuf::from("hero.skeleton.ron"),
-        options: SheetOptions {
-          animations: Some(vec!["walk".to_owned(), "run".to_owned()]),
-          moments: 6,
-          skins: vec!["dark".to_owned(), "cape".to_owned()],
-          once: vec!["jump".to_owned()],
-          bones: true,
-          cell: Some(UVec2::new(200, 240)),
-          fixed_hz: Some(30),
-        },
-        out: Some(PathBuf::from("sheets/hero.png")),
-      }
-    );
-    // The file alone takes every default
-    let plain = parse(&args(&["hero.skeleton.ron"])).unwrap();
-    assert_eq!(plain.options, SheetOptions::default());
-    assert_eq!(plain.out, None);
-  }
-
-  #[test]
-  fn arguments_it_cannot_read_say_why() {
-    let error = |words: &[&str]| parse(&args(words)).unwrap_err();
-    assert!(error(&[]).contains("which skeleton"));
-    assert!(error(&["a.skeleton.ron", "b.skeleton.ron"]).contains("one skeleton file"));
-    assert!(error(&["a.skeleton.ron", "--bone"]).contains("unknown option --bone"));
-    assert!(error(&["a.skeleton.ron", "--moments"]).contains("needs a value"));
-    assert!(error(&["a.skeleton.ron", "--moments", "six"]).contains("whole number"));
-    assert!(error(&["a.skeleton.ron", "--cell", "200"]).contains("WIDTHxHEIGHT"));
-    assert!(error(&["a.skeleton.ron", "--cell", "200xtall"]).contains("WIDTHxHEIGHT"));
-    assert!(error(&["a.skeleton.ron", "--hz", "fast"]).contains("--hz takes"));
   }
 
   #[test]

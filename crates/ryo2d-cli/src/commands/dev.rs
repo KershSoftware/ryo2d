@@ -6,20 +6,14 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use super::{CliError, CliResult, Output, discover_workspace};
+use crate::args::DevArgs;
 
 /// Execute the dev command
-pub fn execute(args: &[String]) -> CliResult<()> {
-  // Handle --help
-  if args.iter().any(|a| a == "--help" || a == "-h") {
-    print_help();
-    return Ok(());
-  }
-
-  // Check for --skip-opt-check flag (used by engine run scripts for examples)
-  let skip_opt_check = args.iter().any(|a| a == "--skip-opt-check");
-
-  // Check for --profiler / -p flag (enables puffin profiling with auto-open)
-  let profiler_flag = args.iter().any(|a| a == "--profiler" || a == "-p");
+pub fn execute(args: &DevArgs) -> CliResult<()> {
+  // --skip-opt-check is used by the engine's run scripts for examples;
+  // --profiler / -p enables puffin profiling with auto-open
+  let skip_opt_check = args.skip_opt_check;
+  let profiler_flag = args.profiler;
 
   let workspace = discover_workspace()?;
 
@@ -77,19 +71,10 @@ pub fn execute(args: &[String]) -> CliResult<()> {
 
   // For now, just run cargo run (debug build)
   // Future: Add file watching with notify crate
-  let status = cmd.status().map_err(|e| CliError::CommandFailed {
-    command: "cargo run".to_string(),
-    message: e.to_string(),
-  })?;
+  let status = cmd.status().map_err(|e| CliError::spawn("cargo run", e))?;
 
   if !status.success() {
-    let code = status.code().unwrap_or(-1);
-    if code != 0 {
-      return Err(CliError::BuildFailed(format!(
-        "Development build failed with exit code {}",
-        code
-      )));
-    }
+    return Err(CliError::Build { status });
   }
 
   Ok(())
@@ -180,40 +165,4 @@ fn find_workspace_target_dir(start_dir: &std::path::Path) -> PathBuf {
 
   // Fallback to local target directory
   start_dir.join("target")
-}
-
-fn print_help() {
-  println!(
-    r#"
-ryo2d-dev - Development mode
-
-USAGE:
-    ryo2d dev [OPTIONS]
-
-OPTIONS:
-    -h, --help          Show this help message
-    -p, --profiler      Open the profiler window (builds the engine's profiler feature)
-    --skip-opt-check    Skip the dev profile optimization check
-
-DESCRIPTION:
-    Runs your game in development mode with:
-    - Debug build for faster compilation
-    - Automatic recompilation on file changes (coming soon)
-    - Hot reload support (coming soon)
-
-    This is the recommended command during development.
-
-PROFILING:
-    Use --profiler to enable and auto-open the profiler window:
-
-        ryo2d dev --profiler
-
-    Alternatively, set `enable_profiler = true` in your Ryo.toml [debug] section.
-    This enables the profiler feature but doesn't auto-open - press F10 to open.
-
-EXAMPLE:
-    ryo2d dev              # Normal development mode
-    ryo2d dev --profiler   # With profiler window auto-opened
-"#
-  );
 }
