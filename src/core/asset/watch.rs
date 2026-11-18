@@ -411,9 +411,11 @@ mod tests {
     let a = folder.load_now("a.txt");
     let later = folder.load_now("later.txt");
     let mut cursor = folder.cursor();
+    // Back to back, inside the debounce as an editor's truncate and write
+    // are. (A sleep between them would make the test depend on the machine:
+    // under load it can outlast the debounce, and the file rightly reloads
+    // twice.)
     folder.write("a.txt", "a");
-    // Inside the debounce, as an editor's truncate and write are
-    std::thread::sleep(Duration::from_millis(30));
     folder.write("a.txt", "b");
     let burst = folder.pump_until_sent(&mut cursor, modified(&a));
     assert_eq!(
