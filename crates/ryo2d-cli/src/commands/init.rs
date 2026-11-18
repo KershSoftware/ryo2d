@@ -144,7 +144,7 @@ fn engine_dependency() -> (String, String) {
 
 /// Create the project directory structure and files
 fn create_project_structure(project_dir: &Path, project_name: &str) -> CliResult<()> {
-  for folder in ["", "assets", "data", "src"] {
+  for folder in ["assets", "data", "src"] {
     fs::create_dir_all(project_dir.join(folder))
       .map_err(|e| CliError::Other(format!("Failed to create the '{folder}' folder: {e}")))?;
   }
@@ -227,13 +227,18 @@ mod tests {
       Err(error) => panic!("the templates render: {error}"),
     };
     assert_eq!(files.len(), 6);
+    assert!(!files.iter().any(|(_, text)| text.contains("your-username")));
     for (path, text) in &files {
       assert!(!text.is_empty() && !text.contains("{{"), "{path}");
     }
-    let cargo = &files[0].1;
+    let cargo = files
+      .iter()
+      .find(|(path, _)| *path == "Cargo.toml")
+      .map(|(_, text)| text.as_str())
+      .unwrap_or_default();
     assert!(cargo.contains("name = \"my-game\""));
     assert!(cargo.contains("ryo2d = { path = \"/engine\" }"));
-    assert!(!cargo.contains("your-username") && !cargo.contains("rand"));
+    assert!(!cargo.contains("your-username") && !cargo.contains("rand = "));
   }
 
   /// A new game starts at the mix as designed: master at 1, which is the

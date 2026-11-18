@@ -5,6 +5,8 @@ use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
 
+// Keep in step with `COMMANDS` in binary.rs, whose `ryo2d_help_lists_every_command`
+// fails when this list is out of date
 const COMMANDS: [&str; 9] = [
   "init",
   "dev",
@@ -48,9 +50,10 @@ fn home_with_engine() -> tempfile::TempDir {
 #[test]
 fn init_makes_a_project_that_builds() {
   // The repository, which holds the engine this test's `ryo2d` is built from
+  // (not canonicalised: on Windows that adds a `\\?\` prefix cargo misreads)
   let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
-    .join("../..")
-    .canonicalize()
+    .parent()
+    .and_then(Path::parent)
     .expect("the repository folder");
   let repo_text = repo.display().to_string().replace('\\', "/");
 
@@ -82,7 +85,7 @@ fn init_makes_a_project_that_builds() {
   // The workspace's target folder, so the engine is not built from scratch
   let metadata = Command::new("cargo")
     .args(["metadata", "--format-version", "1", "--no-deps"])
-    .current_dir(&repo)
+    .current_dir(repo)
     .output()
     .expect("cargo metadata runs");
   let metadata: serde_json::Value =
@@ -91,8 +94,13 @@ fn init_makes_a_project_that_builds() {
     .as_str()
     .expect("a target folder");
 
+  // The workspace's lock, so the engine's dependencies are the versions it
+  // builds with and nothing is resolved afresh
+  fs::copy(repo.join("Cargo.lock"), project.join("Cargo.lock")).expect("Cargo.lock");
+
   let check = Command::new("cargo")
-    .arg("check")
+    // not `--locked`: the new package itself is not in the workspace's lock
+    .args(["check", "--offline"])
     .current_dir(&project)
     .env("CARGO_TARGET_DIR", target)
     .output()
