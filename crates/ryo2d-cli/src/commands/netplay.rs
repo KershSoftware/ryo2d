@@ -61,9 +61,7 @@ fn run_netplay_server() -> CliResult<()> {
         .map_err(|e| CliError::spawn("cargo install", e))?;
 
       if !status.success() {
-        return Err(CliError::Other(
-          "cargo install matchbox_server failed".to_string(),
-        ));
+        return Err(CliError::Build { status });
       }
     }
 

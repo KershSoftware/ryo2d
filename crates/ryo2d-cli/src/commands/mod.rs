@@ -67,7 +67,7 @@ fn run_with(args: &[String]) -> u8 {
   match dispatch(cli.command) {
     Ok(()) => 0,
     Err(error) => {
-      eprintln!("{error}");
+      eprintln!("{}", error.report());
       error.exit_code()
     }
   }

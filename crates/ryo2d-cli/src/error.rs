@@ -8,14 +8,15 @@ use ryo2d::prelude::EngineError;
 use thiserror::Error;
 
 /// Why a command failed. The message says what happened and the source (when
-/// there is one) says why; a command prints it once.
+/// there is one) says why; [`CliError::report`] joins them, and a command
+/// prints that once.
 #[derive(Debug, Error)]
 pub enum CliError {
   /// No project (`Ryo.toml`) was found, or it could not be read
-  #[error("could not find a Ryo2D project: {0}")]
+  #[error("could not read the Ryo2D project")]
   Workspace(#[source] EngineError),
   /// A file, folder, terminal or program the command needed would not work
-  #[error("{context}: {source}")]
+  #[error("{context}")]
   Io {
     /// What the command was doing
     context: String,
@@ -60,6 +61,18 @@ impl CliError {
     CliError::io(format!("could not run {command}"), source)
   }
 
+  /// The message and then each cause, joined by `: `, as a command prints it
+  pub fn report(&self) -> String {
+    let mut text = self.to_string();
+    let mut cause = std::error::Error::source(self);
+    while let Some(error) = cause {
+      text.push_str(": ");
+      text.push_str(&error.to_string());
+      cause = error.source();
+    }
+    text
+  }
+
   /// The process's exit code: the game's own for [`GameExited`](CliError::GameExited)
   /// (kept in 1 to 255, so a failure never reads as success), 1 for the rest
   pub fn exit_code(&self) -> u8 {
@@ -79,9 +92,11 @@ mod tests {
   fn cli_errors_keep_their_cause() {
     let io = CliError::io("could not read Ryo.toml", io::Error::other("denied"));
     assert!(io.source().is_some());
-    assert_eq!(io.to_string(), "could not read Ryo.toml: denied");
+    assert_eq!(io.to_string(), "could not read Ryo.toml");
+    assert_eq!(io.report(), "could not read Ryo.toml: denied");
     let workspace = CliError::Workspace(EngineError::WorkspaceError("no Ryo.toml".to_owned()));
     assert!(workspace.source().is_some());
+    assert!(workspace.report().ends_with("Workspace error: no Ryo.toml"));
     assert!(CliError::Other("plain".to_owned()).source().is_none());
   }
 

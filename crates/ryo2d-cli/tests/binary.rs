@@ -52,3 +52,20 @@ fn an_unknown_command_is_one_error_line() {
   assert_eq!(said.matches("bogus-command").count(), 1, "{said}");
   assert!(output.stdout.is_empty(), "nothing on stdout");
 }
+
+#[test]
+fn a_bare_ryo2d_prints_the_help_and_exits_2() {
+  let output = ryo2d(&[]);
+  assert_eq!(output.status.code(), Some(2));
+  let said = String::from_utf8_lossy(&output.stderr);
+  assert!(said.contains("Usage"), "{said}");
+  assert!(said.contains("netplay"), "{said}");
+}
+
+#[test]
+fn version_is_a_flag_and_help_has_no_colour() {
+  let output = ryo2d(&["--version"]);
+  assert_eq!(output.status.code(), Some(0));
+  assert!(String::from_utf8_lossy(&output.stdout).starts_with("ryo2d "));
+  assert!(!ryo2d(&["bogus"]).stderr.contains(&0x1b));
+}

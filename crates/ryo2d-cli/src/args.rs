@@ -18,20 +18,85 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum Command {
   /// Create a new Ryo2D project
+  ///
+  /// Creates a new Ryo2D game project in a folder of that name. The name is
+  /// lowercase letters, digits, hyphens and underscores. When it is not
+  /// given, it is asked for.
+  #[command(after_help = INIT_EXAMPLES)]
   Init(InitArgs),
   /// Run the game in development mode
+  ///
+  /// Runs your game as a debug build, for faster compilation, with the
+  /// developer tools and with asset hot reload: an edited asset shows in the
+  /// running game. Code is not reloaded: rebuild by running the command
+  /// again. This is the recommended command during development.
+  ///
+  /// To profile, use --profiler, which builds the engine's profiler feature
+  /// and opens the profiler window. Setting `enable_profiler = true` in
+  /// Ryo.toml's [debug] section builds the profiler too but does not open
+  /// it: press F10 in the game.
+  #[command(after_help = DEV_EXAMPLES)]
   Dev(DevArgs),
   /// Build a production release into release/
+  ///
+  /// Builds a production-optimised release of your game and a distributable
+  /// bundle in the release/ folder. The build has no developer tools: no
+  /// console, dev windows or debug keys (F5 and the FPS counter setting
+  /// stay). --dev-tools keeps them.
+  ///
+  /// Ryo.toml is not in the bundle: its values (paths, environment
+  /// variables) are compiled into the executable at build time. Any other
+  /// argument is an error.
+  #[command(after_help = BUILD_BUNDLE)]
   Build(BuildArgs),
   /// Run the production build
   Run,
   /// Package the release into a distributable zip
+  ///
+  /// Creates a zip from the release/ folder, named
+  /// {project-name}-v{version}-{YYYYMMDD}.zip. The version is Ryo.toml's
+  /// [project].version, or else Cargo.toml's [package].version; when neither
+  /// has one, the -v{version} part is left out. If a zip of that name
+  /// exists, a suffix is added: -001, -002 and so on.
+  ///
+  /// The zip always carries licenses/, the licences of the fonts the engine
+  /// builds in (written into release/ first if missing).
+  ///
+  /// Run 'ryo2d build' first to create the release bundle.
+  #[command(after_help = EXPORT_EXAMPLES)]
   Export,
   /// Install Agent Skills for AI assistants
   InstallSkills,
   /// Check UI files (*.ui.ron) without running the game
+  ///
+  /// Checks every *.ui.ron file under the project's assets folder, or the
+  /// files given, loading each as the game does. Imports and images are read
+  /// from the assets folder, and an image that does not load is reported at
+  /// its value. Each problem is printed as path:line:column: message, a
+  /// file's images after its other problems, and the command exits with an
+  /// error when any file has a problem.
+  ///
+  /// Paths in UI files, and the paths printed, are relative to the assets
+  /// folder (ui/menu.ui.ron for assets/ui/menu.ui.ron). FILES must be under
+  /// the assets folder: any other is reported as not an asset path.
+  #[command(after_help = CHECK_UI_EXAMPLES)]
   CheckUi(CheckUiArgs),
   /// Draw a skeleton's animations as a contact sheet (PNG)
+  ///
+  /// Draws each animation at evenly spaced moments, k x length / N for k
+  /// from 0, each cell labelled with the animation's name and the time. A
+  /// moment is reached by stepping the animation from its start, at the
+  /// engine's default 60 steps a second unless --hz says otherwise, after
+  /// one loop round (none for an animation given to --once, which also gets
+  /// a cell at its end), so springs and constraints show as in play. Every
+  /// cell has one scale and the skeleton's origin at one place, on a faint
+  /// ground line, so root motion reads. A skeleton with no animations shows
+  /// its setup pose.
+  ///
+  /// The file must be in a project's assets folder: its images are paths
+  /// from there. A sheet written into the assets folder is written with a
+  /// warning, since a release would ship it. The sheet draws with the GPU.
+  #[command(after_help = SHEET_EXAMPLES)]
   Sheet(SheetArgs),
   /// Tools for testing multiplayer
   Netplay {
@@ -39,6 +104,59 @@ pub enum Command {
     command: NetplayCommand,
   },
 }
+
+const INIT_EXAMPLES: &str = "\
+The project it creates:
+    project-name/
+    ├── main.rs          Game entry point with a basic scene
+    ├── build.rs         Build script (Windows icon embedding)
+    ├── Cargo.toml       Rust package configuration
+    ├── Ryo.toml         Ryo2D project settings
+    ├── README.md        Project documentation
+    ├── .gitignore       Git ignore patterns
+    ├── assets/          Game assets (images, audio)
+    ├── data/            Save data (made at run time)
+    └── src/             Additional modules (create as needed)
+
+Examples:
+    ryo2d init my-game
+    ryo2d init";
+
+const DEV_EXAMPLES: &str = "\
+Examples:
+    ryo2d dev              Normal development mode
+    ryo2d dev --profiler   With the profiler window";
+
+const BUILD_BUNDLE: &str = "\
+The bundle (release/) holds:
+    - The executable (with its configuration compiled in)
+    - assets/
+    - levels/ (if present)
+    - data/ (empty, for save files)
+    - README.md (if present)
+    - licenses/ (the licences of the fonts the engine builds in)
+
+Example:
+    ryo2d build
+    Then distribute the whole release/ folder.";
+
+const EXPORT_EXAMPLES: &str = "\
+Example:
+    ryo2d build    Create the release bundle
+    ryo2d export   Package it into a zip
+
+    Writes MyGame-v1.0.0-20260203.zip (MyGame-20260203.zip when no
+    version is found).";
+
+const CHECK_UI_EXAMPLES: &str = "\
+Examples:
+    ryo2d check-ui
+    ryo2d check-ui assets/ui/menu.ui.ron";
+
+const SHEET_EXAMPLES: &str = "\
+Examples:
+    ryo2d sheet assets/hero.skeleton.ron
+    ryo2d sheet assets/hero.skeleton.ron --animations walk,run --moments 6 --bones";
 
 /// `ryo2d init`
 #[derive(Debug, Args)]
@@ -105,7 +223,7 @@ pub struct SheetArgs {
   pub hz: Option<u32>,
   /// Where to write the PNG, its folder made if missing (default:
   /// NAME.sheet.png in the current folder)
-  #[arg(long)]
+  #[arg(long, value_name = "PATH")]
   pub out: Option<PathBuf>,
 }
 
@@ -146,10 +264,27 @@ fn parse_cell(value: &str) -> Result<UVec2, String> {
 #[derive(Debug, Subcommand)]
 pub enum NetplayCommand {
   /// Start a temporary signaling server for testing with friends
+  ///
+  /// Creates a temporary tunnel for testing multiplayer with friends over
+  /// the internet. The tunnel URL changes each time and closes when you
+  /// press Ctrl+C.
+  ///
+  /// NOT FOR PRODUCTION: for shipped games, deploy your own signalling
+  /// server (see docs/architecture/matchbox-server.md).
+  #[command(after_help = NETPLAY_REQUIREMENTS)]
   Start,
   /// Show your LAN and WAN IP addresses
   Ip,
 }
+
+const NETPLAY_REQUIREMENTS: &str = "\
+Requirements:
+    - matchbox_server (installed through cargo when missing)
+    - cloudflared: https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/install-and-setup/installation/
+
+      Windows:   winget install Cloudflare.cloudflared
+      macOS:     brew install cloudflared
+      Linux:     See Cloudflare docs for your distro";
 
 #[cfg(test)]
 mod tests {
@@ -180,6 +315,24 @@ mod tests {
     assert!(said.contains("--dev-tool"), "{said}");
     assert!(said.contains("--dev-tools"), "{said}");
     assert!(parse(&["build", "release"]).is_err());
+  }
+
+  #[test]
+  fn help_keeps_what_the_hand_written_help_said() {
+    let help = |words: &[&str]| {
+      let mut all = words.to_vec();
+      all.push("--help");
+      parse(&all).unwrap_err().to_string()
+    };
+    assert!(help(&["netplay", "start"]).contains("NOT FOR PRODUCTION"));
+    assert!(help(&["netplay", "start"]).contains("brew install cloudflared"));
+    assert!(help(&["export"]).contains("{project-name}-v{version}-{YYYYMMDD}.zip"));
+    assert!(help(&["build"]).contains("Ryo.toml is not in the bundle"));
+    assert!(help(&["sheet"]).contains("one loop round"));
+    assert!(help(&["check-ui"]).contains("path:line:column"));
+    assert!(help(&["dev"]).contains("F10"));
+    assert!(help(&["init"]).contains("assets/"));
+    assert!(!help(&["dev"]).contains("coming soon"));
   }
 
   #[test]

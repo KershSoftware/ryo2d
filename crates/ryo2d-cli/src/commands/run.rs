@@ -39,8 +39,6 @@ pub fn execute() -> CliResult<()> {
   } else if local_target_binary.exists() {
     (local_target_binary, false)
   } else {
-    Output::warning(&format!("No production build found for '{}'", display_name));
-    Output::status("Hint", "Run 'ryo2d build' first to create a release build");
     return Err(CliError::NoBuild(release_bundle_binary));
   };
 
