@@ -55,7 +55,14 @@ pub fn execute() -> CliResult<()> {
   Output::status("Exporting", &format!("{}...", zip_filename));
 
   // Create zip file
-  create_zip(&release_dir, &zip_path, &binary_name)?;
+  let portable = workspace.config().release.portable;
+  if release_dir.join("data").is_dir() {
+    Output::status(
+      "Skipping",
+      "release/data/ (saves and settings stay out of the zip)",
+    );
+  }
+  create_zip(&release_dir, &zip_path, &binary_name, portable)?;
 
   Output::success(&format!("created {}", zip_filename));
 
@@ -144,8 +151,14 @@ fn sanitize_filename(name: &str) -> String {
 /// release made without them still ships them). The release's top-level file
 /// named `executable` is written with mode 0o755 and every other file 0o644,
 /// so the game runs after unzipping on Mac and Linux (a Windows binary gets
-/// 0o755 too, which does no harm).
-fn create_zip(release_dir: &Path, zip_path: &Path, executable: &str) -> CliResult<()> {
+/// 0o755 too, which does no harm). The release's `data/` (the developer's
+/// saves and settings) is never zipped: a `portable` game gets an empty one.
+fn create_zip(
+  release_dir: &Path,
+  zip_path: &Path,
+  executable: &str,
+  portable: bool,
+) -> CliResult<()> {
   write_font_licenses(release_dir)?;
   let file = File::create(zip_path)
     .map_err(|e| CliError::Other(format!("Failed to create zip file: {}", e)))?;
@@ -154,7 +167,14 @@ fn create_zip(release_dir: &Path, zip_path: &Path, executable: &str) -> CliResul
   let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
   // Walk the release directory and add all files
-  add_directory_to_zip(&mut zip, release_dir, release_dir, options, executable)?;
+  add_directory_to_zip(
+    &mut zip,
+    release_dir,
+    release_dir,
+    options,
+    executable,
+    portable,
+  )?;
 
   zip
     .finish()
@@ -170,6 +190,7 @@ fn add_directory_to_zip(
   current_path: &Path,
   options: SimpleFileOptions,
   executable: &str,
+  portable: bool,
 ) -> CliResult<()> {
   for entry in fs::read_dir(current_path)
     .map_err(|e| CliError::Other(format!("Failed to read directory: {}", e)))?
@@ -188,6 +209,18 @@ fn add_directory_to_zip(
       .to_string_lossy()
       .replace(std::path::MAIN_SEPARATOR, "/");
 
+    // The release's own data/ holds the developer's saves and settings, which
+    // players must not get: a portable game gets the folder, empty
+    let is_data = current_path == base_path && zip_path == "data";
+    if is_data {
+      if portable && path.is_dir() {
+        zip
+          .add_directory("data/", options.unix_permissions(0o755))
+          .map_err(|e| CliError::Other(format!("Failed to add directory to zip: {}", e)))?;
+      }
+      continue;
+    }
+
     if path.is_dir() {
       // Add directory entry (with trailing slash)
       zip
@@ -195,7 +228,7 @@ fn add_directory_to_zip(
         .map_err(|e| CliError::Other(format!("Failed to add directory to zip: {}", e)))?;
 
       // Recurse into directory
-      add_directory_to_zip(zip, base_path, &path, options, executable)?;
+      add_directory_to_zip(zip, base_path, &path, options, executable, portable)?;
     } else {
       // Add file
       let mode = if zip_path == executable { 0o755 } else { 0o644 };
@@ -258,7 +291,7 @@ mod tests {
     fs::create_dir_all(&release).unwrap();
     fs::write(release.join("g"), b"a game").unwrap();
     let zip_path = dir.path().join("g.zip");
-    create_zip(&release, &zip_path, "g").unwrap();
+    create_zip(&release, &zip_path, "g", false).unwrap();
     let mut archive = zip::ZipArchive::new(File::open(&zip_path).unwrap()).unwrap();
     for (name, text) in FONT_LICENSES {
       let path = format!("{LICENSES_DIR}/{name}");
@@ -279,12 +312,71 @@ mod tests {
     fs::write(release.join("g"), b"a game").unwrap();
     fs::write(release.join("assets").join("a.txt"), b"an asset").unwrap();
     let zip_path = dir.path().join("g.zip");
-    create_zip(&release, &zip_path, "g").unwrap();
+    create_zip(&release, &zip_path, "g", false).unwrap();
     let mut archive = zip::ZipArchive::new(File::open(&zip_path).unwrap()).unwrap();
     let mode =
       |archive: &mut zip::ZipArchive<File>, name: &str| archive.by_name(name).unwrap().unix_mode();
     assert_eq!(mode(&mut archive, "g"), Some(0o100755));
     assert_eq!(mode(&mut archive, "assets/a.txt"), Some(0o100644));
+  }
+
+  /// The names in the zip, directories with their trailing slash
+  fn zip_names(zip_path: &Path) -> Vec<String> {
+    let archive = zip::ZipArchive::new(File::open(zip_path).unwrap()).unwrap();
+    archive.file_names().map(String::from).collect()
+  }
+
+  #[test]
+  fn an_export_never_ships_what_is_in_release_data() {
+    let dir = tempfile::tempdir().unwrap();
+    let release = dir.path().join("release");
+    fs::create_dir_all(release.join("data").join("saves")).unwrap();
+    fs::write(release.join("g"), b"a game").unwrap();
+    fs::write(release.join("data").join("system.json"), b"{}").unwrap();
+    fs::write(
+      release.join("data").join("saves").join("slot1.json"),
+      b"progress",
+    )
+    .unwrap();
+
+    // A portable game saves beside itself: it gets an empty data/
+    let portable = dir.path().join("portable.zip");
+    create_zip(&release, &portable, "g", true).unwrap();
+    let names = zip_names(&portable);
+    assert!(names.contains(&"data/".to_string()), "{names:?}");
+    assert!(names.contains(&"g".to_string()), "{names:?}");
+    assert!(
+      !names
+        .iter()
+        .any(|name| name.starts_with("data/") && name != "data/"),
+      "{names:?}"
+    );
+
+    // Any other game has no data/ at all
+    let plain = dir.path().join("plain.zip");
+    create_zip(&release, &plain, "g", false).unwrap();
+    let names = zip_names(&plain);
+    assert!(
+      !names.iter().any(|name| name.starts_with("data")),
+      "{names:?}"
+    );
+    assert!(names.contains(&"g".to_string()), "{names:?}");
+  }
+
+  #[test]
+  fn a_folder_named_data_below_the_top_level_is_shipped() {
+    let dir = tempfile::tempdir().unwrap();
+    let release = dir.path().join("release");
+    fs::create_dir_all(release.join("assets").join("data")).unwrap();
+    fs::write(release.join("g"), b"a game").unwrap();
+    fs::write(
+      release.join("assets").join("data").join("a.txt"),
+      b"an asset",
+    )
+    .unwrap();
+    let zip_path = dir.path().join("g.zip");
+    create_zip(&release, &zip_path, "g", false).unwrap();
+    assert!(zip_names(&zip_path).contains(&"assets/data/a.txt".to_string()));
   }
 
   #[test]

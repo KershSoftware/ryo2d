@@ -115,9 +115,9 @@ fn create_release_bundle(
 
   Output::status("Bundling", &format!("{} to release/...", display_name));
 
-  // Replace everything in release/ but data/, where a portable build keeps
-  // its saves
-  clean_release_dir(&release_dir)?;
+  // Replace everything in release/, but for data/ when portable: a portable
+  // build keeps its saves there
+  clean_release_dir(&release_dir, workspace.config().release.portable)?;
   fs::create_dir_all(&release_dir)
     .map_err(|e| CliError::Other(format!("Failed to create release directory: {}", e)))?;
 
@@ -202,19 +202,29 @@ fn create_release_bundle(
   Ok(())
 }
 
-/// Remove everything in `release_dir` except its `data` folder
-fn clean_release_dir(release_dir: &Path) -> CliResult<()> {
-  let Ok(entries) = fs::read_dir(release_dir) else {
-    return Ok(());
+/// Remove everything in `release_dir`, except its `data` folder when
+/// `keep_data` (a portable game's saves)
+fn clean_release_dir(release_dir: &Path, keep_data: bool) -> CliResult<()> {
+  let entries = match fs::read_dir(release_dir) {
+    Ok(entries) => entries,
+    Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+    Err(e) => {
+      return Err(CliError::Other(format!(
+        "Failed to clean release directory: {}",
+        e
+      )));
+    }
   };
   for entry in entries {
     let entry =
       entry.map_err(|e| CliError::Other(format!("Failed to clean release directory: {}", e)))?;
-    if entry.file_name() == "data" {
+    if keep_data && entry.file_name() == "data" {
       continue;
     }
     let path = entry.path();
-    let removed = if path.is_dir() {
+    // A link is removed as a file, never followed
+    let is_dir = entry.file_type().is_ok_and(|kind| kind.is_dir());
+    let removed = if is_dir {
       fs::remove_dir_all(&path)
     } else {
       fs::remove_file(&path)
@@ -495,5 +505,50 @@ mod tests {
     );
     assert!(!release.join("stale.txt").exists());
     assert!(!release.join("old").exists());
+  }
+
+  #[test]
+  fn a_build_that_is_not_portable_removes_the_data_folder() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("Ryo.toml"), "[project]\nname = \"g\"\n").unwrap();
+    let built = dir.path().join("built-game");
+    std::fs::write(&built, b"a game").unwrap();
+    let workspace = Workspace::from_path(dir.path()).unwrap();
+    let release = dir.path().join("release");
+    std::fs::create_dir_all(release.join("data")).unwrap();
+    std::fs::write(release.join("data").join("save.json"), b"progress").unwrap();
+    create_release_bundle(
+      &workspace,
+      "g",
+      &built,
+      "g",
+      &dir.path().join("no-icon.png"),
+    )
+    .unwrap();
+    assert!(!release.join("data").exists());
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn cleaning_removes_a_link_to_a_folder_and_not_what_it_points_at() {
+    let dir = tempfile::tempdir().unwrap();
+    let outside = dir.path().join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("keep.txt"), b"mine").unwrap();
+    let release = dir.path().join("release");
+    std::fs::create_dir_all(&release).unwrap();
+    std::os::unix::fs::symlink(&outside, release.join("link")).unwrap();
+    clean_release_dir(&release, false).unwrap();
+    assert!(!release.join("link").exists());
+    assert!(outside.join("keep.txt").exists());
+  }
+
+  #[test]
+  fn a_release_folder_that_cannot_be_read_is_an_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("release");
+    std::fs::write(&file, b"not a folder").unwrap();
+    assert!(clean_release_dir(&file, false).is_err());
+    assert!(clean_release_dir(&dir.path().join("missing"), false).is_ok());
   }
 }
