@@ -297,7 +297,15 @@ fn style(join: LineJoin, cap: LineCap, closed: bool, look: f32) -> PolyStyle {
     closed,
     params: [look, 0.0, 0.0, 0.0],
     emission: 1.0,
-    edge: None,
+    edge: LineEdge::Smooth,
+  }
+}
+
+/// `style`, drawn Hard
+fn hard(style: PolyStyle) -> PolyStyle {
+  PolyStyle {
+    edge: LineEdge::Hard,
+    ..style
   }
 }
 
@@ -1199,7 +1207,7 @@ fn a_hard_soft_or_glow_line_keeps_the_smooth_line_s_shape() {
         stream.polyline(&points, &style);
         painter.paint(&device, &queue, &stream, (centre, 1.0), size, None)
       };
-      let (hard, smooth) = (image(Some(LineEdge::Hard)), image(Some(LineEdge::Smooth)));
+      let (hard, smooth) = (image(LineEdge::Hard), image(LineEdge::Smooth));
       for y in 0..size.1 {
         let d = world_of(32, y, centre, size).y - y_centre;
         // The Hard band, half-open and moved up by a 64th of a pixel
@@ -1467,7 +1475,7 @@ impl Straight {
     width: f32,
     angles: &[f32],
     offset: Vec2,
-    edge: Option<LineEdge>,
+    edge: LineEdge,
     pixel_art: bool,
   ) -> Self {
     const ACROSS: u32 = 8;
@@ -1562,7 +1570,7 @@ fn straight_offsets() -> Vec<Vec2> {
 
 #[test]
 fn a_hard_line_is_one_pixel_per_column_at_any_angle() {
-  // A pixel wide line on a pixel-art target, every 1.5 degrees from 0 to
+  // A pixel wide Hard line on a pixel-art target, every 1.5 degrees from 0 to
   // 180 at 18 places: one whole pixel in each column (each row past 45
   // degrees), with no gap or double, as a line drawn in pixel art
   let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
@@ -1573,7 +1581,16 @@ fn a_hard_line_is_one_pixel_per_column_at_any_angle() {
   let angles: Vec<f32> = (0..120u16).map(|i| f32::from(i) * 1.5).collect();
   let mut wrong = Vec::new();
   for offset in straight_offsets() {
-    let lines = Straight::paint(&painter, &device, &queue, 1.0, &angles, offset, None, true);
+    let lines = Straight::paint(
+      &painter,
+      &device,
+      &queue,
+      1.0,
+      &angles,
+      offset,
+      LineEdge::Hard,
+      true,
+    );
     wrong.extend(lines.miscounted(1));
     assert_eq!(lines.partial(), 0, "offset {offset}: pixels partly drawn");
   }
@@ -1601,7 +1618,7 @@ fn a_hard_line_is_its_width_in_pixels_per_column() {
   let mut wrong = Vec::new();
   for (width, per) in [(0.25, 1), (0.5, 1), (2.0, 2), (3.0, 3)] {
     for offset in straight_offsets() {
-      let edge = Some(LineEdge::Hard);
+      let edge = LineEdge::Hard;
       let lines = Straight::paint(
         &painter, &device, &queue, width, &angles, offset, edge, false,
       );
@@ -1781,7 +1798,7 @@ fn tip_faults(image: &image::RgbaImage, v: &HardV, mitered: bool) -> (Vec<String
 
 #[test]
 fn a_hard_miter_tip_narrows_evenly_to_its_point() {
-  // Mitered and bevelled Vs 1 to 4 pixels wide on a pixel-art target,
+  // Mitered and bevelled Hard Vs 1 to 4 pixels wide on a pixel-art target,
   // turning 20 to 150 degrees, at fractional orientations and two
   // sub-pixel places: from the corner point toward the tip, each row of
   // the tip (each column past 45 degrees) is one run, no wider than the row
@@ -1830,7 +1847,7 @@ fn a_hard_miter_tip_narrows_evenly_to_its_point() {
           width / 2.0,
           Color::WHITE,
         );
-        stream.polyline(&points, &style(join, LineCap::Butt, false, SOLID));
+        stream.polyline(&points, &hard(style(join, LineCap::Butt, false, SOLID)));
         let v = HardV {
           p,
           dirs: (dir0, dir1),
@@ -1868,13 +1885,14 @@ fn a_hard_miter_tip_narrows_evenly_to_its_point() {
 
 #[test]
 fn a_hard_round_piece_keeps_to_its_segments_drawn_width() {
-  // Round-joined, round-capped Vs 1 to 4 pixels wide on a pixel-art target,
-  // turning 20 to 150 degrees at fractional orientations: a Hard segment is
-  // its half width along the image's axis, so narrower across at a slant,
-  // and its round pieces are as wide as it is. Past a cap's end no pixel is
-  // drawn at or beyond the segment's drawn half width, and every one
-  // within it is; in a join's outer wedge, past both segments' ends, none
-  // at or beyond the wider segment's, and every one within the narrower's
+  // Round-joined, round-capped Hard Vs 1 to 4 pixels wide on a pixel-art
+  // target, turning 20 to 150 degrees at fractional orientations: a Hard
+  // segment is its half width along the image's axis, so narrower across at
+  // a slant, and its round pieces are as wide as it is. Past a cap's end no
+  // pixel is drawn at or beyond the segment's drawn half width, and every
+  // one within it is; in a join's outer wedge, past both segments' ends,
+  // none at or beyond the wider segment's, and every one within the
+  // narrower's
   let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
     return;
   };
@@ -1905,7 +1923,7 @@ fn a_hard_round_piece_keeps_to_its_segments_drawn_width() {
       let ends = [p - dirs.0 * ARM, p, p + dirs.1 * ARM];
       stream.polyline(
         &points_of(&ends, width / 2.0, Color::WHITE),
-        &style(LineJoin::Round, LineCap::Round, false, SOLID),
+        &hard(style(LineJoin::Round, LineCap::Round, false, SOLID)),
       );
       placed.push((
         HardV {
@@ -1999,10 +2017,10 @@ fn a_hard_round_piece_keeps_to_its_segments_drawn_width() {
 }
 
 #[test]
-fn a_line_on_a_pixel_art_target_draws_whole_pixels_unless_smooth() {
-  // Zigzags of every join and cap at three widths: on a pixel-art target
-  // every pixel is drawn whole or not at all, unless the line is Smooth;
-  // elsewhere pixels are partly covered, unless the line is Hard
+fn a_line_draws_whole_pixels_only_when_hard_on_any_target() {
+  // Zigzags of every join and cap at three widths: a line with no edge set
+  // is Smooth, its pixels partly covered, on a pixel-art target as
+  // elsewhere; a Hard one draws every pixel whole or not at all on either
   let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
     return;
   };
@@ -2010,7 +2028,7 @@ fn a_line_on_a_pixel_art_target_draws_whole_pixels_unless_smooth() {
   let painter = Painter::new(&device, &queue);
   let size = (240u32, 240u32);
   let centre = Vec2::new(size.0 as f32, size.1 as f32) / 2.0;
-  let stream_of = |edge: Option<LineEdge>| {
+  let stream_of = |edge: LineEdge| {
     let mut stream = LineStream::default();
     for (i, (join, cap)) in JOINS
       .iter()
@@ -2035,10 +2053,10 @@ fn a_line_on_a_pixel_art_target_draws_whole_pixels_unless_smooth() {
     stream
   };
   for (edge, pixel_art, whole) in [
-    (None, true, true),
-    (Some(LineEdge::Smooth), true, false),
-    (None, false, false),
-    (Some(LineEdge::Hard), false, true),
+    (LineEdge::default(), true, false),
+    (LineEdge::default(), false, false),
+    (LineEdge::Hard, false, true),
+    (LineEdge::Hard, true, true),
   ] {
     let image = painter.paint_on(
       &device,

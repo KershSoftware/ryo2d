@@ -44,8 +44,8 @@ pub(crate) enum UiCommand {
     width: f32,
     color: Color,
     closed: bool,
-    /// How its edges meet the pixels (`None`: its target's)
-    edge: Option<LineEdge>,
+    /// How its edges meet the pixels
+    edge: LineEdge,
     clip: Option<Rect>,
     layer: u8,
   },
@@ -832,7 +832,7 @@ mod tests {
       width: 1.0,
       color: Color::WHITE,
       closed: false,
-      edge: None,
+      edge: LineEdge::Smooth,
       clip: Some(Rect::new(300.0, 300.0, 10.0, 10.0)),
       layer: 0,
     };
@@ -853,7 +853,7 @@ mod tests {
       clip: None,
       layer: 0,
     };
-    let edges = [None, Some(LineEdge::Smooth), Some(LineEdge::Hard)];
+    let edges = [LineEdge::Smooth, LineEdge::Hard];
     for a in edges {
       for b in edges {
         assert_eq!(line(a).draws_as(&line(b)), a == b, "{a:?} and {b:?}");

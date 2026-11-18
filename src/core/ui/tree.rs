@@ -2463,6 +2463,7 @@ fn drawable(rect: Rect) -> bool {
 mod tests {
   use super::*;
   use crate::core::graphics::Image;
+  use crate::core::trail::LineEdge;
   use crate::core::ui::Anchor;
   use crate::core::ui::immediate::UiContext;
   use crate::core::ui::test_util::{context, context_scaled, context_with_images, text_engine};
@@ -2779,7 +2780,7 @@ mod tests {
         width: 1.0,
         color: Color::WHITE,
         closed: false,
-        edge: None,
+        edge: LineEdge::Smooth,
         clip: None,
         layer: 0,
       }),
@@ -2920,6 +2921,7 @@ mod tests {
 #[cfg(test)]
 mod clone_tests {
   use super::*;
+  use crate::core::trail::LineEdge;
   use std::sync::Arc;
 
   fn leaf(text: &str) -> Arc<TextLeaf> {
@@ -2998,7 +3000,7 @@ mod clone_tests {
       width: 1.0,
       color: Color::WHITE,
       closed: false,
-      edge: None,
+      edge: LineEdge::Smooth,
       clip: None,
       layer: 0,
     });

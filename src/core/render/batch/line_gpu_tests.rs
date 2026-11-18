@@ -15,7 +15,7 @@ use crate::core::graphics::bind_groups;
 use crate::core::graphics::camera_gpu::{CameraGlobals, pixels_per_unit};
 use crate::core::graphics::{Camera2d, CameraView};
 use crate::core::shaders::compose::LINE_TEST;
-use crate::core::trail::{LineCap, LineJoin};
+use crate::core::trail::{LineCap, LineEdge, LineJoin};
 use crate::core::ui::Color;
 
 const JOINS: [LineJoin; 3] = [LineJoin::Miter, LineJoin::Bevel, LineJoin::Round];
@@ -80,7 +80,7 @@ impl TestLine {
       closed: self.closed,
       params: [0.0; 4],
       emission: 1.0,
-      edge: None,
+      edge: LineEdge::Smooth,
     }
   }
 

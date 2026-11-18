@@ -64,8 +64,8 @@ pub struct Line2D {
   cap: LineCap,
   /// How segments connect at corners
   join: LineJoin,
-  /// How its edges meet the pixels (`None`: its target's)
-  edge: Option<LineEdge>,
+  /// How its edges meet the pixels
+  edge: LineEdge,
   /// How it combines with what is below
   blend: BlendMode,
   /// Whether scene lighting applies (false: full brightness over the lit scene)
@@ -94,7 +94,7 @@ impl Line2D {
       style: TrailStyle::Solid,
       cap: LineCap::Butt,
       join: LineJoin::Miter,
-      edge: None,
+      edge: LineEdge::Smooth,
       blend: BlendMode::Alpha,
       lighting: true,
       emission: 1.0,
@@ -388,20 +388,19 @@ impl Line2D {
     self
   }
 
-  /// Set how the line's edges meet the pixels (default: its target's,
-  /// `Hard` on a pixel-art target and `Smooth` elsewhere).
+  /// Set how the line's edges meet the pixels (default `Smooth`).
   pub fn with_edge(mut self, edge: LineEdge) -> Self {
-    self.edge = Some(edge);
+    self.edge = edge;
     self
   }
 
-  /// How the line's edges meet the pixels (`None`: its target's).
-  pub fn edge(&self) -> Option<LineEdge> {
+  /// How the line's edges meet the pixels.
+  pub fn edge(&self) -> LineEdge {
     self.edge
   }
 
-  /// Set how the line's edges meet the pixels (`None`: its target's).
-  pub fn set_edge(&mut self, edge: Option<LineEdge>) {
+  /// Set how the line's edges meet the pixels.
+  pub fn set_edge(&mut self, edge: LineEdge) {
     self.edge = edge;
   }
 

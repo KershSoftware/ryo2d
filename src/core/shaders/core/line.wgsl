@@ -16,10 +16,10 @@
 // alpha of every style, and Soft and Glow shape by the distance over the
 // half width, averaged over the pixel; a Soft or Glow line under half a
 // pixel in half width covers as one of half a pixel, dimmed
-// (`batch/line_cover_tests.rs`). A Hard line (its own edge, or its
-// target's on a pixel-art camera, whose `snap` is set) draws each pixel
-// whole or not at all. The fringe and the coverage are `line_cover.wgsl`'s,
-// which the UI's lines use too.
+// (`batch/line_cover_tests.rs`). A line is Smooth on every target unless
+// its edge is Hard, which draws each pixel whole or not at all
+// (`a_line_draws_whole_pixels_only_when_hard_on_any_target`). The fringe
+// and the coverage are `line_cover.wgsl`'s, which the UI's lines use too.
 
 @group(1) @binding(0) var line_texture: texture_2d<f32>;
 @group(1) @binding(1) var line_sampler: sampler;
@@ -213,7 +213,7 @@ fn vs_main(@builtin(vertex_index) code: u32) -> VertexOutput {
     // may go, its distances grown by the push (`line_cover.wgsl`)
     // A Hard line's vertex on the rasteriser's grid, its distances moved
     // with it (`line_on_grid`)
-    let hard = line_hard(line.edge, globals.snap);
+    let hard = line_hard(line.edge);
     // Only a Hard line measures along the image's axis
     var axis = LineAxis(vec2<f32>(0.0), 0.0);
     var second = LineAxis(vec2<f32>(0.0), 0.0);

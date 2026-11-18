@@ -41,5 +41,5 @@ ui.pop_clip();        // depth 0 (no clipping)
 ## Sprites and Shapes
 
 - `draw_sprite*`, `draw_nine_slice` take `&Handle<Image>`s. UI sprites use linear filtering in the default presentation. Nine-slice insets clamp to the texture, and the corners shrink with a rect smaller than their sum.
-- `draw_line` records one polyline command, drawn mitered with butt caps, built on the GPU by the world's line pieces and covered by their coverage (render module notes, The UI Renderer, Lines); `draw_line_with_edge` gives it an edge of its own, and without one it takes its target's (Hard on the pixel-art target, Smooth at window resolution).
+- `draw_line` records one polyline command, drawn mitered with butt caps, built on the GPU by the world's line pieces and covered by their coverage (render module notes, The UI Renderer, Lines); `draw_line_with_edge` gives it an edge of its own, and without one it is Smooth wherever it is drawn, the pixel-art target included (`ui_lines_draw_smooth_unless_hard_on_any_target`).
 - `draw_modal_overlay` dims the whole UI area, ignoring the current clip (`with_no_clip`).

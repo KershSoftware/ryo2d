@@ -1556,7 +1556,7 @@ impl Builder<'_> {
 
 mod tests {
   use super::*;
-  use crate::core::trail::{LineCap, LineJoin};
+  use crate::core::trail::{LineCap, LineEdge, LineJoin};
   use glam::Vec2;
 
   fn build(
@@ -1597,7 +1597,7 @@ mod tests {
         closed,
         params: [0.0; 4],
         emission: 1.0,
-        edge: None,
+        edge: LineEdge::Smooth,
       },
     );
     t
@@ -1736,7 +1736,7 @@ mod tests {
       closed: false,
       params: [0.0; 4],
       emission: 1.0,
-      edge: None,
+      edge: LineEdge::Smooth,
     };
     let points = [(0.0, 0.0), (5.0, 0.0)].map(|(x, y)| PolyPoint {
       pos: Vec2::new(x, y),
@@ -2862,7 +2862,7 @@ mod tests {
       closed,
       params: [0.0; 4],
       emission: 1.0,
-      edge: None,
+      edge: LineEdge::Smooth,
     }
   }
 

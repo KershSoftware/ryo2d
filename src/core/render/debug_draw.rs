@@ -40,8 +40,8 @@ pub(crate) struct DebugShape {
   pub(crate) points: Range<usize>,
   pub(crate) color: Color,
   pub(crate) width: f32,
-  /// How its edges meet the pixels (`None`: its target's)
-  pub(crate) edge: Option<LineEdge>,
+  /// How its edges meet the pixels
+  pub(crate) edge: LineEdge,
   pub(crate) layers: RenderLayers,
 }
 
@@ -86,7 +86,7 @@ pub struct DebugDraw {
 pub struct DebugPen<'a> {
   debug: &'a mut DebugDraw,
   width: f32,
-  edge: Option<LineEdge>,
+  edge: LineEdge,
   layers: RenderLayers,
 }
 
@@ -96,8 +96,8 @@ impl DebugDraw {
     self.pen().width(pixels)
   }
 
-  /// A pen drawing with `edge` (shapes take their camera's target's
-  /// otherwise: `Hard` on a pixel-art target, `Smooth` elsewhere).
+  /// A pen drawing with `edge` (shapes are `Smooth` otherwise, on every
+  /// target).
   pub fn edge(&mut self, edge: LineEdge) -> DebugPen<'_> {
     self.pen().edge(edge)
   }
@@ -141,7 +141,7 @@ impl DebugDraw {
     DebugPen {
       debug: self,
       width: 1.0,
-      edge: None,
+      edge: LineEdge::Smooth,
       layers: RenderLayers::default(),
     }
   }
@@ -151,7 +151,7 @@ impl DebugDraw {
     kind: ShapeKind,
     points: &[Vec2],
     color: Color,
-    (width, edge): (f32, Option<LineEdge>),
+    (width, edge): (f32, LineEdge),
     layers: RenderLayers,
   ) {
     let list = if self.in_fixed_step {
@@ -372,10 +372,9 @@ impl DebugPen<'_> {
     self
   }
 
-  /// Draw with `edge` (otherwise each camera's target's: `Hard` on a
-  /// pixel-art target, `Smooth` elsewhere).
+  /// Draw with `edge` (otherwise `Smooth`, on every target).
   pub fn edge(mut self, edge: LineEdge) -> Self {
-    self.edge = Some(edge);
+    self.edge = edge;
     self
   }
 
@@ -459,7 +458,7 @@ mod tests {
   }
 
   #[test]
-  fn a_pen_sets_its_edge_and_shapes_take_their_target_s_otherwise() {
+  fn a_pen_sets_its_edge_and_shapes_are_smooth_otherwise() {
     let mut debug = DebugDraw::default();
     debug.line(Vec2::ZERO, Vec2::X, Color::WHITE);
     debug
@@ -470,6 +469,6 @@ mod tests {
       .edge(LineEdge::Smooth)
       .cross(Vec2::ZERO, 4.0, Color::WHITE);
     let edges: Vec<_> = debug.shapes().map(|shape| shape.edge).collect();
-    assert_eq!(edges, [None, Some(LineEdge::Hard), Some(LineEdge::Smooth)]);
+    assert_eq!(edges, [LineEdge::Smooth, LineEdge::Hard, LineEdge::Smooth]);
   }
 }

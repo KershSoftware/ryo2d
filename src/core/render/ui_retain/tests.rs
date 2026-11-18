@@ -44,7 +44,7 @@ fn line(points: &[Vec2]) -> UiCommand {
     width: 2.0,
     color: Color::WHITE,
     closed: false,
-    edge: None,
+    edge: LineEdge::Smooth,
     clip: None,
     layer: 0,
   }
@@ -268,15 +268,12 @@ fn a_line_s_edge_is_kept_with_it_and_another_edge_redraws() {
     }
     command
   };
-  let mut retain = drawn(&[edged(Some(LineEdge::Hard))]);
-  assert!(retain.keep(&commands(&[edged(Some(LineEdge::Hard))]), none(), env(), 7));
-  for other in [None, Some(LineEdge::Smooth)] {
-    assert!(
-      !retain.keep(&commands(&[edged(other)]), none(), env(), 7),
-      "{other:?} after Hard"
-    );
-    retain.presented(false, true, 7);
-  }
+  let mut retain = drawn(&[edged(LineEdge::Hard)]);
+  assert!(retain.keep(&commands(&[edged(LineEdge::Hard)]), none(), env(), 7));
+  assert!(
+    !retain.keep(&commands(&[edged(LineEdge::Smooth)]), none(), env(), 7),
+    "Smooth after Hard"
+  );
 }
 
 #[test]

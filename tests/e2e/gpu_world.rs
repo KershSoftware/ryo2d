@@ -1543,15 +1543,13 @@ impl Scene for WholeCoordinateLines {
     ctx.camera().set_position(32.0, 600.0);
     ctx.world.spawn((
       Transform::from_xy(0.0, 0.0),
-      Line2D::horizontal(600.0, 36.0, 60.0, Color::WHITE, 1.0),
+      Line2D::horizontal(600.0, 36.0, 60.0, Color::WHITE, 1.0).with_edge(LineEdge::Hard),
     ));
   }
   fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
-    ctx.debug_draw().line(
-      Vec2::new(4.0, 600.0),
-      Vec2::new(28.0, 600.0),
-      Color::WHITE,
-    );
+    ctx
+      .debug_draw()
+      .line(Vec2::new(4.0, 600.0), Vec2::new(28.0, 600.0), Color::WHITE);
     SceneAction::Continue
   }
 }
@@ -1560,8 +1558,9 @@ impl Scene for WholeCoordinateLines {
 fn a_debug_line_on_pixel_art_breaks_ties_as_a_line_does() {
   // A point on a whole coordinate takes the pixel above it (or to its
   // left), as the rasteriser's top-left rule and sprites do: the debug line
-  // and the `Line2D` along y = 600 both draw world row 599, the image's row
-  // 31 with the camera's centre on row 32's top edge
+  // (Smooth, on pixel centres) and the Hard `Line2D` along y = 600 both draw
+  // world row 599, the image's row 31 with the camera's centre on row 32's
+  // top edge
   let Some(mut engine) = start(
     EngineBuilder::new()
       .pixel_art(64, 64)

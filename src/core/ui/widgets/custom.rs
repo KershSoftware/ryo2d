@@ -305,19 +305,19 @@ impl Painter<'_> {
   }
 
   /// Draw a line through `points` (at least two, all finite), `width`
-  /// wide, its edges as its target's (`Hard` for UI drawn on a pixel-art
-  /// target, `Smooth` at window resolution)
+  /// wide, its edges `Smooth` wherever it is drawn, the pixel-art target
+  /// included
   pub fn line(&mut self, points: &[Vec2], width: f32, color: Color) {
-    self.line_edged(points, width, color, None);
+    self.line_edged(points, width, color, LineEdge::Smooth);
   }
 
   /// Draw a line through `points` (at least two, all finite), `width`
   /// wide, with `edge` wherever it is drawn
   pub fn line_with_edge(&mut self, points: &[Vec2], width: f32, color: Color, edge: LineEdge) {
-    self.line_edged(points, width, color, Some(edge));
+    self.line_edged(points, width, color, edge);
   }
 
-  fn line_edged(&mut self, points: &[Vec2], width: f32, color: Color, edge: Option<LineEdge>) {
+  fn line_edged(&mut self, points: &[Vec2], width: f32, color: Color, edge: LineEdge) {
     if points.len() < 2
       || !width.is_finite()
       || width <= 0.0

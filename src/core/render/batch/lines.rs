@@ -101,8 +101,7 @@ pub(crate) struct LineInfo {
   pub(crate) cap: u32,
   /// 1 when its last point joins its first
   pub(crate) closed: u32,
-  /// How its edges meet the pixels: `EDGE_TARGET`, `EDGE_SMOOTH` or
-  /// `EDGE_HARD`
+  /// How its edges meet the pixels: `EDGE_SMOOTH` or `EDGE_HARD`
   pub(crate) edge: u32,
   /// A miter longer than this many half widths is bevelled
   pub(crate) miter_limit: f32,
@@ -116,18 +115,15 @@ pub(crate) const JOIN_ROUND: u32 = 2;
 pub(crate) const CAP_BUTT: u32 = 0;
 pub(crate) const CAP_SQUARE: u32 = 1;
 pub(crate) const CAP_ROUND: u32 = 2;
-/// A line's edge as the line table and the UI's line instances number it:
-/// its target's (Hard on a pixel-art target, Smooth elsewhere), or its own
-pub(crate) const EDGE_TARGET: u32 = 0;
-pub(crate) const EDGE_SMOOTH: u32 = 1;
-pub(crate) const EDGE_HARD: u32 = 2;
+/// A line's edge as the line table and the UI's line instances number it
+pub(crate) const EDGE_SMOOTH: u32 = 0;
+pub(crate) const EDGE_HARD: u32 = 1;
 
 /// `edge` as the line table numbers it
-pub(crate) fn edge_code(edge: Option<LineEdge>) -> u32 {
+pub(crate) fn edge_code(edge: LineEdge) -> u32 {
   match edge {
-    None => EDGE_TARGET,
-    Some(LineEdge::Smooth) => EDGE_SMOOTH,
-    Some(LineEdge::Hard) => EDGE_HARD,
+    LineEdge::Smooth => EDGE_SMOOTH,
+    LineEdge::Hard => EDGE_HARD,
   }
 }
 
@@ -200,8 +196,8 @@ pub(crate) struct PolyStyle {
   pub(crate) params: [f32; 4],
   /// What its colours' light is multiplied by
   pub(crate) emission: f32,
-  /// How its edges meet the pixels (`None`: its target's)
-  pub(crate) edge: Option<LineEdge>,
+  /// How its edges meet the pixels
+  pub(crate) edge: LineEdge,
 }
 
 /// A miter longer than this many times the line's width becomes a bevel.
@@ -896,7 +892,7 @@ mod tests {
       closed: false,
       params: [0.0; 4],
       emission: 1.0,
-      edge: None,
+      edge: LineEdge::Smooth,
     };
     let (round, miter) = (style(LineJoin::Round), style(LineJoin::Miter));
     // Three lines of three points and 18 triangles each
@@ -977,7 +973,7 @@ mod tests {
       closed: false,
       params: [0.0; 4],
       emission: 1.0,
-      edge: None,
+      edge: LineEdge::Smooth,
     };
     let line = |from: Vec2, to: Vec2, half_width: f32| -> Vec<PolyPoint> {
       [from, to]
@@ -1087,11 +1083,7 @@ mod tests {
   fn a_line_s_or_trail_s_edge_reaches_its_line_table_entry() {
     let ends = vec![Vec2::ZERO, Vec2::new(10.0, 0.0)];
     let mut points = Vec::new();
-    for (edge, code) in [
-      (None, EDGE_TARGET),
-      (Some(LineEdge::Smooth), EDGE_SMOOTH),
-      (Some(LineEdge::Hard), EDGE_HARD),
-    ] {
+    for (edge, code) in [(LineEdge::Smooth, EDGE_SMOOTH), (LineEdge::Hard, EDGE_HARD)] {
       let mut line = Line2D::new(ends.clone(), Color::WHITE, 2.0);
       line.set_edge(edge);
       let mut trail = Trail2D::new(Color::WHITE, 2.0);
@@ -1111,9 +1103,20 @@ mod tests {
         );
       }
     }
-    let hard = Line2D::new(ends, Color::WHITE, 2.0).with_edge(LineEdge::Hard);
-    assert_eq!(hard.edge(), Some(LineEdge::Hard));
-    let trail = Trail2D::new(Color::WHITE, 2.0).with_edge(LineEdge::Smooth);
-    assert_eq!(trail.edge(), Some(LineEdge::Smooth));
+    let hard = Line2D::new(ends.clone(), Color::WHITE, 2.0).with_edge(LineEdge::Hard);
+    assert_eq!(hard.edge(), LineEdge::Hard);
+    let trail = Trail2D::new(Color::WHITE, 2.0).with_edge(LineEdge::Hard);
+    assert_eq!(trail.edge(), LineEdge::Hard);
+  }
+
+  #[test]
+  fn a_line_or_trail_with_no_edge_set_is_smooth() {
+    assert_eq!(LineEdge::default(), LineEdge::Smooth);
+    let ends = vec![Vec2::ZERO, Vec2::new(10.0, 0.0)];
+    assert_eq!(
+      Line2D::new(ends, Color::WHITE, 2.0).edge(),
+      LineEdge::Smooth
+    );
+    assert_eq!(Trail2D::new(Color::WHITE, 2.0).edge(), LineEdge::Smooth);
   }
 }

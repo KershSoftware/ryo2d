@@ -6,6 +6,7 @@ use glam::Vec2;
 
 use super::common::WidgetOpts;
 use crate::core::text::{RichText, TextLayoutOptions};
+use crate::core::trail::LineEdge;
 use crate::core::ui::Color;
 use crate::core::ui::immediate::{UiCommand, UiContext};
 use crate::core::ui::layout::{Align, Edges, Flow, Measure, UiStyle};
@@ -109,7 +110,7 @@ impl UiContext<'_> {
               width: 2.0,
               color: ink,
               closed: false,
-              edge: None,
+              edge: LineEdge::Smooth,
               clip: None,
               layer: 0,
             }),

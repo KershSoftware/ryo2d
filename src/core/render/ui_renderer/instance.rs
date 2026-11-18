@@ -186,7 +186,7 @@ impl UiInstance {
       | (window.seam & 0x3F) << 6
       | kind << LINE_KIND_SHIFT
       | (pair & 0xF) << LINE_PAIR_SHIFT
-      | (line.edge & 0x3) << LINE_EDGE_SHIFT;
+      | (line.edge & 0x1) << LINE_EDGE_SHIFT;
     let Color { r, g, b, a } = line.color;
     let half = |low: u8, high: u8| f32::from(u16::from(low) | u16::from(high) << 8);
     UiInstance {

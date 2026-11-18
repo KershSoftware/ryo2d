@@ -382,7 +382,7 @@ ui.draw_progress_bar(rect, 0.75, Color::HEALTH_RED, Color::DARK_GRAY);
 ui.draw_sprite(&handle, x, y);                                          // a Handle<Image>, one UI unit per texel; _scaled, _rect
 ui.draw_nine_slice(&handle, rect, [8.0, 8.0, 8.0, 8.0], Color::WHITE);  // insets left, top, right, bottom in texels
 ui.draw_line(&[Vec2::new(10.0, 10.0), Vec2::new(90.0, 40.0)], 2.0, Color::WHITE);
-ui.draw_line_with_edge(&[Vec2::new(10.0, 50.0), Vec2::new(90.0, 80.0)], 1.0, Color::WHITE, LineEdge::Hard); // whole pixels; draw_line takes the target's edge
+ui.draw_line_with_edge(&[Vec2::new(10.0, 50.0), Vec2::new(90.0, 80.0)], 1.0, Color::WHITE, LineEdge::Hard); // whole pixels; draw_line is always smooth
 ui.draw_modal_overlay(Color::new(0, 0, 0, 160));                        // dims the whole UI, ignoring clips
 
 ui.draw_text("Hello", x, y, Color::WHITE);                              // default style (FontRole::Ui, 14 px)

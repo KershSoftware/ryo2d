@@ -7,6 +7,7 @@ use glam::Vec2;
 
 use super::common::{WidgetOpts, widget_builders};
 use crate::core::text::{RichText, TextLayoutOptions, TextOverflow};
+use crate::core::trail::LineEdge;
 use crate::core::ui::immediate::{UiCommand, UiContext};
 use crate::core::ui::layout::{Align, Edges, Flow, Justify, Length, Measure, UiStyle};
 use crate::core::ui::memory::Flags;
@@ -247,7 +248,7 @@ impl Dropdown<'_, '_> {
         width: 1.5,
         color: look.text,
         closed: false,
-        edge: None,
+        edge: LineEdge::Smooth,
         clip: None,
         layer: 0,
       }),

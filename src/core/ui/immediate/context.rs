@@ -2223,19 +2223,18 @@ impl<'a> UiContext<'a> {
   }
 
   /// Draw a polyline through `points`, `width` UI units wide, its edges
-  /// as its target's (`Hard` for UI drawn on a pixel-art target, `Smooth`
-  /// at window resolution).
+  /// `Smooth` wherever it is drawn, the pixel-art target included.
   pub fn draw_line(&mut self, points: &[Vec2], width: f32, color: Color) {
-    self.record_line(points, width, color, None);
+    self.record_line(points, width, color, LineEdge::Smooth);
   }
 
   /// Draw a polyline through `points`, `width` UI units wide, with `edge`
   /// wherever it is drawn.
   pub fn draw_line_with_edge(&mut self, points: &[Vec2], width: f32, color: Color, edge: LineEdge) {
-    self.record_line(points, width, color, Some(edge));
+    self.record_line(points, width, color, edge);
   }
 
-  fn record_line(&mut self, points: &[Vec2], width: f32, color: Color, edge: Option<LineEdge>) {
+  fn record_line(&mut self, points: &[Vec2], width: f32, color: Color, edge: LineEdge) {
     self.taint();
     if points.len() < 2 || !width.is_finite() || width <= 0.0 {
       return;

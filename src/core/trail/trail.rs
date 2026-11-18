@@ -71,12 +71,12 @@ pub enum LineJoin {
   Round,
 }
 
-/// How a trail's or line's edges meet the pixels. Left unset, a line takes
-/// its target's: `Hard` on a pixel-art target (the window's
-/// `Presentation::PixelArt` image, and UI drawn on it), `Smooth` elsewhere.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// How a trail's or line's edges meet the pixels: `Smooth` unless set, on
+/// every target, pixel art included; `Hard` only when asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LineEdge {
   /// Each pixel covered by how much of it the line covers: smooth edges
+  #[default]
   Smooth,
   /// Each pixel drawn whole or not at all, by its centre: a line of one
   /// pixel is one pixel in each column (or row, where it runs steeper than
@@ -178,8 +178,8 @@ pub struct Trail2D {
   cap: LineCap,
   /// How the trail turns its corners
   join: LineJoin,
-  /// How its edges meet the pixels (`None`: its target's)
-  edge: Option<LineEdge>,
+  /// How its edges meet the pixels
+  edge: LineEdge,
   /// How it combines with what is below
   blend: BlendMode,
   /// How its texture is sampled
@@ -239,7 +239,7 @@ impl Trail2D {
       effect: None,
       cap: LineCap::Butt,
       join: LineJoin::Miter,
-      edge: None,
+      edge: LineEdge::Smooth,
       blend: BlendMode::Alpha,
       filter: Filter::Default,
       lighting: true,
@@ -880,20 +880,19 @@ impl Trail2D {
     self.join = join;
   }
 
-  /// Set how the trail's edges meet the pixels (default: its target's,
-  /// `Hard` on a pixel-art target and `Smooth` elsewhere).
+  /// Set how the trail's edges meet the pixels (default `Smooth`).
   pub fn with_edge(mut self, edge: LineEdge) -> Self {
-    self.edge = Some(edge);
+    self.edge = edge;
     self
   }
 
-  /// How the trail's edges meet the pixels (`None`: its target's).
-  pub fn edge(&self) -> Option<LineEdge> {
+  /// How the trail's edges meet the pixels.
+  pub fn edge(&self) -> LineEdge {
     self.edge
   }
 
-  /// Set how the trail's edges meet the pixels (`None`: its target's).
-  pub fn set_edge(&mut self, edge: Option<LineEdge>) {
+  /// Set how the trail's edges meet the pixels.
+  pub fn set_edge(&mut self, edge: LineEdge) {
     self.edge = edge;
   }
 

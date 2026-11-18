@@ -19,7 +19,7 @@ use crate::core::graphics::camera_gpu::CameraGlobals;
 use crate::core::graphics::{Camera2d, CameraView};
 use crate::core::render::SCENE_FORMAT;
 use crate::core::shaders::compose::LINE_TEST;
-use crate::core::trail::{LineCap, LineJoin};
+use crate::core::trail::{LineCap, LineEdge, LineJoin};
 use crate::core::ui::Color;
 
 const RESOLUTION: (u32, u32) = (1920, 1080);
@@ -84,7 +84,7 @@ fn add(
     closed: false,
     params: [0.0; 4],
     emission: 1.0,
-    edge: None,
+    edge: LineEdge::Smooth,
   };
   stream.polyline(&poly, &style);
 }

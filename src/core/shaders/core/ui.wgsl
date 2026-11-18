@@ -147,8 +147,8 @@ fn ui_line_window(instance: UiInstanceIn, first: i32, offset: vec2<f32>) -> Line
 // and its slot's (`at + by`, as the CPU moves a line placed absolute, so
 // both build from the same points), pushed a pixel of the UI image out and
 // measured as the world's are (`line_pieces.wgsl`, `line_cover.wgsl`: no
-// displacement, no snap; Hard by its edge or, as its target's, on the
-// pixel-art target, where the UI camera's `snap` is set). An instance
+// displacement, no snap; Hard only by its edge, Smooth otherwise on every
+// target, `ui_lines_draw_smooth_unless_hard_on_any_target`). An instance
 // wholly outside its clip, its points' box grown by how far a vertex
 // reaches from them (`ui_line_reach` on the CPU), is collapsed
 fn ui_line(instance: UiInstanceIn, index: u32, by: vec2<f32>, clip: vec4<u32>, base: UiOut) -> UiOut {
@@ -193,7 +193,7 @@ fn ui_line(instance: UiInstanceIn, index: u32, by: vec2<f32>, clip: vec4<u32>, b
     let w = ui_line_window(instance, line_piece_corner(kind, slot), offset);
     let look = LineLook(JOIN_MITER, CAP_BUTT, miter_limit);
     let vertex = line_piece_vertex(w, look, lp_corner_here(w, look), kind, slot);
-    let hard = line_hard((bits >> LINE_EDGE_SHIFT) & 3u, globals.snap);
+    let hard = line_hard((bits >> LINE_EDGE_SHIFT) & 1u);
     // Only a Hard line measures along the image's axis
     var axis = LineAxis(vec2<f32>(0.0), 0.0);
     var second = LineAxis(vec2<f32>(0.0), 0.0);

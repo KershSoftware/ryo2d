@@ -8,17 +8,16 @@
 // line of a pixel is one pixel a column
 // (`a_hard_line_is_one_pixel_per_column_at_any_angle`,
 // `a_hard_line_is_its_width_in_pixels_per_column`,
-// `a_line_on_a_pixel_art_target_draws_whole_pixels_unless_smooth`), and its
+// `a_line_draws_whole_pixels_only_when_hard_on_any_target`), and its
 // corners follow its segments' drawn edges: each half of a miter's point
 // meets the other segment's drawn edge
 // (`a_hard_miter_tip_narrows_evenly_to_its_point`) and a round piece is as
 // wide as its segments are drawn
 // (`a_hard_round_piece_keeps_to_its_segments_drawn_width`).
 
-// A line's edge as the line table numbers it (`edge_code`)
-const LINE_EDGE_TARGET: u32 = 0u;
-const LINE_EDGE_SMOOTH: u32 = 1u;
-const LINE_EDGE_HARD: u32 = 2u;
+// A line's edge as the line table numbers it (`edge_code`): Smooth unless
+// Hard, on every target
+const LINE_EDGE_HARD: u32 = 1u;
 
 // How far a Hard band is moved up (or left) in pixels, so a pixel centre
 // on its edge, as a line on whole or half pixels puts them, falls inside
@@ -26,10 +25,9 @@ const LINE_EDGE_HARD: u32 = 2u;
 // rounds
 const LINE_HARD_NUDGE: f32 = 1.0 / 64.0;
 
-// Whether a line of `edge` draws Hard through a camera whose `snap` is set
-// on a pixel-art target
-fn line_hard(edge: u32, snap: f32) -> bool {
-    return edge == LINE_EDGE_HARD || (edge == LINE_EDGE_TARGET && snap > 0.5);
+// Whether a line of `edge` draws Hard
+fn line_hard(edge: u32) -> bool {
+    return edge == LINE_EDGE_HARD;
 }
 
 // `v`, a direction in the line's units, in the image's pixels (x right, y
