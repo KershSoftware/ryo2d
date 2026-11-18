@@ -243,7 +243,7 @@ pub struct DevArgs {
   /// Open the profiler window (builds the engine's profiler feature)
   #[arg(short = 'p', long)]
   pub profiler: bool,
-  /// Skip the dev profile optimization check
+  /// Skip the dev profile optimisation check
   #[arg(long)]
   pub skip_opt_check: bool,
 }

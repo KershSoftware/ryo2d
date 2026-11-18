@@ -26,9 +26,9 @@ pub fn execute(args: &DevArgs) -> CliResult<()> {
   let enable_profiler_feature = profiler_flag || config_wants_profiler;
   let project_name = workspace.name();
 
-  // Check for dev profile optimization (unless skipped)
+  // Check for dev profile optimisation (unless skipped)
   if !skip_opt_check {
-    check_dev_profile_optimization(&workspace)?;
+    check_dev_profile_optimisation(&workspace)?;
   }
 
   if profiler_flag {
@@ -67,8 +67,8 @@ pub fn execute(args: &DevArgs) -> CliResult<()> {
   cargo::run_game_with(&exe, workspace.root(), &env)
 }
 
-/// Check if the project has dev profile optimization configured
-fn check_dev_profile_optimization(workspace: &ryo2d::core::config::Workspace) -> CliResult<()> {
+/// Check if the project has dev profile optimisation configured
+fn check_dev_profile_optimisation(workspace: &ryo2d::core::config::Workspace) -> CliResult<()> {
   let cargo_toml_path = workspace.root().join("Cargo.toml");
   offer_dev_profile(
     &cargo_toml_path,
@@ -106,11 +106,11 @@ fn offer_dev_profile(
     return Ok(());
   }
 
-  Output::warning("Dev build may be slow - dependencies are not optimized!");
+  Output::warning("Dev build may be slow - dependencies are not optimised!");
   let _ = write!(
     out,
     "
-  Without this setting, the engine and dependencies run unoptimized,
+  Without this setting, the engine and dependencies run unoptimised,
   causing poor performance in dev builds.
 
   Add this to your Cargo.toml for playable dev builds:
@@ -123,8 +123,8 @@ fn offer_dev_profile(
 
   if prompt.yes_no("Add this setting to Cargo.toml now?", true) {
     let addition = r#"
-# Optimize dependencies, the engine included, in dev builds for playable performance
-# Your game code stays unoptimized for fast compile times
+# Optimise dependencies, the engine included, in dev builds for playable performance
+# Your game code stays unoptimised for fast compile times
 [profile.dev.package."*"]
 opt-level = 2
 "#;
@@ -133,8 +133,8 @@ opt-level = 2
       .map_err(|e| CliError::Other(format!("Failed to update Cargo.toml: {}", e)))?;
 
     println!();
-    Output::status("Updated", "Cargo.toml with dev profile optimization");
-    println!("  First build will be slower (compiling optimized dependencies).");
+    Output::status("Updated", "Cargo.toml with dev profile optimisation");
+    println!("  First build will be slower (compiling optimised dependencies).");
     println!("  Subsequent builds will be fast.");
     println!();
   }
