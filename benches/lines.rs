@@ -26,13 +26,22 @@
 //!   native only), and the line corner pass's, which the frame encodes
 //!   before its camera passes (stamped at its own start and end,
 //!   `HeadlessEngine::stamp_line_corners`). It includes the world passes'
-//!   own load and store of the camera's image.
+//!   own load and store of the camera's image. It leaves out the gap
+//!   between the corner pass's end and the world pass's start, where the
+//!   camera's clear runs too: 3 to 6 µs in most frames, measured from
+//!   stamps on the world pass itself, on every scene.
 //!
 //! Every frame must have drawn something: a draw call and a prepare time
 //! above nothing (a scene that drew no line would measure nothing and look
-//! fast). A frame the GPU gives no time for (Metal returns both stamps as
-//! zero now and then, on main as on this code) is left out of the GPU's
-//! median and counted.
+//! fast). A frame missing a stamp it needs (Metal returns zero now and
+//! then, on main as on this code), the world passes' or the corner pass's,
+//! is left out of the GPU's median and counted, never taken as no time.
+//!
+//! Why two intervals, not one from the corner pass's start: Metal's stamps
+//! on passes apart from each other do not keep their order. An empty pass's
+//! outer stamps fall anywhere in the frame, before the corner pass even,
+//! and an interval from the corner pass's start to the world passes' end
+//! moved by up to three times from run to run on the small scenes.
 //!
 //! The figures are recorded against main in `docs/backlog/lines.md` (three
 //! alternating runs). The guards are loose: `MAX` is far above the figures,
@@ -62,6 +71,9 @@ const WIDTHS: [f32; 6] = [0.5, 1.0, 2.0, 3.0, 6.0, 10.0];
 const COUNTS: [usize; 3] = [1_000, 10_000, 100_000];
 /// Timestamps a frame: the world passes' two, then the corner pass's
 const STAMPS: u32 = 4;
+/// Whether the corner pass is stamped (this code) or, with no corner pass,
+/// not (main's copy)
+const CORNERS_STAMPED: bool = true;
 
 /// Over which a figure of the mixed scene is a regression, not a measure: a
 /// figure of the first runs' is a tenth of it or less. This guards against a
@@ -197,8 +209,8 @@ impl Stamps {
   }
 
   /// The last frame's GPU time over the world passes and the corner pass,
-  /// once its work is done: `None` when the world passes have no time, and
-  /// the corner pass's time apart (zero when it did not run or has none)
+  /// and the corner pass's apart, once its work is done: `None` when a
+  /// stamp either needs is missing
   fn read(&self, device: &wgpu::Device, period: f32) -> Option<(Duration, Duration)> {
     let slice = self.read.slice(..);
     slice.map_async(wgpu::MapMode::Read, |_| {});
@@ -217,11 +229,22 @@ impl Stamps {
       let nanos = end.saturating_sub(start) as f64 * f64::from(period);
       Duration::from_nanos(nanos as u64)
     };
-    let world = time(*ticks.first()?, *ticks.get(1)?);
-    if world.is_zero() {
+    let &[world_start, world_end, corner_start, corner_end] = ticks.as_slice() else {
+      return None;
+    };
+    let whole = |start: u64, end: u64| start != 0 && end > start;
+    if !whole(world_start, world_end) {
       return None;
     }
-    Some((world, time(*ticks.get(2)?, *ticks.get(3)?)))
+    let world = time(world_start, world_end);
+    if !CORNERS_STAMPED {
+      return Some((world, Duration::ZERO));
+    }
+    if !whole(corner_start, corner_end) {
+      return None;
+    }
+    let corners = time(corner_start, corner_end);
+    Some((world + corners, corners))
   }
 }
 
@@ -380,8 +403,6 @@ struct Figures {
   untimed: usize,
   /// The corner pass's median within `gpu`
   corners: Option<f64>,
-  /// Timed frames that gave the corner pass no time
-  corners_untimed: usize,
 }
 
 fn measure(shapes: Shapes) -> Option<Figures> {
@@ -400,7 +421,7 @@ fn measure(shapes: Shapes) -> Option<Figures> {
   let period = queue.get_timestamp_period();
   let (mut render, mut prepare, mut rest, mut gpu, mut corners) =
     (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
-  let (mut idle, mut untimed, mut corners_untimed) = (0, 0, 0);
+  let (mut idle, mut untimed) = (0, 0);
   for frame in 0..WARMUP + FRAMES {
     engine.step_real(Duration::from_micros(16_667));
     device
@@ -416,15 +437,14 @@ fn measure(shapes: Shapes) -> Option<Figures> {
     if engine.debug_stats().draw_calls == 0 || prepared.is_zero() {
       idle += 1;
     }
-    // Metal now and then returns no time for a frame (both stamps zero):
-    // such a frame is left out of the GPU's median, not counted as idle
+    // Metal now and then returns no time for a frame (a stamp zero): such
+    // a frame is left out of the GPU's median, not counted as idle
     if stamps.is_some() && gpu_time.is_none() {
       untimed += 1;
     }
-    if let Some((world, corner)) = gpu_time {
-      gpu.push(world + corner);
+    if let Some((time, corner)) = gpu_time {
+      gpu.push(time);
       corners.push(corner);
-      corners_untimed += usize::from(corner.is_zero());
     }
     render.push(frame);
     prepare.push(prepared);
@@ -438,7 +458,6 @@ fn measure(shapes: Shapes) -> Option<Figures> {
     idle,
     untimed,
     corners: stamps.is_some().then(|| median(corners)),
-    corners_untimed,
   })
 }
 
@@ -450,10 +469,9 @@ fn run(name: &str, shapes: Shapes) -> Option<Figures> {
   println!("{name}_extract: {:.1} µs", figures.extract);
   match figures.gpu {
     Some(gpu) => println!(
-      "{name}_gpu: {gpu:.1} µs ({} of {FRAMES} frames untimed; corner pass {:.1} µs, {} timed frames without it)",
+      "{name}_gpu: {gpu:.1} µs ({} of {FRAMES} frames untimed; corner pass {:.1} µs)",
       figures.untimed,
-      figures.corners.unwrap_or(0.0),
-      figures.corners_untimed
+      figures.corners.unwrap_or(0.0)
     ),
     None => println!("{name}_gpu: no timestamps on this device"),
   }
