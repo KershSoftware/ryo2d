@@ -249,10 +249,16 @@ pub(crate) fn piece_triangles(kind: PieceKind, join: LineJoin, cap: LineCap) -> 
 /// A segment's slots: its quad fanned from its end's corner point
 const SEGMENT_TEMPLATE: [[u32; 3]; SEGMENT_TRIANGLES as usize] =
   [[0, 1, 2], [0, 2, 3], [0, 3, 4], [0, 4, 5]];
-/// A miter or bevel join's: its two slanted ends and the two triangles
-/// between them, from the corner point
+/// A miter join's: its two slanted ends and the two triangles between
+/// them, from the corner point (a miter falling back to a bevel takes it
+/// too, its repeated slots each holding one place twice)
 const JOIN_TEMPLATE: [[u32; 3]; JOIN_TRIANGLES as usize] =
   [[0, 2, 3], [1, 4, 5], [1, 5, 6], [0, 7, 8]];
+/// A bevel join's: the miter's triangles naming each of the places it
+/// repeats by one slot (its corner point, 0 for 1, and its elbows, 3 for 4
+/// and 6 for 7), so the GPU builds each place once
+const BEVEL_TEMPLATE: [[u32; 3]; JOIN_TRIANGLES as usize] =
+  [[0, 2, 3], [0, 3, 5], [0, 5, 6], [0, 6, 8]];
 /// A round join's: its slanted ends, then its arc between them
 const ROUND_JOIN_TEMPLATE: [[u32; 3]; ROUND_JOIN_TRIANGLES as usize] = {
   let mut template = [[0, 2, 3]; ROUND_JOIN_TRIANGLES as usize];
@@ -283,6 +289,7 @@ pub(crate) fn piece_template(kind: PieceKind, join: LineJoin, cap: LineCap) -> &
   match (kind, join, cap) {
     (PieceKind::Segment, ..) => &SEGMENT_TEMPLATE,
     (PieceKind::Join, LineJoin::Round, _) => &ROUND_JOIN_TEMPLATE,
+    (PieceKind::Join, LineJoin::Bevel, _) => &BEVEL_TEMPLATE,
     (PieceKind::Join, ..) => &JOIN_TEMPLATE,
     (PieceKind::StartCap | PieceKind::EndCap, _, LineCap::Butt) => &[],
     (PieceKind::StartCap | PieceKind::EndCap, _, LineCap::Square) => &SQUARE_CAP_TEMPLATE,
@@ -741,6 +748,25 @@ fn build_effect_params(effect: Option<&TrailEffect>, style: TrailStyle) -> [f32;
 mod tests {
   use super::*;
   use crate::core::trail::{LineEdge, LineJoin};
+
+  #[test]
+  fn a_bevel_join_names_each_of_its_places_once() {
+    // A bevel's corner point and elbows are named by one slot each, so the
+    // GPU builds each once; a miter's slots hold nine places when its inner
+    // side is shared, so it keeps them all
+    let slots = |join| {
+      let mut slots: Vec<u32> = piece_template(PieceKind::Join, join, LineCap::Butt)
+        .iter()
+        .flatten()
+        .copied()
+        .collect();
+      slots.sort_unstable();
+      slots.dedup();
+      slots
+    };
+    assert_eq!(slots(LineJoin::Bevel), [0, 2, 3, 5, 6, 8]);
+    assert_eq!(slots(LineJoin::Miter), (0..9).collect::<Vec<u32>>());
+  }
 
   #[test]
   fn effect_and_style_share_one_float() {

@@ -665,9 +665,11 @@ const LJ_STRIP_START: u32 = 19u;
 // Arc vertex k is LJ_ARC + k
 const LJ_ARC: u32 = 32u;
 
-// What a join's `slot` holds. A miter or bevel join's triangles are (0 2
-// 3), (1 4 5), (1 5 6) and (0 7 8); a round join's (0 2 3), its arc's (1
-// 6+k 7+k) for k from 0 to `LINE_ARC_STEPS`, and (0 4 5). Each triangle is
+// What a join's `slot` holds. A miter join's triangles are (0 2 3), (1 4
+// 5), (1 5 6) and (0 7 8); a bevel join's name each place the miter's
+// layout repeats under a bevel by one slot, (0 2 3), (0 3 5), (0 5 6) and
+// (0 6 8); a round join's (0 2 3), its arc's (1 6+k 7+k) for k from 0 to
+// `LINE_ARC_STEPS`, and (0 4 5). Each triangle is
 // given as for a left turn: the CPU's reference winds a right turn's the
 // other way, its first vertex the same
 fn lp_join_role(look: LineLook, turn: LpTurn, slot: u32) -> u32 {
@@ -1002,6 +1004,11 @@ fn line_piece_slot(kind: u32, join: u32, cap: u32, tri: u32, corner: u32) -> u32
                 return select(ends[min(max(corner, 1u), 2u) - 1u], 0u, corner == 0u);
             }
             return select(5u + tri + corner - 1u, 1u, corner == 0u);
+        }
+        if join == JOIN_BEVEL {
+            // A bevel names each place it repeats by one slot
+            let ends = array<vec2<u32>, 4>(vec2<u32>(2u, 3u), vec2<u32>(3u, 5u), vec2<u32>(5u, 6u), vec2<u32>(6u, 8u));
+            return select(ends[min(tri, 3u)][min(max(corner, 1u), 2u) - 1u], 0u, corner == 0u);
         }
         if corner == 0u {
             return select(1u, 0u, tri == 0u || tri == 3u);
