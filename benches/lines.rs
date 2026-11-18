@@ -23,8 +23,10 @@
 //! - `gpu`: the GPU's time from just before the world pass to just after the
 //!   unlit world pass, where every line draws (timestamp queries from two
 //!   empty passes round them, where the device has `TIMESTAMP_QUERY`;
-//!   native only). It includes the world passes' own load and store of the
-//!   camera's image.
+//!   native only), and the line corner pass's, which the frame encodes
+//!   before its camera passes (stamped at its own start and end,
+//!   `HeadlessEngine::stamp_line_corners`). It includes the world passes'
+//!   own load and store of the camera's image.
 //!
 //! Every frame must have drawn something: a draw call and a prepare time
 //! above nothing (a scene that drew no line would measure nothing and look
@@ -58,6 +60,8 @@ const FRAMES: usize = 300;
 const WIDTHS: [f32; 6] = [0.5, 1.0, 2.0, 3.0, 6.0, 10.0];
 /// The lines-only scenes' counts
 const COUNTS: [usize; 3] = [1_000, 10_000, 100_000];
+/// Timestamps a frame: the world passes' two, then the corner pass's
+const STAMPS: u32 = 4;
 
 /// Over which a figure of the mixed scene is a regression, not a measure: a
 /// figure of the first runs' is a tenth of it or less. This guards against a
@@ -149,8 +153,10 @@ enum Shapes {
   LinesOnly { join: LineJoin, count: usize },
 }
 
-/// The GPU's time over the world passes: a timestamp before the world pass
-/// and one after the unlit world pass, resolved and read back each frame
+/// The GPU's time over the world passes and the line corner pass: a
+/// timestamp before the world pass and one after the unlit world pass, and
+/// two at the corner pass's start and end, resolved and read back each
+/// frame
 #[derive(Clone)]
 struct Stamps {
   set: wgpu::QuerySet,
@@ -167,12 +173,12 @@ impl Stamps {
     let set = device.create_query_set(&wgpu::QuerySetDescriptor {
       label: Some("Line Bench Stamps"),
       ty: wgpu::QueryType::Timestamp,
-      count: 2,
+      count: STAMPS,
     });
     let buffer = |label, usage| {
       device.create_buffer(&wgpu::BufferDescriptor {
         label: Some(label),
-        size: 16,
+        size: 8 * u64::from(STAMPS),
         usage,
         mapped_at_creation: false,
       })
@@ -190,20 +196,32 @@ impl Stamps {
     })
   }
 
-  /// The last frame's GPU time between the stamps, once its work is done
-  fn read(&self, device: &wgpu::Device, period: f32) -> Option<Duration> {
+  /// The last frame's GPU time over the world passes and the corner pass,
+  /// once its work is done: `None` when the world passes have no time, and
+  /// the corner pass's time apart (zero when it did not run or has none)
+  fn read(&self, device: &wgpu::Device, period: f32) -> Option<(Duration, Duration)> {
     let slice = self.read.slice(..);
     slice.map_async(wgpu::MapMode::Read, |_| {});
     device.poll(wgpu::PollType::wait_indefinitely()).ok()?;
-    let ticks: [u64; 2] = {
+    let ticks: Vec<u64> = {
       let bytes = slice.get_mapped_range().ok()?;
-      let start = u64::from_le_bytes(bytes[0..8].try_into().ok()?);
-      let end = u64::from_le_bytes(bytes[8..16].try_into().ok()?);
-      [start, end]
+      bytes
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|word| u64::from_le_bytes(*word))
+        .collect()
     };
     self.read.unmap();
-    let nanos = ticks[1].checked_sub(ticks[0])? as f64 * f64::from(period);
-    Some(Duration::from_nanos(nanos as u64))
+    let time = |start: u64, end: u64| {
+      let nanos = end.saturating_sub(start) as f64 * f64::from(period);
+      Duration::from_nanos(nanos as u64)
+    };
+    let world = time(*ticks.first()?, *ticks.get(1)?);
+    if world.is_zero() {
+      return None;
+    }
+    Some((world, time(*ticks.get(2)?, *ticks.get(3)?)))
   }
 }
 
@@ -251,8 +269,8 @@ impl RenderPass for Stamp {
       multiview_mask: None,
     }));
     if self.index == 1 {
-      encoder.resolve_query_set(&stamps.set, 0..2, &stamps.resolved, 0);
-      encoder.copy_buffer_to_buffer(&stamps.resolved, 0, &stamps.read, 0, 16);
+      encoder.resolve_query_set(&stamps.set, 0..STAMPS, &stamps.resolved, 0);
+      encoder.copy_buffer_to_buffer(&stamps.resolved, 0, &stamps.read, 0, 8 * u64::from(STAMPS));
     }
   }
 }
@@ -360,6 +378,10 @@ struct Figures {
   idle: usize,
   /// Frames the GPU gave no time for
   untimed: usize,
+  /// The corner pass's median within `gpu`
+  corners: Option<f64>,
+  /// Timed frames that gave the corner pass no time
+  corners_untimed: usize,
 }
 
 fn measure(shapes: Shapes) -> Option<Figures> {
@@ -372,10 +394,13 @@ fn measure(shapes: Shapes) -> Option<Figures> {
       stamps: stamps.clone(),
     });
   let mut engine = HeadlessEngine::new_or_skip(builder)?;
+  if let Some(stamps) = &stamps {
+    engine.stamp_line_corners(Some((stamps.set.clone(), 2)));
+  }
   let period = queue.get_timestamp_period();
-  let (mut render, mut prepare, mut rest, mut gpu) =
-    (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-  let (mut idle, mut untimed) = (0, 0);
+  let (mut render, mut prepare, mut rest, mut gpu, mut corners) =
+    (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+  let (mut idle, mut untimed, mut corners_untimed) = (0, 0, 0);
   for frame in 0..WARMUP + FRAMES {
     engine.step_real(Duration::from_micros(16_667));
     device
@@ -393,14 +418,17 @@ fn measure(shapes: Shapes) -> Option<Figures> {
     }
     // Metal now and then returns no time for a frame (both stamps zero):
     // such a frame is left out of the GPU's median, not counted as idle
-    let gpu_time = gpu_time.filter(|time| !time.is_zero());
     if stamps.is_some() && gpu_time.is_none() {
       untimed += 1;
+    }
+    if let Some((world, corner)) = gpu_time {
+      gpu.push(world + corner);
+      corners.push(corner);
+      corners_untimed += usize::from(corner.is_zero());
     }
     render.push(frame);
     prepare.push(prepared);
     rest.push(frame.saturating_sub(prepared));
-    gpu.extend(gpu_time);
   }
   Some(Figures {
     render: median(render),
@@ -409,6 +437,8 @@ fn measure(shapes: Shapes) -> Option<Figures> {
     gpu: stamps.is_some().then(|| median(gpu)),
     idle,
     untimed,
+    corners: stamps.is_some().then(|| median(corners)),
+    corners_untimed,
   })
 }
 
@@ -420,8 +450,10 @@ fn run(name: &str, shapes: Shapes) -> Option<Figures> {
   println!("{name}_extract: {:.1} µs", figures.extract);
   match figures.gpu {
     Some(gpu) => println!(
-      "{name}_gpu: {gpu:.1} µs ({} of {FRAMES} frames untimed)",
-      figures.untimed
+      "{name}_gpu: {gpu:.1} µs ({} of {FRAMES} frames untimed; corner pass {:.1} µs, {} timed frames without it)",
+      figures.untimed,
+      figures.corners.unwrap_or(0.0),
+      figures.corners_untimed
     ),
     None => println!("{name}_gpu: no timestamps on this device"),
   }
