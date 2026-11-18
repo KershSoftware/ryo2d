@@ -222,17 +222,24 @@ impl Stamps {
   ) -> Option<(Duration, Duration)> {
     let slice = self.read.slice(..);
     slice.map_async(wgpu::MapMode::Read, |_| {});
-    device.poll(wgpu::PollType::wait_indefinitely()).ok()?;
-    let ticks: Vec<u64> = {
-      let bytes = slice.get_mapped_range().ok()?;
-      bytes
-        .as_chunks::<8>()
-        .0
-        .iter()
-        .map(|word| u64::from_le_bytes(*word))
-        .collect()
-    };
+    // Unmapped whatever the read gives, so the next frame's copy finds the
+    // buffer free
+    let ticks: Option<Vec<u64>> = device
+      .poll(wgpu::PollType::wait_indefinitely())
+      .ok()
+      .and_then(|_| {
+        let bytes = slice.get_mapped_range().ok()?;
+        Some(
+          bytes
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|word| u64::from_le_bytes(*word))
+            .collect(),
+        )
+      });
     self.read.unmap();
+    let ticks = ticks?;
     let time = |start: u64, end: u64| {
       let nanos = end.saturating_sub(start) as f64 * f64::from(period);
       Duration::from_nanos(nanos as u64)
@@ -345,7 +352,10 @@ fn mixed(ctx: &mut SceneContext) {
   for index in 0..LINES + TRAILS {
     let centre = grid.centre(index);
     let points = points(index, centre, 1.0);
-    let width = width(index);
+    // Joins by the index, caps by it over three and widths over nine, so
+    // every join, cap and width meet (`line_time_tests.rs` builds this
+    // scene again: change them together)
+    let width = WIDTHS[(index / 9) % WIDTHS.len()];
     let (join, cap) = (JOINS[index % 3], CAPS[(index / 3) % 3]);
     if index < LINES {
       // A line's points are offsets from its entity
@@ -374,7 +384,8 @@ fn mixed(ctx: &mut SceneContext) {
   }
 }
 
-/// `count` lines of `join`, filling the view
+/// `count` lines of `join`, filling the view (`line_time_tests.rs` builds
+/// these scenes again: change them together)
 fn lines_only(ctx: &mut SceneContext, join: LineJoin, count: usize) {
   let grid = Grid::filling(count);
   let scale = grid.scale();

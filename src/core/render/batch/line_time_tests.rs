@@ -89,7 +89,8 @@ fn add(
   stream.polyline(&poly, &style);
 }
 
-/// The bench's mixed scene, its lines and trails alike
+/// The bench's mixed scene, its lines and trails alike: a copy of
+/// `benches/lines.rs`'s, which must change with it
 fn mixed() -> LineStream {
   let mut stream = LineStream::default();
   for index in 0..1000 {
@@ -97,7 +98,7 @@ fn mixed() -> LineStream {
       ((index % 40) as f32 + 0.5) * CELL.0,
       ((index / 40) as f32 + 0.5) * CELL.1,
     );
-    let width = WIDTHS[(index / 3) % WIDTHS.len()];
+    let width = WIDTHS[(index / 9) % WIDTHS.len()];
     add(
       &mut stream,
       &points(index, centre, 1.0),
@@ -110,7 +111,8 @@ fn mixed() -> LineStream {
   stream
 }
 
-/// The bench's `count` lines of `join`, filling the view
+/// The bench's `count` lines of `join`, filling the view: a copy of
+/// `benches/lines.rs`'s, which must change with it
 fn lines_only(join: LineJoin, count: usize) -> LineStream {
   let (width, height) = (RESOLUTION.0 as f32, RESOLUTION.1 as f32);
   let columns = ((count as f32 * width / height).sqrt().ceil() as usize).max(1);
@@ -311,7 +313,7 @@ fn line_time_splits_into_vertex_and_fragment() {
   ];
   // The first scene again at the end, once the GPU's clock is up
   for (index, (name, stream)) in scenes.iter().chain(scenes.first()).enumerate() {
-    let uploaded = lines.upload(&device, &queue, stream);
+    let uploaded = lines.upload(&device, stream);
     let mut figures = Vec::new();
     for run in [Run::Full, Run::Constant, Run::OnePixel, Run::Empty] {
       let mut times = Vec::new();
