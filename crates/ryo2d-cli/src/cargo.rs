@@ -21,6 +21,15 @@ pub fn target_dir(project: &Path) -> CliResult<PathBuf> {
 }
 
 pub(crate) fn target_dir_with(project: &Path, env: &[EnvVar]) -> CliResult<PathBuf> {
+  metadata(project, env)?
+    .get("target_directory")
+    .and_then(serde_json::Value::as_str)
+    .map(PathBuf::from)
+    .ok_or_else(|| CliError::Other("cargo metadata named no target directory".to_owned()))
+}
+
+/// `cargo metadata --format-version 1 --no-deps` for the project at `project`
+fn metadata(project: &Path, env: &[EnvVar]) -> CliResult<serde_json::Value> {
   let mut command = Command::new("cargo");
   command
     .args(["metadata", "--format-version", "1", "--no-deps"])
@@ -36,13 +45,62 @@ pub(crate) fn target_dir_with(project: &Path, env: &[EnvVar]) -> CliResult<PathB
       String::from_utf8_lossy(&output.stderr).trim()
     )));
   }
-  let metadata: serde_json::Value = serde_json::from_slice(&output.stdout)
-    .map_err(|e| CliError::Other(format!("could not read cargo metadata: {e}")))?;
-  metadata
-    .get("target_directory")
+  serde_json::from_slice(&output.stdout)
+    .map_err(|e| CliError::Other(format!("could not read cargo metadata: {e}")))
+}
+
+/// The binary of the package at `manifest` that `cargo run` would run: its
+/// `default-run`, else its only binary; several without a `default-run` is an
+/// error naming them
+fn game_bin(metadata: &serde_json::Value, manifest: &Path) -> CliResult<String> {
+  let package = metadata
+    .get("packages")
+    .and_then(serde_json::Value::as_array)
+    .into_iter()
+    .flatten()
+    .find(|package| {
+      package
+        .get("manifest_path")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|path| canonical(Path::new(path)) == manifest)
+    })
+    .ok_or_else(|| {
+      CliError::Other(format!(
+        "cargo metadata has no package at {}",
+        manifest.display()
+      ))
+    })?;
+  if let Some(default) = package
+    .get("default_run")
     .and_then(serde_json::Value::as_str)
-    .map(PathBuf::from)
-    .ok_or_else(|| CliError::Other("cargo metadata named no target directory".to_owned()))
+  {
+    return Ok(default.to_owned());
+  }
+  let bins: Vec<&str> = package
+    .get("targets")
+    .and_then(serde_json::Value::as_array)
+    .into_iter()
+    .flatten()
+    .filter(|target| {
+      target
+        .get("kind")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|kinds| kinds.iter().any(|kind| kind.as_str() == Some("bin")))
+    })
+    .filter_map(|target| target.get("name")?.as_str())
+    .collect();
+  match bins.as_slice() {
+    [only] => Ok((*only).to_owned()),
+    [] => Err(CliError::Other(format!(
+      "{} has no binary to run",
+      manifest.display()
+    ))),
+    several => Err(CliError::Other(format!(
+      "{} has several binaries ({}): set `default-run` in its [package] to choose the game's",
+      manifest.display(),
+      several.join(", ")
+    ))),
+  }
 }
 
 /// Runs `cargo build` with `args` in `project`, printing cargo's diagnostics
@@ -59,21 +117,33 @@ pub(crate) fn build_with(project: &Path, args: &[&str], env: &[EnvVar]) -> CliRe
 }
 
 /// Runs a prepared `cargo build` (its arguments after `build`, its
-/// environment) in `project` and returns the project's executable
+/// environment) in `project`, for the binary `cargo run` would run, and
+/// returns that executable
 pub fn execute(mut command: Command, project: &Path) -> CliResult<PathBuf> {
+  let manifest = canonical(&project.join("Cargo.toml"));
+  let bin = game_bin(&metadata(project, &[])?, &manifest)?;
   command
+    .args(["--bin", &bin])
     .arg("--message-format=json-render-diagnostics")
     .current_dir(project)
     .stdout(Stdio::piped());
   let mut child = command
     .spawn()
     .map_err(|e| CliError::spawn("cargo build", e))?;
-  let mut executables = Vec::new();
+  let mut executable = None;
   if let Some(stdout) = child.stdout.take() {
-    let manifest = canonical(&project.join("Cargo.toml"));
-    for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-      if let Some(executable) = executable_of(&line, &manifest) {
-        executables.push(executable);
+    let mut lines = BufReader::new(stdout);
+    let mut line = Vec::new();
+    // Read to the end, so cargo's pipe is always drained
+    loop {
+      line.clear();
+      match lines.read_until(b'\n', &mut line) {
+        Ok(0) | Err(_) => break,
+        Ok(_) => {
+          if let Some(path) = executable_of(&String::from_utf8_lossy(&line), &manifest, &bin) {
+            executable = Some(path);
+          }
+        }
       }
     }
   }
@@ -83,41 +153,25 @@ pub fn execute(mut command: Command, project: &Path) -> CliResult<PathBuf> {
   if !status.success() {
     return Err(CliError::Build { status });
   }
-  let project_name = project
-    .file_name()
-    .and_then(OsStr::to_str)
-    .unwrap_or_default();
-  let named = executables
-    .iter()
-    .position(|path| path.file_stem().and_then(OsStr::to_str) == Some(project_name));
-  match named {
-    Some(index) => Some(executables.swap_remove(index)),
-    None => executables.into_iter().next(),
-  }
-  .ok_or_else(|| {
-    CliError::Other(format!(
-      "cargo built no executable for {}",
-      project.join("Cargo.toml").display()
-    ))
-  })
+  executable.ok_or_else(|| CliError::Other(format!("cargo built no executable for {bin}")))
 }
 
-/// The executable a `compiler-artifact` message names, when it is a binary of
-/// the package at `manifest`
-fn executable_of(line: &str, manifest: &Path) -> Option<PathBuf> {
+/// The executable a `compiler-artifact` message names, when it is the binary
+/// `bin` of the package at `manifest`
+fn executable_of(line: &str, manifest: &Path, bin: &str) -> Option<PathBuf> {
   let message: serde_json::Value = serde_json::from_str(line).ok()?;
   if message.get("reason")?.as_str()? != "compiler-artifact" {
     return None;
   }
-  let is_bin = message
-    .get("target")?
+  let target = message.get("target")?;
+  let is_bin = target
     .get("kind")?
     .as_array()?
     .iter()
     .any(|kind| kind.as_str() == Some("bin"));
   let executable = message.get("executable")?.as_str()?;
   let of_project = canonical(Path::new(message.get("manifest_path")?.as_str()?)) == manifest;
-  (is_bin && of_project).then(|| PathBuf::from(executable))
+  (is_bin && of_project && target.get("name")?.as_str()? == bin).then(|| PathBuf::from(executable))
 }
 
 fn canonical(path: &Path) -> PathBuf {
@@ -177,7 +231,8 @@ mod tests {
   /// Where the temporary crates build: under the workspace's target folder,
   /// so the builds are kept between runs and cleaned with it
   fn shared_target() -> PathBuf {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/cli-test-crates");
+    let workspace = target_dir(Path::new(env!("CARGO_MANIFEST_DIR"))).unwrap();
+    let dir = workspace.join("cli-test-crates");
     fs::create_dir_all(&dir).unwrap();
     dir.canonicalize().unwrap()
   }
@@ -203,7 +258,7 @@ mod tests {
   #[test]
   fn the_target_folder_comes_from_cargo_metadata_and_honours_cargo_target_dir() {
     let (_folder, root) = crate_with_main("tgt", "fn main() {}");
-    let clean = [("CARGO_TARGET_DIR", None)];
+    let clean = [("CARGO_TARGET_DIR", None), ("CARGO_BUILD_TARGET_DIR", None)];
     assert_eq!(target_dir_with(&root, &clean).unwrap(), root.join("target"));
 
     let elsewhere = tempfile::tempdir().unwrap().keep().canonicalize().unwrap();
@@ -270,7 +325,7 @@ mod tests {
   }
 
   #[test]
-  fn a_game_s_exit_code_passes_through_run_and_dev() {
+  fn run_game_s_failure_is_the_game_s_code() {
     let target = shared_target();
     let (_folder, exits) = crate_with_main("exits3", "fn main() { std::process::exit(3); }");
     let exe = build_with(&exits, &[], &shared_env(&target)).unwrap();
@@ -287,6 +342,56 @@ mod tests {
       matches!(error, CliError::GameExited { code: 101 }),
       "{error:?}"
     );
+  }
+
+  /// A crate in a folder named like neither bin, with a bin per `(name, exit code)`
+  fn crate_with_bins(extra: &str, bins: &[(&str, i32)]) -> (tempfile::TempDir, PathBuf) {
+    let (folder, root) = crate_with_main("folder_name", "fn main() {}");
+    fs::remove_file(root.join("src/main.rs")).unwrap();
+    let mut manifest = fs::read_to_string(root.join("Cargo.toml")).unwrap();
+    manifest = manifest.replace(
+      "edition = \"2021\"\n",
+      &format!("edition = \"2021\"\n{extra}\n"),
+    );
+    for (name, code) in bins {
+      fs::write(
+        root.join(format!("src/{name}.rs")),
+        format!("fn main() {{ std::process::exit({code}); }}"),
+      )
+      .unwrap();
+      manifest.push_str(&format!(
+        "\n[[bin]]\nname = \"{name}\"\npath = \"src/{name}.rs\"\n"
+      ));
+    }
+    fs::write(root.join("Cargo.toml"), manifest).unwrap();
+    (folder, root)
+  }
+
+  #[test]
+  fn the_game_is_the_default_run_binary_or_the_only_one() {
+    let target = shared_target();
+    let env = shared_env(&target);
+
+    let (_folder, root) = crate_with_bins("default-run = \"game\"", &[("tool", 4), ("game", 3)]);
+    let exe = build_with(&root, &[], &env).unwrap();
+    assert_eq!(exe.file_stem().and_then(OsStr::to_str), Some("game"));
+    assert!(matches!(
+      run_game(&exe, &root),
+      Err(CliError::GameExited { code: 3 })
+    ));
+
+    let (_folder, root) = crate_with_bins("", &[("tool", 4), ("game", 3)]);
+    let error = build_with(&root, &[], &env).unwrap_err();
+    let said = error.report();
+    assert!(
+      said.contains("tool") && said.contains("game") && said.contains("default-run"),
+      "{said}"
+    );
+
+    // One binary, named unlike its folder
+    let (_folder, root) = crate_with_bins("", &[("lonely", 5)]);
+    let exe = build_with(&root, &[], &env).unwrap();
+    assert_eq!(exe.file_stem().and_then(OsStr::to_str), Some("lonely"));
   }
 
   #[cfg(unix)]

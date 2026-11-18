@@ -179,8 +179,11 @@ fn ryo2d_in(root: &std::path::Path, target: &std::path::Path, args: &[&str]) -> 
 
 #[test]
 fn a_game_s_exit_code_passes_through_run_and_dev() {
-  let (_folder, root, target) =
-    game_with_main("cli_exits3", "fn main() { std::process::exit(3); }");
+  let (_folder, root, target) = game_with_main(
+    "cli_exits3",
+    // 3 only when started from the project folder, where Ryo.toml is
+    "fn main() { std::process::exit(if std::path::Path::new(\"Ryo.toml\").exists() { 3 } else { 4 }); }",
+  );
   let built = Command::new("cargo")
     .args(["build", "--release"])
     .current_dir(&root)

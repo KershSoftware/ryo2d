@@ -33,6 +33,10 @@ pub enum Command {
   /// running game. Code is not reloaded: rebuild by running the command
   /// again. This is the recommended command during development.
   ///
+  /// It builds the game's binary (the package's `default-run`, or its only
+  /// one) and runs it from the project folder. The game's own non-zero exit
+  /// code is the command's.
+  ///
   /// To profile, use --profiler, which builds the engine's profiler feature
   /// and opens the profiler window. Setting `enable_profiler = true` in
   /// Ryo.toml's [debug] section builds the profiler too but does not open
@@ -55,10 +59,11 @@ pub enum Command {
   ///
   /// Runs the game from release/, the bundle 'ryo2d build' made, with
   /// release/ as its working directory. Without a bundle it runs the release
-  /// binary in cargo's target folder, from the project folder, and warns
-  /// that this is not a bundle. With no build at all it says to run
-  /// 'ryo2d build'. A non-zero exit code of the game is reported as a
-  /// warning.
+  /// binary in cargo's target folder (where cargo says it is), from the
+  /// project folder, and warns that this is not a bundle. With no build at all
+  /// it says to run 'ryo2d build'. The game's own non-zero exit code is the
+  /// command's: it says "the game exited with code N" and exits with N (128
+  /// plus the signal when a signal ended the game on Unix).
   Run,
   /// Package the release into a distributable zip
   ///
