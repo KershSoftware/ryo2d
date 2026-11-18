@@ -1,34 +1,23 @@
 //! Run command - executes the production build
 
-use super::{CliError, CliResult, Output, discover_workspace, get_cargo_package_name};
+use super::{CliError, CliResult, Output, discover_workspace};
 use crate::cargo;
 
 /// Execute the run command
 pub fn execute() -> CliResult<()> {
   let workspace = discover_workspace()?;
-  let package_name = get_cargo_package_name(&workspace)?;
   let display_name = workspace.name();
+  // The binary `cargo run` would run, and where cargo builds to
+  let game = cargo::game(workspace.root())?;
 
-  // Determine the binary path - the release bundle first
-  let binary_name = if cfg!(windows) {
-    format!("{}.exe", package_name)
-  } else {
-    package_name.to_string()
-  };
-
-  let release_bundle_binary = workspace.root().join("release").join(&binary_name);
-
-  let (binary_path, from_bundle) = if release_bundle_binary.exists() {
-    (release_bundle_binary, true)
-  } else {
-    // Cargo says where its target folder is (a workspace's, a configured one)
-    let built = cargo::target_dir(workspace.root())?
-      .join("release")
-      .join(&binary_name);
-    if !built.exists() {
-      return Err(CliError::NoBuild(release_bundle_binary));
-    }
+  // The release bundle first, then cargo's own release folder
+  let release = workspace.root().join("release");
+  let (binary_path, from_bundle) = if let Some(bundled) = cargo::find_binary(&release, &game.bin) {
+    (bundled, true)
+  } else if let Some(built) = cargo::find_binary(&game.target_dir.join("release"), &game.bin) {
     (built, false)
+  } else {
+    return Err(CliError::NoBuild(release.join(&game.bin)));
   };
 
   if !from_bundle {

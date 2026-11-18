@@ -7,7 +7,7 @@ use std::process::Command;
 use ryo2d::tooling::embedded_config_env;
 
 use super::licenses::write_font_licenses;
-use super::{CliError, CliResult, Output, discover_workspace, get_cargo_package_name};
+use super::{CliError, CliResult, Output, discover_workspace};
 use crate::args::BuildArgs;
 use crate::cargo;
 
@@ -15,7 +15,6 @@ use crate::cargo;
 pub fn execute(options: BuildArgs) -> CliResult<()> {
   let workspace = discover_workspace()?;
   let project_name = workspace.name();
-  let package_name = get_cargo_package_name(&workspace)?;
 
   Output::status("Building", &format!("{} (release)...", project_name));
 
@@ -40,7 +39,7 @@ pub fn execute(options: BuildArgs) -> CliResult<()> {
   )?;
 
   // Create release bundle
-  create_release_bundle(&workspace, &package_name, &built, project_name, &icon_path)?;
+  create_release_bundle(&workspace, &built, project_name, &icon_path)?;
 
   Output::success(&format!("release build of {}", project_name));
 
@@ -105,7 +104,6 @@ fn checked_save_folder(config: &ryo2d::core::config::WorkspaceConfig) -> CliResu
 /// Create a distributable release bundle
 fn create_release_bundle(
   workspace: &ryo2d::core::config::Workspace,
-  package_name: &str,
   source_binary: &Path,
   display_name: &str,
   icon_path: &PathBuf,
@@ -121,14 +119,14 @@ fn create_release_bundle(
   fs::create_dir_all(&release_dir)
     .map_err(|e| CliError::Other(format!("Failed to create release directory: {}", e)))?;
 
-  // Copy executable
-  let binary_name = if cfg!(windows) {
-    format!("{}.exe", package_name)
-  } else {
-    package_name.to_string()
-  };
-
-  let dest_binary = release_dir.join(&binary_name);
+  // Copy the executable under the name cargo gave it (`.exe` or not)
+  let binary_name = source_binary.file_name().ok_or_else(|| {
+    CliError::Other(format!(
+      "cargo's executable has no file name: {}",
+      source_binary.display()
+    ))
+  })?;
+  let dest_binary = release_dir.join(binary_name);
 
   fs::copy(source_binary, &dest_binary).map_err(|e| {
     CliError::Other(format!(
@@ -423,14 +421,7 @@ mod tests {
     let built = dir.path().join("built-game");
     std::fs::write(&built, b"a game").unwrap();
     let workspace = Workspace::from_path(dir.path()).unwrap();
-    create_release_bundle(
-      &workspace,
-      "g",
-      &built,
-      "g",
-      &dir.path().join("no-icon.png"),
-    )
-    .unwrap();
+    create_release_bundle(&workspace, &built, "g", &dir.path().join("no-icon.png")).unwrap();
     let licenses = dir
       .path()
       .join("release")
@@ -480,16 +471,8 @@ mod tests {
     let built = dir.path().join("built-game");
     std::fs::write(&built, b"a game").unwrap();
     let workspace = Workspace::from_path(dir.path()).unwrap();
-    let bundle = || {
-      create_release_bundle(
-        &workspace,
-        "g",
-        &built,
-        "g",
-        &dir.path().join("no-icon.png"),
-      )
-      .unwrap()
-    };
+    let bundle =
+      || create_release_bundle(&workspace, &built, "g", &dir.path().join("no-icon.png")).unwrap();
     bundle();
     let release = dir.path().join("release");
     std::fs::write(release.join("data").join("save.json"), b"progress").unwrap();
@@ -508,6 +491,18 @@ mod tests {
   }
 
   #[test]
+  fn the_bundle_s_binary_keeps_the_name_cargo_gave_it() {
+    // A Windows build cross-compiled on any host: `.exe` stays
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("Ryo.toml"), "[project]\nname = \"g\"\n").unwrap();
+    let built = dir.path().join("the_game.exe");
+    std::fs::write(&built, b"a game").unwrap();
+    let workspace = Workspace::from_path(dir.path()).unwrap();
+    create_release_bundle(&workspace, &built, "g", &dir.path().join("no-icon.png")).unwrap();
+    assert!(dir.path().join("release").join("the_game.exe").is_file());
+  }
+
+  #[test]
   fn a_build_that_is_not_portable_removes_the_data_folder() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("Ryo.toml"), "[project]\nname = \"g\"\n").unwrap();
@@ -517,14 +512,7 @@ mod tests {
     let release = dir.path().join("release");
     std::fs::create_dir_all(release.join("data")).unwrap();
     std::fs::write(release.join("data").join("save.json"), b"progress").unwrap();
-    create_release_bundle(
-      &workspace,
-      "g",
-      &built,
-      "g",
-      &dir.path().join("no-icon.png"),
-    )
-    .unwrap();
+    create_release_bundle(&workspace, &built, "g", &dir.path().join("no-icon.png")).unwrap();
     assert!(!release.join("data").exists());
   }
 

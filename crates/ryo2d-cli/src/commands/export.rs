@@ -8,13 +8,13 @@ use zip::ZipWriter;
 use zip::write::SimpleFileOptions;
 
 use super::licenses::write_font_licenses;
-use super::{CliError, CliResult, Output, discover_workspace, get_cargo_package_name};
+use super::{CliError, CliResult, Output, discover_workspace};
+use crate::cargo;
 
 /// Execute the export command
 pub fn execute() -> CliResult<()> {
   let workspace = discover_workspace()?;
   let project_name = workspace.name();
-  let package_name = get_cargo_package_name(&workspace)?;
   let release_dir = workspace.root().join("release");
 
   // Check that release folder exists
@@ -22,20 +22,17 @@ pub fn execute() -> CliResult<()> {
     return Err(CliError::NoBuild(release_dir));
   }
 
-  // Verify the executable exists
-  let binary_name = if cfg!(windows) {
-    format!("{}.exe", package_name)
-  } else {
-    package_name.to_string()
-  };
-
-  let executable = release_dir.join(&binary_name);
-  if !executable.exists() {
-    return Err(CliError::Other(format!(
+  // Verify the executable exists: the game's binary, as the build named it
+  let bin = cargo::game(workspace.root())?.bin;
+  let executable = cargo::find_binary(&release_dir, &bin).ok_or_else(|| {
+    CliError::Other(format!(
       "Release executable not found: {}. Run 'ryo2d build' first.",
-      executable.display()
-    )));
-  }
+      release_dir.join(&bin).display()
+    ))
+  })?;
+  let binary_name = executable
+    .file_name()
+    .map_or(bin, |name| name.to_string_lossy().into_owned());
 
   // Get version from Ryo.toml first, then Cargo.toml
   let version = get_project_version(&workspace);
@@ -50,7 +47,9 @@ pub fn execute() -> CliResult<()> {
   };
 
   let zip_path = next_available_zip_path(workspace.root(), &base_name);
-  let zip_filename = zip_path.file_name().unwrap().to_string_lossy();
+  let zip_filename = zip_path
+    .file_name()
+    .map_or_else(|| zip_path.to_string_lossy(), |name| name.to_string_lossy());
 
   Output::status("Exporting", &format!("{}...", zip_filename));
 

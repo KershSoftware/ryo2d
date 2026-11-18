@@ -15,13 +15,13 @@ use crate::error::{CliError, CliResult};
 /// An environment variable for a child process: set, or removed when `None`
 pub type EnvVar<'a> = (&'a str, Option<&'a OsStr>);
 
-/// Cargo's target folder for the project at `project`
-pub fn target_dir(project: &Path) -> CliResult<PathBuf> {
-  target_dir_with(project, &[])
+#[cfg(test)]
+pub(crate) fn target_dir_with(project: &Path, env: &[EnvVar]) -> CliResult<PathBuf> {
+  target_directory(&metadata(project, env)?)
 }
 
-pub(crate) fn target_dir_with(project: &Path, env: &[EnvVar]) -> CliResult<PathBuf> {
-  metadata(project, env)?
+fn target_directory(metadata: &serde_json::Value) -> CliResult<PathBuf> {
+  metadata
     .get("target_directory")
     .and_then(serde_json::Value::as_str)
     .map(PathBuf::from)
@@ -101,6 +101,31 @@ fn game_bin(metadata: &serde_json::Value, manifest: &Path) -> CliResult<String> 
       several.join(", ")
     ))),
   }
+}
+
+/// The game of the package at a project folder, as cargo describes it
+pub struct Game {
+  /// The binary `cargo run` would run
+  pub bin: String,
+  /// Cargo's target folder
+  pub target_dir: PathBuf,
+}
+
+/// The [`Game`] of the package at `project`, from one `cargo metadata`
+pub fn game(project: &Path) -> CliResult<Game> {
+  let metadata = metadata(project, &[])?;
+  let target_dir = target_directory(&metadata)?;
+  let bin = game_bin(&metadata, &canonical(&project.join("Cargo.toml")))?;
+  Ok(Game { bin, target_dir })
+}
+
+/// The file in `dir` that is the binary `bin`: named so, or with the `.exe`
+/// of a Windows build (which a build for another system may have made)
+pub fn find_binary(dir: &Path, bin: &str) -> Option<PathBuf> {
+  [bin.to_owned(), format!("{bin}.exe")]
+    .into_iter()
+    .map(|name| dir.join(name))
+    .find(|path| path.is_file())
 }
 
 /// Runs `cargo build` with `args` in `project`, printing cargo's diagnostics
@@ -229,12 +254,13 @@ mod tests {
   use std::fs;
 
   /// Where the temporary crates build: under the workspace's target folder,
-  /// so the builds are kept between runs and cleaned with it
+  /// so the builds are kept between runs and cleaned with it. Not
+  /// canonicalised: on Windows that is a `\\?\` path.
   fn shared_target() -> PathBuf {
-    let workspace = target_dir(Path::new(env!("CARGO_MANIFEST_DIR"))).unwrap();
+    let workspace = target_dir_with(Path::new(env!("CARGO_MANIFEST_DIR")), &[]).unwrap();
     let dir = workspace.join("cli-test-crates");
     fs::create_dir_all(&dir).unwrap();
-    dir.canonicalize().unwrap()
+    dir
   }
 
   /// A crate `name` with one binary and no dependencies in a fresh folder
@@ -344,8 +370,13 @@ mod tests {
     );
   }
 
-  /// A crate in a folder named like neither bin, with a bin per `(name, exit code)`
-  fn crate_with_bins(extra: &str, bins: &[(&str, i32)]) -> (tempfile::TempDir, PathBuf) {
+  /// A bin that compiles and exits with `code`
+  fn exits(code: i32) -> String {
+    format!("fn main() {{ std::process::exit({code}); }}")
+  }
+
+  /// A crate in a folder named like neither bin, with a bin per `(name, source)`
+  fn crate_with_bins(extra: &str, bins: &[(&str, String)]) -> (tempfile::TempDir, PathBuf) {
     let (folder, root) = crate_with_main("folder_name", "fn main() {}");
     fs::remove_file(root.join("src/main.rs")).unwrap();
     let mut manifest = fs::read_to_string(root.join("Cargo.toml")).unwrap();
@@ -353,12 +384,8 @@ mod tests {
       "edition = \"2021\"\n",
       &format!("edition = \"2021\"\n{extra}\n"),
     );
-    for (name, code) in bins {
-      fs::write(
-        root.join(format!("src/{name}.rs")),
-        format!("fn main() {{ std::process::exit({code}); }}"),
-      )
-      .unwrap();
+    for (name, source) in bins {
+      fs::write(root.join(format!("src/{name}.rs")), source).unwrap();
       manifest.push_str(&format!(
         "\n[[bin]]\nname = \"{name}\"\npath = \"src/{name}.rs\"\n"
       ));
@@ -372,7 +399,11 @@ mod tests {
     let target = shared_target();
     let env = shared_env(&target);
 
-    let (_folder, root) = crate_with_bins("default-run = \"game\"", &[("tool", 4), ("game", 3)]);
+    // The other binary does not compile, so only building with `--bin` passes
+    let (_folder, root) = crate_with_bins(
+      "default-run = \"game\"",
+      &[("tool", "this is not rust".to_owned()), ("game", exits(3))],
+    );
     let exe = build_with(&root, &[], &env).unwrap();
     assert_eq!(exe.file_stem().and_then(OsStr::to_str), Some("game"));
     assert!(matches!(
@@ -380,7 +411,7 @@ mod tests {
       Err(CliError::GameExited { code: 3 })
     ));
 
-    let (_folder, root) = crate_with_bins("", &[("tool", 4), ("game", 3)]);
+    let (_folder, root) = crate_with_bins("", &[("tool", exits(4)), ("game", exits(3))]);
     let error = build_with(&root, &[], &env).unwrap_err();
     let said = error.report();
     assert!(
@@ -389,9 +420,38 @@ mod tests {
     );
 
     // One binary, named unlike its folder
-    let (_folder, root) = crate_with_bins("", &[("lonely", 5)]);
+    let (_folder, root) = crate_with_bins("", &[("lonely", exits(5))]);
     let exe = build_with(&root, &[], &env).unwrap();
     assert_eq!(exe.file_stem().and_then(OsStr::to_str), Some("lonely"));
+  }
+
+  #[test]
+  fn the_game_s_bin_name_is_the_one_cargo_run_would_run() {
+    let (_folder, root) = crate_with_bins(
+      "default-run = \"game\"",
+      &[("tool", exits(4)), ("game", exits(3))],
+    );
+    let found = game(&root).unwrap();
+    assert_eq!(found.bin, "game");
+    assert_eq!(found.target_dir, root.join("target"));
+    let (_folder, root) = crate_with_bins("", &[("lonely", exits(5))]);
+    assert_eq!(game(&root).unwrap().bin, "lonely");
+  }
+
+  #[test]
+  fn a_built_binary_is_found_with_or_without_exe() {
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(find_binary(dir.path(), "game"), None);
+    fs::write(dir.path().join("game.exe"), b"a windows game").unwrap();
+    assert_eq!(
+      find_binary(dir.path(), "game"),
+      Some(dir.path().join("game.exe"))
+    );
+    fs::write(dir.path().join("game"), b"a game").unwrap();
+    assert_eq!(
+      find_binary(dir.path(), "game"),
+      Some(dir.path().join("game"))
+    );
   }
 
   #[cfg(unix)]

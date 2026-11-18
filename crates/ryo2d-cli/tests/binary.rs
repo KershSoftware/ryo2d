@@ -140,6 +140,28 @@ fn install_skills_with_no_terminal_and_no_flag_installs_nothing() {
   assert!(!game.join(".claude").exists());
 }
 
+/// The workspace's target folder, as cargo reports it (a set
+/// `CARGO_TARGET_DIR` included): the test games build under its
+/// `cli-test-crates`, kept between runs. Not canonicalised: on Windows that
+/// makes a `\\?\` path, which cargo is better not handed as a target folder.
+fn shared_target() -> std::path::PathBuf {
+  let metadata = Command::new("cargo")
+    .args(["metadata", "--format-version", "1", "--no-deps"])
+    .current_dir(env!("CARGO_MANIFEST_DIR"))
+    .output()
+    .expect("cargo metadata runs");
+  let metadata: serde_json::Value =
+    serde_json::from_slice(&metadata.stdout).expect("metadata is JSON");
+  let target = std::path::PathBuf::from(
+    metadata["target_directory"]
+      .as_str()
+      .expect("a target folder"),
+  )
+  .join("cli-test-crates");
+  std::fs::create_dir_all(&target).unwrap();
+  target
+}
+
 /// A game whose `main` is `main`, with a Ryo.toml, in a fresh folder; its
 /// builds go under the workspace's target folder, kept between runs
 fn game_with_main(
@@ -160,10 +182,7 @@ fn game_with_main(
   )
   .unwrap();
   std::fs::write(root.join("src/main.rs"), main).unwrap();
-  let target =
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/cli-test-crates");
-  std::fs::create_dir_all(&target).unwrap();
-  (folder, root, target.canonicalize().unwrap())
+  (folder, root, shared_target())
 }
 
 /// `ryo2d args` in the game's folder, building into `target`
@@ -209,4 +228,31 @@ fn run_without_a_build_says_to_build() {
   let output = ryo2d_in(&root, &target, &["run"]);
   assert_eq!(output.status.code(), Some(1));
   assert!(String::from_utf8_lossy(&output.stderr).contains("ryo2d build"));
+}
+
+#[test]
+fn run_finds_the_release_binary_cargo_would_run() {
+  // A binary named unlike its package
+  let (_folder, root, target) =
+    game_with_main("cli_renamed", "fn main() { std::process::exit(3); }");
+  let manifest = std::fs::read_to_string(root.join("Cargo.toml")).unwrap();
+  std::fs::write(
+    root.join("Cargo.toml"),
+    format!("{manifest}\n[[bin]]\nname = \"the_game\"\npath = \"src/main.rs\"\n"),
+  )
+  .unwrap();
+  let built = Command::new("cargo")
+    .args(["build", "--release"])
+    .current_dir(&root)
+    .env("CARGO_TARGET_DIR", &target)
+    .output()
+    .expect("cargo runs");
+  assert!(built.status.success());
+  let output = ryo2d_in(&root, &target, &["run"]);
+  assert_eq!(
+    output.status.code(),
+    Some(3),
+    "{}",
+    String::from_utf8_lossy(&output.stderr)
+  );
 }
