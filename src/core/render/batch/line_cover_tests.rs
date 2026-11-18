@@ -121,8 +121,8 @@ impl Painter {
   }
 
   /// `stream` drawn by a camera centred on `centre` at `ppu` image pixels a
-  /// unit, into an image of `size`, textured by `texture` when given (each
-  /// line's slot its whole)
+  /// unit, into an image of `size`, textured by `texture` when given (a
+  /// line's slot the whole texture unless it has one)
   fn paint(
     &self,
     device: &wgpu::Device,
@@ -195,9 +195,12 @@ impl Painter {
     stream_copy.points.clone_from(&stream.points);
     stream_copy.indices.clone_from(&stream.indices);
     stream_copy.lines.clone_from(&stream.lines);
+    // A line given no slot of its own repeats the whole texture
     if texture.is_some() {
       for line in &mut stream_copy.lines {
-        line.bounds = [0.0, 0.0, 1.0, 1.0];
+        if line.bounds == [0.0; 4] {
+          line.bounds = [0.0, 0.0, 1.0, 1.0];
+        }
       }
     }
     let image = device.create_texture(&wgpu::TextureDescriptor {
@@ -1169,6 +1172,65 @@ fn soft_and_glow_shape_by_the_distance_over_the_half_width() {
 }
 
 #[test]
+fn a_hard_soft_or_glow_line_keeps_the_smooth_line_s_shape() {
+  // Soft and Glow drawn Hard keep their shape across the line, as the
+  // Smooth line of their drawn half width shapes it, only their coverage
+  // whole: each row of the Hard line's band has the shape's alpha (equal to
+  // the Smooth line's where that covers the row whole), and none outside it
+  let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+    return;
+  };
+  let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+  let painter = Painter::new(&device, &queue);
+  let size = (64u32, 64u32);
+  let centre = Vec2::new(32.0, 32.0);
+  let mut failures = Vec::new();
+  let mut inside = 0;
+  for (name, look) in [("soft", SOFT), ("glow", GLOW)] {
+    for (hw, y_centre) in [(8.0f32, 32.5), (5.25, 31.8), (2.0, 32.3)] {
+      let ends = [Vec2::new(4.0, y_centre), Vec2::new(60.0, y_centre)];
+      let points = points_of(&ends, hw, Color::WHITE);
+      let image = |edge| {
+        let mut stream = LineStream::default();
+        let style = PolyStyle {
+          edge,
+          ..style(LineJoin::Miter, LineCap::Butt, false, look)
+        };
+        stream.polyline(&points, &style);
+        painter.paint(&device, &queue, &stream, (centre, 1.0), size, None)
+      };
+      let (hard, smooth) = (image(Some(LineEdge::Hard)), image(Some(LineEdge::Smooth)));
+      for y in 0..size.1 {
+        let d = world_of(32, y, centre, size).y - y_centre;
+        // The Hard band, half-open and moved up by a 64th of a pixel
+        let in_band = d >= -hw - 1.0 / 64.0 && d < hw - 1.0 / 64.0;
+        let want = if in_band {
+          shape_over_pixel(look, d.abs(), hw).min(1.0)
+        } else {
+          0.0
+        };
+        let got = alpha(&hard, 32, y);
+        let what = format!("{name} hw {hw} row {y} (d {d})");
+        if (got - want).abs() > 2.0 / 255.0 {
+          failures.push(format!("{what}: Hard {got} against the shape's {want}"));
+        }
+        if cover_strip(d.abs(), hw) >= 1.0 {
+          inside += 1;
+          let soft_edge = alpha(&smooth, 32, y);
+          if (got - soft_edge).abs() > 2.0 / 255.0 {
+            failures.push(format!("{what}: Hard {got} against Smooth {soft_edge}"));
+          }
+        }
+      }
+    }
+  }
+  let error = pollster::block_on(scope.pop());
+  assert!(error.is_none(), "{error:?}");
+  assert!(inside > 40, "{inside} rows covered whole");
+  assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
 fn each_line_s_fragments_read_its_own_entry_in_the_line_table() {
   // A vertex hands its fragments only what varies across its line; what
   // the line shares (its style, a two-point line's half length between its
@@ -1223,6 +1285,56 @@ fn each_line_s_fragments_read_its_own_entry_in_the_line_table() {
     "{}",
     differ[..differ.len().min(20)].join("\n")
   );
+}
+
+#[test]
+fn each_textured_line_repeats_its_own_slot() {
+  // Two textured lines in one stream, each with its own slot of one
+  // texture (its top row red, its bottom blue): each line's fragments read
+  // its own slot from the line table, so one draws red and the other blue
+  let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+    return;
+  };
+  let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+  let painter = Painter::new(&device, &queue);
+  let texture = rows_texture(&device, &queue, 2, |row| {
+    if row == 0 {
+      [255, 0, 0, 255]
+    } else {
+      [0, 0, 255, 255]
+    }
+  });
+  let mut stream = LineStream::default();
+  for y in [16.5, 40.5] {
+    let ends = [Vec2::new(8.0, y), Vec2::new(56.0, y)];
+    stream.polyline(
+      &points_of(&ends, 3.0, Color::WHITE),
+      &style(LineJoin::Miter, LineCap::Butt, false, SOLID),
+    );
+  }
+  stream.lines[0].bounds = [0.0, 0.0, 1.0, 0.5];
+  stream.lines[1].bounds = [0.0, 0.5, 1.0, 1.0];
+  let image = painter.paint(
+    &device,
+    &queue,
+    &stream,
+    (Vec2::splat(32.0), 1.0),
+    (64, 64),
+    Some(&texture),
+  );
+  let error = pollster::block_on(scope.pop());
+  assert!(error.is_none(), "{error:?}");
+  for (y, red, what) in [(16, true, "the first line"), (40, false, "the second")] {
+    for x in [12, 32, 52] {
+      let [r, _, b, a] = image.get_pixel(x, y).0;
+      let (own, other) = if red { (r, b) } else { (b, r) };
+      assert!(
+        own > 200 && other < 30 && a == 255,
+        "{what} at ({x}, {y}): {:?}",
+        [r, b, a]
+      );
+    }
+  }
 }
 
 /// Where a column of `a_textured_line_s_texture_runs_on_across_the_fringe`
@@ -1451,14 +1563,14 @@ fn straight_offsets() -> Vec<Vec2> {
 #[test]
 fn a_hard_line_is_one_pixel_per_column_at_any_angle() {
   // A pixel wide line on a pixel-art target, every 1.5 degrees from 0 to
-  // 90 at 18 places: one whole pixel in each column (each row past 45
+  // 180 at 18 places: one whole pixel in each column (each row past 45
   // degrees), with no gap or double, as a line drawn in pixel art
   let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
     return;
   };
   let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
   let painter = Painter::new(&device, &queue);
-  let angles: Vec<f32> = (0..=60u16).map(|i| f32::from(i) * 1.5).collect();
+  let angles: Vec<f32> = (0..120u16).map(|i| f32::from(i) * 1.5).collect();
   let mut wrong = Vec::new();
   for offset in straight_offsets() {
     let lines = Straight::paint(&painter, &device, &queue, 1.0, &angles, offset, None, true);
@@ -1477,14 +1589,15 @@ fn a_hard_line_is_one_pixel_per_column_at_any_angle() {
 
 #[test]
 fn a_hard_line_is_its_width_in_pixels_per_column() {
-  // Hard set on a smooth target: lines of 2 and 3 pixels are 2 and 3
-  // pixels a column (or row), and ones narrower than a pixel one
+  // Hard set on a smooth target, every 7.5 degrees from 0 to 180: lines
+  // of 2 and 3 pixels are 2 and 3 pixels a column (or row), and ones
+  // narrower than a pixel one
   let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
     return;
   };
   let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
   let painter = Painter::new(&device, &queue);
-  let angles: Vec<f32> = (0..=12u16).map(|i| f32::from(i) * 7.5).collect();
+  let angles: Vec<f32> = (0..24u16).map(|i| f32::from(i) * 7.5).collect();
   let mut wrong = Vec::new();
   for (width, per) in [(0.25, 1), (0.5, 1), (2.0, 2), (3.0, 3)] {
     for offset in straight_offsets() {

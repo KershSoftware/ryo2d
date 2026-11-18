@@ -318,9 +318,21 @@ mod tests {
     ];
     let sources: [(&str, &str, &[&str]); 6] = [
       ("line.wgsl", include_str!("core/line.wgsl"), mip),
-      ("line_style.wgsl", include_str!("include/line_style.wgsl"), &[]),
-      ("line_pieces.wgsl", include_str!("include/line_pieces.wgsl"), &[]),
-      ("line_cover.wgsl", include_str!("include/line_cover.wgsl"), &[]),
+      (
+        "line_style.wgsl",
+        include_str!("include/line_style.wgsl"),
+        &[],
+      ),
+      (
+        "line_pieces.wgsl",
+        include_str!("include/line_pieces.wgsl"),
+        &[],
+      ),
+      (
+        "line_cover.wgsl",
+        include_str!("include/line_cover.wgsl"),
+        &[],
+      ),
       ("ui_rect.wgsl", include_str!("include/ui_rect.wgsl"), &[]),
       ("ui.wgsl", include_str!("core/ui.wgsl"), ui),
     ];
@@ -334,6 +346,41 @@ mod tests {
         );
       }
     }
+  }
+
+  #[test]
+  fn line_pieces_index_a_window_by_constants_only() {
+    // Indexing an array by a variable can put it in memory on some GPUs,
+    // so the pieces read a window's points through `lp_pt`'s switch alone
+    let source = include_str!("include/line_pieces.wgsl");
+    let mut reads = 0;
+    for line in source.lines() {
+      let code = line.split("//").next().unwrap_or("");
+      for (at, _) in code.match_indices(".p[") {
+        let index: String = code[at + 3..].chars().take_while(|&c| c != ']').collect();
+        assert!(
+          index.len() == 1 && index.chars().all(|c| c.is_ascii_digit()),
+          "line_pieces.wgsl indexes a window by `{index}`: {}",
+          code.trim()
+        );
+        reads += 1;
+      }
+    }
+    assert_eq!(reads, 5, "lp_pt reads each of the window's five points");
+  }
+
+  #[test]
+  fn the_ui_s_rect_edge_keeps_px_per_unit_above_a_floor() {
+    // A rect's edge is a pixel in UI units, `1 / px_per_unit`, the scale
+    // kept above 1e-4 so a zero scale makes no infinity
+    let ui = include_str!("core/ui.wgsl");
+    assert!(ui.contains("1.0 / max(globals.px_per_unit, 1e-4)"));
+    let bare = ui
+      .lines()
+      .map(|line| line.split("//").next().unwrap_or(""))
+      .filter(|code| code.contains("/ globals.px_per_unit"))
+      .count();
+    assert_eq!(bare, 0, "ui.wgsl divides by px_per_unit unguarded");
   }
 
   #[test]
