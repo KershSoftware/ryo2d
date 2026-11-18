@@ -9,6 +9,8 @@ mod key;
 mod line_cover_tests;
 #[cfg(test)]
 mod line_gpu_tests;
+#[cfg(test)]
+mod line_time_tests;
 mod lines;
 mod mesh;
 mod pipelines;
