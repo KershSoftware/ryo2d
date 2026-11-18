@@ -42,6 +42,19 @@ struct LineAxis {
     major: f32,
 };
 
+// What a Hard line's vertex hands its fragments about a second edge it
+// takes along the image's axis (`line_second_bits`): that it does, and that
+// the edge's outward normal runs up (or left) in the image
+const LINE_SECOND_NARROWED: u32 = 128u;
+const LINE_SECOND_UP: u32 = 256u;
+
+fn line_second_bits(second: LineAxis) -> u32 {
+    if second.major == 0.0 {
+        return 0u;
+    }
+    return LINE_SECOND_NARROWED | select(0u, LINE_SECOND_UP, second.major < 0.0);
+}
+
 fn line_axis(normal: vec2<f32>, to_clip: mat4x4<f32>, resolution: vec2<f32>) -> LineAxis {
     let image = line_image_dir(normal, to_clip, resolution);
     let len = length(image);
@@ -82,15 +95,17 @@ fn line_on_grid(clip: vec4<f32>, resolution: vec2<f32>) -> LineGridded {
 }
 
 // `fringe`, of a vertex of `flags`, moved `moved` image pixels: its
-// distance across over the axis moved with it, or a round piece's offset
-// (`ppu` pixels a unit, the image's axes in the line's units from
-// `to_clip` and `resolution`). A second edge's distance stays, off by
-// no more than the rasteriser's own move would leave it
+// distances across over the axis (its own and a second edge's, `second`)
+// moved with it, or a round piece's offset (`ppu` pixels a unit, the
+// image's axes in the line's units from `to_clip` and `resolution`). A
+// second edge's plain distance stays, off by no more than the
+// rasteriser's own move would leave it
 fn line_moved(
     fringe: LineFringe,
     flags: u32,
     moved: vec2<f32>,
     axis: LineAxis,
+    second: LineAxis,
     to_clip: mat4x4<f32>,
     resolution: vec2<f32>,
     ppu: f32,
@@ -106,8 +121,51 @@ fn line_moved(
             out.measure.xy + vec2<f32>(dot(moved, x), dot(moved, y)) / (ppu * ppu),
             out.measure.z,
         );
-    } else if axis.major != 0.0 {
-        out.across_axis += dot(moved, axis.normal) / (ppu * axis.major);
+    } else {
+        if axis.major != 0.0 {
+            out.across_axis += dot(moved, axis.normal) / (ppu * axis.major);
+        }
+        if second.major != 0.0 {
+            out.second_axis += dot(moved, second.normal) / (ppu * second.major);
+        }
+    }
+    return out;
+}
+
+// A Hard line's round piece is as wide as its segments are drawn: each
+// segment's half width along the image's axis is its normal's component
+// on that axis times its half width across it, so a round piece's offset
+// is measured over that factor, taken from the segment before at the arc's
+// start to the segment after at its end (a cap's is its segment's), its
+// distance and half width left as they are
+// (`a_hard_round_piece_keeps_to_its_segments_drawn_width`)
+fn line_round_axis(
+    fringe: LineFringe,
+    vertex: PieceVertex,
+    to_clip: mat4x4<f32>,
+    resolution: vec2<f32>,
+) -> LineFringe {
+    var out = fringe;
+    if (vertex.flags & LINE_FLAG_ROUND) == 0u {
+        return out;
+    }
+    let before = abs(line_axis(vertex.normal, to_clip, resolution).major);
+    let after = abs(line_axis(vertex.second_normal, to_clip, resolution).major);
+    // How far round from the segment before to the one after the offset
+    // lies, by its parts along the two normals
+    let offset = vec2<f32>(vertex.dist, vertex.second);
+    let across = vertex.normal.x * vertex.second_normal.y - vertex.normal.y * vertex.second_normal.x;
+    var t = 0.5;
+    if abs(across) > 1.0e-6 {
+        let a = (offset.x * vertex.second_normal.y - offset.y * vertex.second_normal.x) / across;
+        let b = (vertex.normal.x * offset.y - vertex.normal.y * offset.x) / across;
+        if abs(a + b) > 1.0e-6 {
+            t = clamp(b / (a + b), 0.0, 1.0);
+        }
+    }
+    let factor = mix(before, after, t);
+    if factor > 0.0 {
+        out.measure = vec3<f32>(out.measure.xy / factor, out.measure.z);
     }
     return out;
 }
@@ -122,12 +180,17 @@ struct LineFringe {
     // The distance across over `axis` (`line_axis`): along the image's
     // axis nearest the normal, in the line's units
     across_axis: f32,
+    // A second edge's segment's distance across over its axis: outside
+    // the edge by its distance outside, plus the half width, over the
+    // edge's normal's component on the axis nearest it
+    second_axis: f32,
 };
 
 // `vertex`, placed at `at` (its position moved by effects or a scroll
 // slot), pushed a pixel out at `ppu` pixels per unit, its normal's
-// component along its image's nearest axis `axis`
-fn line_fringe(vertex: PieceVertex, at: vec2<f32>, ppu: f32, axis: f32) -> LineFringe {
+// component along its image's nearest axis `axis` and its second edge's
+// normal's `second` (0 for none)
+fn line_fringe(vertex: PieceVertex, at: vec2<f32>, ppu: f32, axis: f32, second: f32) -> LineFringe {
     var push = 0.0;
     if ppu > 0.0 {
         push = min(1.0 / ppu, vertex.limit);
@@ -157,7 +220,11 @@ fn line_fringe(vertex: PieceVertex, at: vec2<f32>, ppu: f32, axis: f32) -> LineF
     if axis != 0.0 && (vertex.flags & LINE_FLAG_ROUND) == 0u {
         across_axis = measure.x / axis;
     }
-    return LineFringe(pos, measure, uv, across_axis);
+    var second_axis = 0.0;
+    if second != 0.0 && (vertex.flags & (LINE_FLAG_ROUND | LINE_FLAG_ALONG)) == 0u {
+        second_axis = (measure.z - measure.y) / second;
+    }
+    return LineFringe(pos, measure, uv, across_axis, second_axis);
 }
 
 // What a line's fragment is given: its measures (as `LineFringe`'s), its
@@ -166,6 +233,8 @@ fn line_fringe(vertex: PieceVertex, at: vec2<f32>, ppu: f32, axis: f32) -> LineF
 struct LineMeasure {
     measure: vec3<f32>,
     across_axis: f32,
+    second_axis: f32,
+    // The vertex's flags, with `line_second_bits`'
     flags: u32,
     k: f32,
     along_half: f32,
@@ -218,8 +287,11 @@ fn line_in_band(d: f32, hw: f32) -> bool {
 // image's axis nearest the normal (the distance over the normal's
 // component on it), the half width at least half a pixel, so a line of a
 // pixel is one pixel in each column (or row), and one narrower one wide; a
-// second edge takes the centre inside it, and a round piece the centre
-// within its half width of its corner point
+// miter's other outer edge is that segment's band's outer side, taken the
+// same way (`LINE_SECOND_NARROWED`), so each half of a miter's point meets
+// the other segment's drawn edge; any other second edge takes the centre
+// inside it, and a round piece the centre within its half width of its
+// corner point
 fn line_hard_cover(m: LineMeasure, ppu: f32) -> f32 {
     if ppu <= 0.0 {
         return 1.0;
@@ -235,6 +307,14 @@ fn line_hard_cover(m: LineMeasure, ppu: f32) -> f32 {
     if (m.flags & LINE_FLAG_SECOND) != 0u {
         if (m.flags & LINE_FLAG_ALONG) != 0u {
             inside = inside && line_in_band(m.measure.y * ppu, max(m.along_half * ppu, 0.5));
+        } else if (m.flags & LINE_SECOND_NARROWED) != 0u {
+            // The band's outer side, as `line_in_band` bounds it
+            let d = m.second_axis * ppu;
+            if (m.flags & LINE_SECOND_UP) != 0u {
+                inside = inside && d >= -hw - LINE_HARD_NUDGE;
+            } else {
+                inside = inside && d < hw - LINE_HARD_NUDGE;
+            }
         } else {
             inside = inside && m.measure.y * ppu >= -LINE_HARD_NUDGE;
         }

@@ -180,8 +180,8 @@ use std::ops::Range;
 use glam::Vec2;
 
 use super::lines::{
-  ARC_TRIANGLES, LineInfo, MAX_LINES, MITER_LIMIT, Piece, PieceKind, PolyPoint, PolyStyle, SEGMENT_TRIANGLES,
-  along_half, cap_reach, filter_points, piece_list, piece_triangles,
+  ARC_TRIANGLES, LineInfo, MAX_LINES, MITER_LIMIT, Piece, PieceKind, PolyPoint, PolyStyle,
+  SEGMENT_TRIANGLES, along_half, cap_reach, filter_points, piece_list, piece_triangles,
 };
 use crate::core::trail::{LineCap, LineJoin};
 use crate::core::ui::Color;
@@ -211,11 +211,21 @@ pub(crate) struct Vertex2D {
   /// piece, in the line's units (positive on the left, by the normal); in a
   /// round piece, the x of its offset from its corner point
   pub(crate) dist: f32,
+  /// The normal of the centre line `dist` is measured from (zero at a
+  /// corner point), which a Hard line takes its image axis from; a round
+  /// piece's: the segment's before it
+  pub(crate) normal: [f32; 2],
   /// The distance inside a second edge (the other outer edge in a miter's
   /// point, the bevel's edge, a cap's edge), or a two-point capped line's
   /// distance along from the middle between its caps, or `NO_EDGE`; in a
   /// round piece, the y of its offset from its corner point
   pub(crate) second: f32,
+  /// The outward normal of a second edge a Hard line takes along the
+  /// image's axis as it takes a segment's edge (a miter's other outer edge;
+  /// zero for one taken as it is); a round piece's: the normal of the
+  /// segment after it, so a Hard line's round piece is as wide as its
+  /// segments are drawn
+  pub(crate) second_normal: [f32; 2],
   /// The half width there (`NO_EDGE` where only the second edge bounds it)
   pub(crate) half: f32,
   /// The way the fringe pushes it, in the line's units per unit of push
@@ -499,6 +509,7 @@ fn end_second(
         dir,
       },
       k: 0.0,
+      narrows: false,
     }),
     (true, false) => Some(Second::edge(a.pos - dir * ra, -dir, 0.0)),
     (false, true) => Some(Second::edge(b.pos + dir * rb, dir, 0.0)),
@@ -593,6 +604,9 @@ struct Second {
   /// The dot product of the outward normals of this edge and the strip's
   /// edge it meets
   k: f32,
+  /// A segment's outer edge, which a Hard line takes along the image's
+  /// axis as that segment does
+  narrows: bool,
 }
 
 impl Second {
@@ -600,6 +614,15 @@ impl Second {
     Self {
       bound: Bound::Edge { point, out },
       k,
+      narrows: false,
+    }
+  }
+
+  /// A segment's outer edge through `point`, of outward normal `out`
+  fn segment_edge(point: Vec2, out: Vec2, k: f32) -> Self {
+    Self {
+      narrows: true,
+      ..Self::edge(point, out, k)
     }
   }
 
@@ -694,6 +717,10 @@ fn measure_second(v: &mut Vertex2D, second: Second) {
   v.second_rate = second.rate(v.push());
   v.flags = (v.flags & !FLAG_ALONG) | second.flags();
   v.k = second.k;
+  v.second_normal = match second.bound {
+    Bound::Edge { out, .. } if second.narrows => out.into(),
+    _ => [0.0; 2],
+  };
 }
 
 /// `v` as a vertex of a round piece, `offset` from its corner point.
@@ -704,6 +731,8 @@ fn set_round(v: &mut Vertex2D, offset: Vec2) {
   v.second_rate = 0.0;
   v.flags = FLAG_ROUND;
   v.k = 0.0;
+  v.normal = [0.0; 2];
+  v.second_normal = [0.0; 2];
 }
 
 /// The push that moves a point out across two edges of outward normals `a`
@@ -870,7 +899,9 @@ impl Builder<'_> {
       flags: 0,
       k: 0.0,
       dist: m.dist,
+      normal: m.normal.into(),
       second: NO_EDGE,
+      second_normal: [0.0; 2],
       half: m.half,
       push: m.push.into(),
       limit,
@@ -1193,11 +1224,12 @@ impl Builder<'_> {
       return;
     }
     // The fan's own centre and ends: a miter's point, or a round's arc
+    let mut round_from = self.out.vertices.len();
     let (fan_centre, fan_end, fan_start, strips) = if mitered {
       // Each half of the point measures its segment across and the other
       // segment's outer edge as its second, the two edges `cos` apart
-      let other0 = Second::edge(p + m1 * hw, m1, cos);
-      let other1 = Second::edge(p + m0 * hw, m0, cos);
+      let other0 = Second::segment_edge(p + m1 * hw, m1, cos);
+      let other1 = Second::segment_edge(p + m0 * hw, m0, cos);
       let point_centre = self.vertex(
         p,
         &point,
@@ -1215,6 +1247,7 @@ impl Builder<'_> {
       });
       (point_centre, end, start, strips)
     } else {
+      round_from = self.out.vertices.len();
       let round_centre = self.vertex(
         p,
         &point,
@@ -1240,16 +1273,21 @@ impl Builder<'_> {
       (None, None) => self.triangle(centre, centre, centre),
     }
     if mitered {
-      let other0 = Second::edge(p + m1 * hw, m1, cos);
-      let tip = self.vertex(
-        p + side * miter * hw,
-        &point,
-        [u, v_out],
-        bisector,
-        Measure::edge(side, hw, n0, side * miter, NO_EDGE).with(Some(other0)),
-      );
-      self.wedge(side, fan_centre, fan_end, tip);
-      self.wedge(side, fan_centre, tip, fan_start);
+      // Each half of the point has its tip, measuring across its own
+      // segment: a Hard line takes each segment's axis
+      let tip = |b: &mut Self, n: Vec2, other: Second| {
+        b.vertex(
+          p + side * miter * hw,
+          &point,
+          [u, v_out],
+          bisector,
+          Measure::edge(side, hw, n, side * miter, NO_EDGE).with(Some(other)),
+        )
+      };
+      let tip_end = tip(self, n0, Second::segment_edge(p + m1 * hw, m1, cos));
+      let tip_start = tip(self, n1, Second::segment_edge(p + m0 * hw, m0, cos));
+      self.wedge(side, fan_centre, fan_end, tip_end);
+      self.wedge(side, tip_start, fan_start, fan_centre);
     } else {
       let arc = |angle: f32| {
         (
@@ -1264,9 +1302,15 @@ impl Builder<'_> {
         [u, v_out],
         arc,
       );
+      self.round_normals(round_from, n0, n1);
     }
+    // A miter's start with a vertex measuring its own second edge
     match (inner, strips) {
+      (Some((_, start)), _) if mitered => self.wedge(side, outer_start, start, centre),
       (Some((_, start)), _) => self.wedge(side, centre, outer_start, start),
+      (None, Some((_, strip_start))) if mitered => {
+        self.wedge(side, fan_start, strip_start, fan_centre)
+      }
       (None, Some((_, strip_start))) => self.wedge(side, fan_centre, fan_start, strip_start),
       (None, None) => self.triangle(centre, centre, centre),
     }
@@ -1350,23 +1394,27 @@ impl Builder<'_> {
     let elbow_end = self.copy(outer_end, |v| measure_second(v, edge));
     let elbow_start = self.copy(outer_start, |v| measure_second(v, edge));
     // Pushed along the bevel's normal, its distance from either centre line
-    // rises by `m · bevel` per unit
-    let middle = self.vertex(
-      p + (m0 + m1) * (hw / 2.0),
-      point,
-      [u, v_out],
-      bisector,
-      Measure {
-        dist: side * hw * (1.0 + cos) / 2.0,
-        half: hw,
-        normal: n0,
-        second: Some(edge),
-        round: None,
-        push: bevel,
-        limit: NO_EDGE,
-        point_u: false,
-      },
-    );
+    // rises by `m · bevel` per unit; each half measures across its own
+    // segment, so a Hard line takes each segment's axis
+    let middle = |b: &mut Self, normal: Vec2| {
+      b.vertex(
+        p + (m0 + m1) * (hw / 2.0),
+        point,
+        [u, v_out],
+        bisector,
+        Measure {
+          dist: side * hw * (1.0 + cos) / 2.0,
+          half: hw,
+          normal,
+          second: Some(edge),
+          round: None,
+          push: bevel,
+          limit: NO_EDGE,
+          point_u: false,
+        },
+      )
+    };
+    let (middle_end, middle_start) = (middle(self, n0), middle(self, n1));
     // Where the inner side splits, a fringe triangle each side from the
     // strip's elbow, pushed straight out, to the fan's
     match (inner, strips) {
@@ -1374,11 +1422,11 @@ impl Builder<'_> {
       (None, Some((strip_end, _))) => self.wedge(side, centre, strip_end, elbow_end),
       (None, None) => self.triangle(centre, centre, centre),
     }
-    self.wedge(side, centre, elbow_end, middle);
-    self.wedge(side, centre, middle, elbow_start);
+    self.wedge(side, centre, elbow_end, middle_end);
+    self.wedge(side, middle_start, elbow_start, centre);
     match (inner, strips) {
-      (Some((_, start)), _) => self.wedge(side, centre, elbow_start, start),
-      (None, Some((_, strip_start))) => self.wedge(side, centre, elbow_start, strip_start),
+      (Some((_, start)), _) => self.wedge(side, elbow_start, start, centre),
+      (None, Some((_, strip_start))) => self.wedge(side, elbow_start, strip_start, centre),
       (None, None) => self.triangle(centre, centre, centre),
     }
   }
@@ -1437,6 +1485,7 @@ impl Builder<'_> {
         // edge round the outside to the right edge
         // Moved by effects across the segment, as the segment's vertex
         // at the end point is
+        let round_from = self.out.vertices.len();
         let centre = self.vertex(
           p,
           &point,
@@ -1459,6 +1508,7 @@ impl Builder<'_> {
         );
         // and across by the offset over the half width, as along the
         // segment (an arc's corner lies past the half width)
+        self.round_normals(round_from, n, n);
         for vertex in self.out.vertices.get_mut(base..).into_iter().flatten() {
           let offset = Vec2::from(vertex.position) - p;
           vertex.uv = [
@@ -1468,6 +1518,16 @@ impl Builder<'_> {
           vertex.effect_u = vertex.uv[0];
         }
       }
+    }
+  }
+
+  /// The round piece's vertices from `from` on carry the normals of the
+  /// segments before and after it, which a Hard line takes its round
+  /// pieces' width from.
+  fn round_normals(&mut self, from: usize, before: Vec2, after: Vec2) {
+    for vertex in self.out.vertices.get_mut(from..).into_iter().flatten() {
+      vertex.normal = before.into();
+      vertex.second_normal = after.into();
     }
   }
 
@@ -1771,12 +1831,12 @@ mod tests {
   }
 
   #[test]
-  fn a_vertex_is_76_bytes_of_plain_numbers() {
+  fn a_vertex_is_92_bytes_of_plain_numbers() {
     // Place and uv, an sRGB colour, the direction across, the line, flags
     // and angle between edges, three distances (or a round offset and the
-    // half width), the push, its limit and rates, and the effects' `u`, all
-    // in f32
-    assert_eq!(std::mem::size_of::<Vertex2D>(), 76);
+    // half width), the normals a Hard line takes its axes from, the push,
+    // its limit and rates, and the effects' `u`, all in f32
+    assert_eq!(std::mem::size_of::<Vertex2D>(), 92);
     assert_eq!(std::mem::size_of::<LineInfo>(), 80);
   }
 

@@ -1511,6 +1511,380 @@ fn a_hard_line_is_its_width_in_pixels_per_column() {
   );
 }
 
+/// A Hard mitered V of half width `hw` pixels, its corner point `p` and
+/// its segments' directions, drawn in `cell` (`size` pixels square) of
+/// `image`, a pixel a unit
+struct HardV {
+  p: Vec2,
+  dirs: (Vec2, Vec2),
+  hw: f32,
+  cell: Vec2,
+  size: f32,
+}
+
+impl HardV {
+  /// A normal's component along the image's axis nearest it
+  fn major(n: Vec2) -> f32 {
+    if n.y.abs() >= n.x.abs() { n.y } else { n.x }
+  }
+
+  /// The segments' normals and the outside of the turn
+  fn normals(&self) -> ([Vec2; 2], f32) {
+    let (d0, d1) = self.dirs;
+    let side = if d0.perp_dot(d1) > 0.0 { -1.0 } else { 1.0 };
+    ([d0.perp(), d1.perp()], side)
+  }
+
+  /// Whether the pixel centre `c` lies inside segment `n`'s drawn outer
+  /// edge: its band's outer side along the image's axis, as a Hard line
+  /// bounds it (`line_in_band`)
+  fn inside_outer(&self, c: Vec2, n: Vec2, side: f32) -> bool {
+    const NUDGE: f32 = 1.0 / 64.0;
+    let major = Self::major(n);
+    let d = (c - self.p).dot(n) / major;
+    if side * major > 0.0 {
+      d < self.hw - NUDGE
+    } else {
+      d >= -self.hw - NUDGE
+    }
+  }
+}
+
+/// A Hard mitered V's pixels beyond its corner point toward its tip, row
+/// by row along the image's axis nearest the tip's direction (column by
+/// column past 45 degrees): where a row is not one run, or is wider than
+/// the row before it, or apart from it, or, past both segments' drawn
+/// elbows, is not the pixels inside both segments' drawn outer edges; with
+/// the number of rows looked at
+fn tip_faults(image: &image::RgbaImage, v: &HardV, mitered: bool) -> (Vec<String>, usize) {
+  let (cell, size, p) = (v.cell, v.size, v.p);
+  let tip = (v.dirs.0 - v.dirs.1).normalize();
+  let ([n0, n1], side) = v.normals();
+  let steep = tip.y.abs() >= tip.x.abs();
+  // (along, across) in the image's axes, and back
+  let split = |v: Vec2| if steep { (v.y, v.x) } else { (v.x, v.y) };
+  let drawn = |along: i32, across: i32| {
+    let (x, y) = if steep {
+      (across, along)
+    } else {
+      (along, across)
+    };
+    x >= 0
+      && y >= 0
+      && (x as u32) < image.width()
+      && (y as u32) < image.height()
+      && image.get_pixel(x as u32, y as u32).0[3] > 0
+  };
+  let (tip_along, tip_across) = split(tip);
+  let (p_along, p_across) = split(p);
+  let (_, low_across) = split(cell);
+  let (lo, hi) = (low_across as i32, (low_across + size) as i32);
+  let step = if tip_along > 0.0 { 1 } else { -1 };
+  // Past both elbows (and a pixel of fringe) only the point's halves draw
+  let elbows = [n0, n1].map(|n| split(p + side * n * v.hw * HardV::major(n).abs()).0);
+  let past = elbows.into_iter().fold(p_along, |far, at| {
+    if (at - far) * step as f32 > 0.0 {
+      at
+    } else {
+      far
+    }
+  }) + 1.5 * step as f32;
+  let mut faults = Vec::new();
+  let mut before: Option<(i32, i32)> = None;
+  let mut rows = 0;
+  // From the row past the corner point's on, to the last row drawn
+  let mut row = p_along.floor() as i32 + step;
+  loop {
+    let centre = row as f32 + 0.5;
+    let axis = p_across + (centre - p_along) * tip_across / tip_along;
+    let runs: Vec<(i32, i32)> = {
+      let mut runs = Vec::new();
+      let mut k = lo;
+      while k < hi {
+        if drawn(row, k) {
+          let start = k;
+          while k < hi && drawn(row, k) {
+            k += 1;
+          }
+          runs.push((start, k));
+        }
+        k += 1;
+      }
+      runs
+    };
+    // The run the tip's axis crosses, or the nearest
+    let Some(&run) = runs.iter().min_by(|a, b| {
+      let off = |r: &(i32, i32)| (axis - (r.0 + r.1) as f32 / 2.0).abs();
+      off(a).total_cmp(&off(b))
+    }) else {
+      break;
+    };
+    if (axis - (run.0 + run.1) as f32 / 2.0).abs() > (run.1 - run.0) as f32 / 2.0 + 2.0 {
+      break;
+    }
+    rows += 1;
+    if runs
+      .iter()
+      .any(|&other| other != run && (other.0 - run.1).max(run.0 - other.1) <= 2)
+    {
+      faults.push(format!("row {row}: a notch, runs {runs:?}"));
+    }
+    if let Some(last) = before {
+      if run.1 - run.0 > last.1 - last.0 {
+        faults.push(format!(
+          "row {row}: {run:?} wider than the row before, {last:?}"
+        ));
+      }
+      if run.0 > last.1 || run.1 < last.0 {
+        faults.push(format!(
+          "row {row}: {run:?} is apart from the row before, {last:?}"
+        ));
+      }
+    }
+    if mitered && (centre - past) * step as f32 > 0.0 {
+      let at = |k: i32| {
+        let (x, y) = if steep {
+          (k as f32 + 0.5, centre)
+        } else {
+          (centre, k as f32 + 0.5)
+        };
+        Vec2::new(x, y)
+      };
+      let inside: Vec<i32> = (lo..hi)
+        .filter(|&k| v.inside_outer(at(k), n0, side) && v.inside_outer(at(k), n1, side))
+        .collect();
+      let drawn: Vec<i32> = (lo..hi).filter(|&k| drawn(row, k)).collect();
+      if drawn != inside {
+        faults.push(format!(
+          "row {row}: {drawn:?} drawn, {inside:?} inside both edges"
+        ));
+      }
+    }
+    before = Some(run);
+    row += step;
+  }
+  (faults, rows)
+}
+
+#[test]
+fn a_hard_miter_tip_narrows_evenly_to_its_point() {
+  // Mitered and bevelled Vs 1 to 4 pixels wide on a pixel-art target,
+  // turning 20 to 150 degrees, at fractional orientations and two
+  // sub-pixel places: from the corner point toward the tip, each row of
+  // the tip (each column past 45 degrees) is one run, no wider than the row
+  // before it and touching it, and a miter's, past both elbows, exactly the
+  // pixels inside both segments' drawn outer edges. Where both arms run
+  // back along that axis, so the rows past the corner point hold the tip
+  // alone
+  let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+    return;
+  };
+  let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+  let painter = Painter::new(&device, &queue);
+  const CELL: f32 = 64.0;
+  const ACROSS: u32 = 16;
+  const ARM: f32 = 20.0;
+  let turns: Vec<f32> = (0..14u16).map(|i| 20.0 + f32::from(i) * 10.0).collect();
+  let headings: Vec<f32> = (0..24u16).map(|i| f32::from(i) * 15.0 + 0.37).collect();
+  let mut faults = Vec::new();
+  let (mut tips, mut rows) = (0, 0);
+  for (join, width) in [LineJoin::Miter, LineJoin::Bevel]
+    .into_iter()
+    .flat_map(|join| [1.0f32, 2.0, 3.0, 4.0].map(|width| (join, width)))
+  {
+    for offset in [Vec2::new(0.0, 0.0), Vec2::new(0.31, 0.62)] {
+      let mut stream = LineStream::default();
+      let mut placed = Vec::new();
+      for (i, (turn, heading)) in (0u32..).zip(
+        turns
+          .iter()
+          .flat_map(|&turn| headings.iter().map(move |&heading| (turn, heading))),
+      ) {
+        let dir0 = Vec2::from_angle(heading.to_radians());
+        let dir1 = Vec2::from_angle((heading + turn).to_radians());
+        let tip = (dir0 - dir1).normalize();
+        let steep = tip.y.abs() >= tip.x.abs();
+        let major = |v: Vec2| if steep { v.y } else { v.x };
+        let sign = major(tip).signum();
+        // Both arms run back along the axis the rows are counted on
+        if major(-dir0) * sign > -0.2 || major(dir1) * sign > -0.2 {
+          continue;
+        }
+        let cell = Vec2::new((i % ACROSS) as f32 * CELL, (i / ACROSS) as f32 * CELL);
+        let p = cell + Vec2::splat(CELL / 2.0) + offset;
+        let points = points_of(
+          &[p - dir0 * ARM, p, p + dir1 * ARM],
+          width / 2.0,
+          Color::WHITE,
+        );
+        stream.polyline(&points, &style(join, LineCap::Butt, false, SOLID));
+        let v = HardV {
+          p,
+          dirs: (dir0, dir1),
+          hw: (width / 2.0).max(0.5),
+          cell,
+          size: CELL,
+        };
+        placed.push((v, turn, heading));
+      }
+      let count = (turns.len() * headings.len()) as u32;
+      let size = (ACROSS * CELL as u32, count.div_ceil(ACROSS) * CELL as u32);
+      let centre = Vec2::new(size.0 as f32, size.1 as f32) / 2.0;
+      let image = painter.paint_on(&device, &queue, &stream, (centre, 1.0), size, None, true);
+      for (v, turn, heading) in placed {
+        let (found, looked) = tip_faults(&image, &v, join == LineJoin::Miter);
+        tips += 1;
+        rows += looked;
+        faults.extend(found.into_iter().map(|what| {
+          format!("{join:?} width {width}, turn {turn}, heading {heading}, at {offset}: {what}")
+        }));
+      }
+    }
+  }
+  let error = pollster::block_on(scope.pop());
+  assert!(error.is_none(), "{error:?}");
+  eprintln!("{tips} tips, {rows} rows, {} faults", faults.len());
+  assert!(tips > 3000 && rows > tips / 2, "{tips} tips, {rows} rows");
+  assert!(
+    faults.is_empty(),
+    "{} faults:\n{}",
+    faults.len(),
+    faults[..faults.len().min(40)].join("\n")
+  );
+}
+
+#[test]
+fn a_hard_round_piece_keeps_to_its_segments_drawn_width() {
+  // Round-joined, round-capped Vs 1 to 4 pixels wide on a pixel-art target,
+  // turning 20 to 150 degrees at fractional orientations: a Hard segment is
+  // its half width along the image's axis, so narrower across at a slant,
+  // and its round pieces are as wide as it is. Past a cap's end no pixel is
+  // drawn at or beyond the segment's drawn half width, and every one
+  // within it is; in a join's outer wedge, past both segments' ends, none
+  // at or beyond the wider segment's, and every one within the narrower's
+  let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+    return;
+  };
+  let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+  let painter = Painter::new(&device, &queue);
+  const CELL: f32 = 64.0;
+  const ACROSS: u32 = 16;
+  const ARM: f32 = 18.0;
+  const SLACK: f32 = 0.02;
+  let turns: Vec<f32> = (0..14u16).map(|i| 20.0 + f32::from(i) * 10.0).collect();
+  let headings: Vec<f32> = (0..24u16).map(|i| f32::from(i) * 15.0 + 0.37).collect();
+  let (mut beyond, mut short, mut looked) = (Vec::new(), Vec::new(), 0usize);
+  for width in [1.0f32, 2.0, 3.0, 4.0] {
+    let hw = (width / 2.0).max(0.5);
+    let mut stream = LineStream::default();
+    let mut placed = Vec::new();
+    for (i, (turn, heading)) in (0u32..).zip(
+      turns
+        .iter()
+        .flat_map(|&turn| headings.iter().map(move |&heading| (turn, heading))),
+    ) {
+      let dirs = (
+        Vec2::from_angle(heading.to_radians()),
+        Vec2::from_angle((heading + turn).to_radians()),
+      );
+      let cell = Vec2::new((i % ACROSS) as f32 * CELL, (i / ACROSS) as f32 * CELL);
+      let p = cell + Vec2::splat(CELL / 2.0) + Vec2::new(0.31, 0.62);
+      let ends = [p - dirs.0 * ARM, p, p + dirs.1 * ARM];
+      stream.polyline(
+        &points_of(&ends, width / 2.0, Color::WHITE),
+        &style(LineJoin::Round, LineCap::Round, false, SOLID),
+      );
+      placed.push((
+        HardV {
+          p,
+          dirs,
+          hw,
+          cell,
+          size: CELL,
+        },
+        ends,
+        turn,
+        heading,
+      ));
+    }
+    let count = (turns.len() * headings.len()) as u32;
+    let size = (ACROSS * CELL as u32, count.div_ceil(ACROSS) * CELL as u32);
+    let centre = Vec2::new(size.0 as f32, size.1 as f32) / 2.0;
+    let image = painter.paint_on(&device, &queue, &stream, (centre, 1.0), size, None, true);
+    for (v, ends, turn, heading) in placed {
+      let ([n0, n1], side) = v.normals();
+      let drawn_half = |n: Vec2| hw * HardV::major(n).abs();
+      let (m0, m1) = (side * n0, side * n1);
+      let (w0, w1) = (drawn_half(n0), drawn_half(n1));
+      for y in v.cell.y as u32..(v.cell.y + v.size) as u32 {
+        for x in v.cell.x as u32..(v.cell.x + v.size) as u32 {
+          let c = Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
+          let drawn = alpha(&image, x, y) > 0.0;
+          let what = format!("width {width}, turn {turn}, heading {heading}, pixel ({x}, {y})");
+          // Past a cap's end: within the segment's drawn half width
+          for (end, out, w) in [(ends[0], -v.dirs.0, w0), (ends[2], v.dirs.1, w1)] {
+            if (c - end).dot(out) > 0.0 {
+              looked += 1;
+              let r = (c - end).length();
+              if drawn && r >= w + SLACK {
+                beyond.push(format!(
+                  "{what}: cap, {r:.2} from its end, drawn half width {w:.2}"
+                ));
+              }
+              if !drawn && r < w - SLACK {
+                short.push(format!(
+                  "{what}: cap, {r:.2} from its end, drawn half width {w:.2}"
+                ));
+              }
+            }
+          }
+          // The join's outer wedge past both segments' ends
+          let off = c - v.p;
+          if off.dot(m0) > 0.0
+            && off.dot(m1) > 0.0
+            && off.dot(v.dirs.0) > 0.0
+            && off.dot(v.dirs.1) < 0.0
+          {
+            looked += 1;
+            let r = off.length();
+            if drawn && r >= w0.max(w1) + SLACK {
+              beyond.push(format!(
+                "{what}: join, {r:.2} from its point, drawn half widths {w0:.2}, {w1:.2}"
+              ));
+            }
+            if !drawn && r < w0.min(w1) - SLACK {
+              short.push(format!(
+                "{what}: join, {r:.2} from its point, drawn half widths {w0:.2}, {w1:.2}"
+              ));
+            }
+          }
+        }
+      }
+    }
+  }
+  let error = pollster::block_on(scope.pop());
+  assert!(error.is_none(), "{error:?}");
+  eprintln!(
+    "{looked} pixels looked at: {} beyond, {} short",
+    beyond.len(),
+    short.len()
+  );
+  assert!(looked > 10_000, "{looked} pixels looked at");
+  assert!(
+    beyond.is_empty() && short.is_empty(),
+    "{} drawn beyond, {} missing within:\n{}",
+    beyond.len(),
+    short.len(),
+    beyond
+      .iter()
+      .chain(&short)
+      .take(40)
+      .cloned()
+      .collect::<Vec<_>>()
+      .join("\n")
+  );
+}
+
 #[test]
 fn a_line_on_a_pixel_art_target_draws_whole_pixels_unless_smooth() {
   // Zigzags of every join and cap at three widths: on a pixel-art target

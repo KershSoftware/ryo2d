@@ -86,6 +86,7 @@ struct UiOut {
     // vertex flags and whether it draws Hard ride in `extra`
     @location(10) measure: vec3<f32>,
     @location(11) across_axis: f32,
+    @location(12) second_axis: f32,
 }
 
 // The clip an instance draws under: its own in slot 0; in a slot the
@@ -195,22 +196,26 @@ fn ui_line(instance: UiInstanceIn, index: u32, by: vec2<f32>, clip: vec4<u32>, b
     let hard = line_hard((bits >> LINE_EDGE_SHIFT) & 3u, globals.snap);
     // Only a Hard line measures along the image's axis
     var axis = LineAxis(vec2<f32>(0.0), 0.0);
+    var second = LineAxis(vec2<f32>(0.0), 0.0);
     if hard {
         axis = line_axis(vertex.normal, globals.view_proj, globals.resolution);
+        second = line_axis(vertex.second_normal, globals.view_proj, globals.resolution);
     }
-    var fringe = line_fringe(vertex, vertex.position, ppu, axis.major);
+    var fringe = line_fringe(vertex, vertex.position, ppu, axis.major, second.major);
     out.position = globals.view_proj * vec4<f32>(fringe.pos, 0.0, 1.0);
     if hard {
         let gridded = line_on_grid(out.position, globals.resolution);
         out.position = gridded.clip;
-        fringe = line_moved(fringe, vertex.flags, gridded.moved, axis, globals.view_proj, globals.resolution, ppu);
+        fringe = line_moved(fringe, vertex.flags, gridded.moved, axis, second, globals.view_proj, globals.resolution, ppu);
+        fringe = line_round_axis(fringe, vertex, globals.view_proj, globals.resolution);
     }
     out.color = vec4<f32>(srgb_to_linear(vertex.color.rgb), vertex.color.a);
     out.uv = fringe.uv;
     out.params = instance.a5;
     out.measure = fringe.measure;
-    out.extra = vec4<f32>(vertex.k, instance.a4.w, f32(vertex.flags), select(0.0, 1.0, hard));
+    out.extra = vec4<f32>(vertex.k, instance.a4.w, f32(vertex.flags | line_second_bits(second)), select(0.0, 1.0, hard));
     out.across_axis = fringe.across_axis;
+    out.second_axis = fringe.second_axis;
     return out;
 }
 
@@ -335,7 +340,7 @@ fn fs_ui(in: UiOut) -> @location(0) vec4<f32> {
         }
         // line.wgsl's fs_main: covered by its distances in pixels
         case KIND_LINE: {
-            let m = LineMeasure(in.measure, in.across_axis, u32(in.extra.z), in.extra.x, in.extra.y, in.extra.w > 0.5);
+            let m = LineMeasure(in.measure, in.across_axis, in.second_axis, u32(in.extra.z), in.extra.x, in.extra.y, in.extra.w > 0.5);
             let style = line_style(in.params);
             let pixel = line_pixel(m, style, globals.px_per_unit);
             color = styled(in.color, pixel.shape, style, pixel.cover);

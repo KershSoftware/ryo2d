@@ -36,9 +36,10 @@
 @group(2) @binding(4) var<uniform> line_frame: vec4<u32>;
 
 // What a vertex hands its fragments in `flags` besides its own (round,
-// second edge, along): its line's style in bits 4 and 5, and `LINE_HARD`
-// when its line draws Hard
-const LINE_OWN_FLAGS: u32 = 7u;
+// second edge, along): its line's style in bits 4 and 5, `LINE_HARD` when
+// its line draws Hard, and how a Hard line takes its second edge
+// (`line_second_bits`)
+const LINE_OWN_FLAGS: u32 = 7u | LINE_SECOND_NARROWED | LINE_SECOND_UP;
 const LINE_STYLE_SHIFT: u32 = 4u;
 const LINE_HARD: u32 = 64u;
 
@@ -57,8 +58,10 @@ struct VertexOutput {
     @location(4) @interpolate(flat) k: f32,
     @location(5) @interpolate(flat) line: u32,
     // Across over the normal's component on the image's nearest axis
-    // (`line_axis`), in world units
+    // (`line_axis`), in world units, and a second edge's segment's
+    // (`LineFringe`)
     @location(6) across_axis: f32,
+    @location(7) second_axis: f32,
 };
 
 struct WorldVertex {
@@ -213,23 +216,27 @@ fn vs_main(@builtin(vertex_index) code: u32) -> VertexOutput {
     let hard = line_hard(line.edge, globals.snap);
     // Only a Hard line measures along the image's axis
     var axis = LineAxis(vec2<f32>(0.0), 0.0);
+    var second = LineAxis(vec2<f32>(0.0), 0.0);
     if hard {
         axis = line_axis(vertex.normal, globals.view_proj, globals.resolution);
+        second = line_axis(vertex.second_normal, globals.view_proj, globals.resolution);
     }
-    var fringe = line_fringe(vertex, pos, globals.px_per_unit, axis.major);
+    var fringe = line_fringe(vertex, pos, globals.px_per_unit, axis.major, second.major);
     out.position = globals.view_proj * vec4<f32>(fringe.pos, 0.0, 1.0);
     if hard {
         let gridded = line_on_grid(out.position, globals.resolution);
         out.position = gridded.clip;
-        fringe = line_moved(fringe, vertex.flags, gridded.moved, axis, globals.view_proj, globals.resolution, globals.px_per_unit);
+        fringe = line_moved(fringe, vertex.flags, gridded.moved, axis, second, globals.view_proj, globals.resolution, globals.px_per_unit);
+        fringe = line_round_axis(fringe, vertex, globals.view_proj, globals.resolution);
     }
     out.color = vec4<f32>(srgb_to_linear(vertex.color.rgb) * line.emission, vertex.color.a);
     out.uv = fringe.uv;
     out.measure = fringe.measure;
-    out.flags = vertex.flags | (line_style(params) << LINE_STYLE_SHIFT) | select(0u, LINE_HARD, hard);
+    out.flags = vertex.flags | line_second_bits(second) | (line_style(params) << LINE_STYLE_SHIFT) | select(0u, LINE_HARD, hard);
     out.k = vertex.k;
     out.line = world.line;
     out.across_axis = fringe.across_axis;
+    out.second_axis = fringe.second_axis;
     if effect_type == 3u {
         out.uv.x += globals.real_time * params[1];
     }
@@ -246,7 +253,7 @@ fn line_measure(in: VertexOutput) -> LineMeasure {
     if (in.flags & LINE_FLAG_ALONG) != 0u {
         along_half = lines[in.line].along_half;
     }
-    return LineMeasure(in.measure, in.across_axis, in.flags & LINE_OWN_FLAGS, in.k, along_half, (in.flags & LINE_HARD) != 0u);
+    return LineMeasure(in.measure, in.across_axis, in.second_axis, in.flags & LINE_OWN_FLAGS, in.k, along_half, (in.flags & LINE_HARD) != 0u);
 }
 
 fn line_style_of(in: VertexOutput) -> u32 {

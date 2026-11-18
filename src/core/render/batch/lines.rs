@@ -249,16 +249,20 @@ pub(crate) fn piece_triangles(kind: PieceKind, join: LineJoin, cap: LineCap) -> 
 /// A segment's slots: its quad fanned from its end's corner point
 const SEGMENT_TEMPLATE: [[u32; 3]; SEGMENT_TRIANGLES as usize] =
   [[0, 1, 2], [0, 2, 3], [0, 3, 4], [0, 4, 5]];
-/// A miter join's: its two slanted ends and the two triangles between
-/// them, from the corner point (a miter falling back to a bevel takes it
-/// too, its repeated slots each holding one place twice)
+/// A miter join's: its two slanted ends and the two halves of its point
+/// between them, each half with a tip of its own (5 and 9) measuring
+/// across its own segment (a miter falling back to a bevel takes it too,
+/// its repeated slots each holding one place twice, its middle two
+/// vertices as its tip is). The triangles after the point's middle start
+/// with a vertex measuring their own second edge, which their flat
+/// attributes come from
 const JOIN_TEMPLATE: [[u32; 3]; JOIN_TRIANGLES as usize] =
-  [[0, 2, 3], [1, 4, 5], [1, 5, 6], [0, 7, 8]];
+  [[0, 2, 3], [1, 4, 5], [9, 6, 1], [7, 8, 0]];
 /// A bevel join's: the miter's triangles naming each of the places it
 /// repeats by one slot (its corner point, 0 for 1, and its elbows, 3 for 4
 /// and 6 for 7), so the GPU builds each place once
 const BEVEL_TEMPLATE: [[u32; 3]; JOIN_TRIANGLES as usize] =
-  [[0, 2, 3], [0, 3, 5], [0, 5, 6], [0, 6, 8]];
+  [[0, 2, 3], [0, 3, 5], [9, 6, 0], [6, 8, 0]];
 /// A round join's: its slanted ends, then its arc between them
 const ROUND_JOIN_TEMPLATE: [[u32; 3]; ROUND_JOIN_TRIANGLES as usize] = {
   let mut template = [[0, 2, 3]; ROUND_JOIN_TRIANGLES as usize];
@@ -752,8 +756,9 @@ mod tests {
   #[test]
   fn a_bevel_join_names_each_of_its_places_once() {
     // A bevel's corner point and elbows are named by one slot each, so the
-    // GPU builds each once; a miter's slots hold nine places when its inner
-    // side is shared, so it keeps them all
+    // GPU builds each once; a miter's slots hold ten places when its inner
+    // side is shared (its tip twice, measured across each segment), so it
+    // keeps them all
     let slots = |join| {
       let mut slots: Vec<u32> = piece_template(PieceKind::Join, join, LineCap::Butt)
         .iter()
@@ -764,8 +769,8 @@ mod tests {
       slots.dedup();
       slots
     };
-    assert_eq!(slots(LineJoin::Bevel), [0, 2, 3, 5, 6, 8]);
-    assert_eq!(slots(LineJoin::Miter), (0..9).collect::<Vec<u32>>());
+    assert_eq!(slots(LineJoin::Bevel), [0, 2, 3, 5, 6, 8, 9]);
+    assert_eq!(slots(LineJoin::Miter), (0..10).collect::<Vec<u32>>());
   }
 
   #[test]

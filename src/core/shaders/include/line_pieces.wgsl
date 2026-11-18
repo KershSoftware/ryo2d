@@ -81,11 +81,17 @@ struct PieceVertex {
     k: f32,
     // Across from its piece's centre line (a round piece: its offset's x)
     dist: f32,
-    // The normal of the centre line `dist` is measured from (zero where
-    // `dist` is: a corner point, a round piece)
+    // The normal of the centre line `dist` is measured from (zero at a
+    // corner point; a round piece's: the segment before it, which a Hard
+    // line's round piece takes its axis from with `second_normal`)
     normal: vec2<f32>,
     // Inside its second edge (a round piece: its offset's y)
     second: f32,
+    // The outward normal of a second edge a Hard line takes along the
+    // image's axis, as it takes a segment's edge (a miter's other outer
+    // edge; zero for one taken as it is); a round piece's: the normal of
+    // the segment after it
+    second_normal: vec2<f32>,
     half: f32,
     push: vec2<f32>,
     limit: f32,
@@ -147,12 +153,14 @@ const LP_SECOND_ALONG: u32 = 2u;
 
 // A second edge (`Second`): inside an edge through `point` of outward
 // normal `dir`, or along `dir` from `point`, the middle between a
-// two-point line's caps
+// two-point line's caps; `narrows`: a segment's outer edge, which a Hard
+// line takes along the image's axis as that segment does
 struct LpSecond {
     kind: u32,
     point: vec2<f32>,
     dir: vec2<f32>,
     k: f32,
+    narrows: bool,
 };
 
 // What a vertex measures, where it is and how it is pushed (`Measure`, and
@@ -363,13 +371,13 @@ fn lp_end_second(a: LinePt, b: LinePt, cap: u32, first: bool, last: bool) -> LpS
     let ra = lp_cap_reach(a, cap);
     let rb = lp_cap_reach(b, cap);
     if first && last {
-        return LpSecond(LP_SECOND_ALONG, (a.pos - dir * ra + b.pos + dir * rb) / 2.0, dir, 0.0);
+        return LpSecond(LP_SECOND_ALONG, (a.pos - dir * ra + b.pos + dir * rb) / 2.0, dir, 0.0, false);
     }
     if first {
-        return LpSecond(LP_SECOND_EDGE, a.pos - dir * ra, -dir, 0.0);
+        return LpSecond(LP_SECOND_EDGE, a.pos - dir * ra, -dir, 0.0, false);
     }
     if last {
-        return LpSecond(LP_SECOND_EDGE, b.pos + dir * rb, dir, 0.0);
+        return LpSecond(LP_SECOND_EDGE, b.pos + dir * rb, dir, 0.0, false);
     }
     return none;
 }
@@ -384,8 +392,8 @@ fn lp_segment_second(w: LineWindow, j: i32, cap: u32) -> LpSecond {
     return lp_end_second(lp_pt(w, j), lp_pt(w, j + 1), cap, !lp_has(w, j - 1), !lp_has(w, j + 2));
 }
 
-fn lp_edge_second(point: vec2<f32>, out: vec2<f32>, k: f32) -> LpSecond {
-    return LpSecond(LP_SECOND_EDGE, point, out, k);
+fn lp_edge_second(point: vec2<f32>, out: vec2<f32>, k: f32, narrows: bool) -> LpSecond {
+    return LpSecond(LP_SECOND_EDGE, point, out, k, narrows);
 }
 
 // On the edge of a strip of half width `half`, on `side` of its centre
@@ -457,6 +465,7 @@ fn lp_assemble(corner: LinePt, m: LpPlace) -> PieceVertex {
     v.dist = m.dist;
     v.normal = m.normal;
     v.second = LINE_NO_EDGE;
+    v.second_normal = vec2<f32>(0.0);
     v.half = m.half;
     v.push = m.push;
     v.limit = select(0.0, min(m.limit, LINE_NO_EDGE), m.limit > 0.0);
@@ -474,6 +483,9 @@ fn lp_assemble(corner: LinePt, m: LpPlace) -> PieceVertex {
         v.second_rate = dot(m.push, m.second.dir);
         v.flags = LINE_FLAG_SECOND;
         v.k = m.second.k;
+        if m.second.narrows {
+            v.second_normal = m.second.dir;
+        }
     } else if m.second.kind == LP_SECOND_ALONG {
         v.second = dot(v.position - m.second.point, m.second.dir);
         v.second_rate = -dot(m.push, m.second.dir);
@@ -662,16 +674,23 @@ const LJ_MIDDLE: u32 = 17u;
 // them, measuring what the fan measures
 const LJ_STRIP_END: u32 = 18u;
 const LJ_STRIP_START: u32 = 19u;
+// A miter's tip and a bevel's middle as the segment after the corner
+// measures them (`LJ_TIP` and `LJ_MIDDLE` are the segment before's): each
+// half of the point measures across its own segment
+const LJ_TIP_START: u32 = 20u;
+const LJ_MIDDLE_START: u32 = 21u;
 // Arc vertex k is LJ_ARC + k
 const LJ_ARC: u32 = 32u;
 
 // What a join's `slot` holds. A miter join's triangles are (0 2 3), (1 4
-// 5), (1 5 6) and (0 7 8); a bevel join's name each place the miter's
-// layout repeats under a bevel by one slot, (0 2 3), (0 3 5), (0 5 6) and
-// (0 6 8); a round join's (0 2 3), its arc's (1 6+k 7+k) for k from 0 to
-// `LINE_ARC_STEPS`, and (0 4 5). Each triangle is
-// given as for a left turn: the CPU's reference winds a right turn's the
-// other way, its first vertex the same
+// 5), (9 6 1) and (7 8 0), each half of its point with a tip of its own;
+// a bevel join's name each place the miter's layout repeats under a bevel
+// by one slot, (0 2 3), (0 3 5), (9 6 0) and (6 8 0); a round join's (0 2
+// 3), its arc's (1 6+k 7+k) for k from 0 to `LINE_ARC_STEPS`, and (0 4
+// 5). The triangles after the point's middle start with a vertex that
+// measures the second edge they do, which their flat attributes come from.
+// Each triangle is given as for a left turn: the CPU's reference winds a
+// right turn's the other way, its first vertex the same
 fn lp_join_role(look: LineLook, turn: LpTurn, slot: u32) -> u32 {
     let inner = turn.shares_inside;
     if look.join == JOIN_ROUND {
@@ -709,7 +728,8 @@ fn lp_join_role(look: LineLook, turn: LpTurn, slot: u32) -> u32 {
         // splits, its slanted ends are fringe triangles from the strip's
         // elbows. A bevel join's own layout never names slots 1, 4 and 7;
         // a miter past its limit, bevelled here, keeps the miter's layout
-        // and names them, each the same place as the slot before it
+        // and names them, each the same place as the slot before it. Its
+        // middle is two vertices, one for each segment's half
         switch slot {
             case 0u, 1u: {
                 return LJ_BEVEL_CENTRE;
@@ -725,6 +745,9 @@ fn lp_join_role(look: LineLook, turn: LpTurn, slot: u32) -> u32 {
             }
             case 6u, 7u: {
                 return LJ_ELBOW_START;
+            }
+            case 9u: {
+                return LJ_MIDDLE_START;
             }
             default: {
                 return select(LJ_STRIP_START, LJ_BEVEL_INNER_START, inner);
@@ -758,6 +781,9 @@ fn lp_join_role(look: LineLook, turn: LpTurn, slot: u32) -> u32 {
         }
         case 7u: {
             return select(LJ_START_POINT, LJ_OUTER_START, inner);
+        }
+        case 9u: {
+            return LJ_TIP_START;
         }
         default: {
             return select(LJ_STRIP_START, LJ_INNER_START, inner);
@@ -800,9 +826,9 @@ fn lp_join_vertex(w: LineWindow, look: LineLook, corner: LpCorner, slot: u32) ->
     let inner_start = lp_placed(lp_shared(lp_edge(-side, hw, n1, -side * miter, both)), -(side * miter), hw, vec2<f32>(u, v_in), bisector);
     // A miter's point measures the other segment's outer edge; a bevel's
     // fans the bevel's edge
-    let other0 = lp_edge_second(p + m1 * hw, m1, turn.cos);
-    let other1 = lp_edge_second(p + m0 * hw, m0, turn.cos);
-    let bevel_edge = lp_edge_second(p + m0 * hw, turn.bevel, dot(m0, turn.bevel));
+    let other0 = lp_edge_second(p + m1 * hw, m1, turn.cos, true);
+    let other1 = lp_edge_second(p + m0 * hw, m0, turn.cos, true);
+    let bevel_edge = lp_edge_second(p + m0 * hw, turn.bevel, dot(m0, turn.bevel), false);
 
     if role >= LJ_ARC {
         let k = f32(role - LJ_ARC);
@@ -839,8 +865,14 @@ fn lp_join_vertex(w: LineWindow, look: LineLook, corner: LpCorner, slot: u32) ->
         case LJ_END_POINT: {
             return lp_with_second(outer_end, other0);
         }
-        case LJ_TIP: {
-            let tip = lp_with_second(lp_edge(side, hw, n0, side * miter, LINE_NO_EDGE), other0);
+        case LJ_TIP, LJ_TIP_START: {
+            let end = role == LJ_TIP;
+            var tip = lp_edge(side, hw, n0, side * miter, LINE_NO_EDGE);
+            tip.second = other0;
+            if !end {
+                tip.normal = n1;
+                tip.second = other1;
+            }
             return lp_placed(tip, side * miter, hw, vec2<f32>(u, v_out), bisector);
         }
         case LJ_START_POINT: {
@@ -886,8 +918,9 @@ fn lp_join_vertex(w: LineWindow, look: LineLook, corner: LpCorner, slot: u32) ->
             return lp_placed(strip, m, hw, uv, n);
         }
         default: {
-            // The bevel's middle, pushed along its normal
-            var middle = lp_edge(side, hw, n0, turn.bevel, LINE_NO_EDGE);
+            // The bevel's middle, pushed along its normal, measured across
+            // the segment of its half
+            var middle = lp_edge(side, hw, select(n1, n0, role == LJ_MIDDLE), turn.bevel, LINE_NO_EDGE);
             middle.dist = side * hw * (1.0 + turn.cos) / 2.0;
             middle = lp_with_second(middle, bevel_edge);
             return lp_placed(middle, m0 + m1, hw / 2.0, vec2<f32>(u, v_out), bisector);
@@ -1007,16 +1040,12 @@ fn line_piece_slot(kind: u32, join: u32, cap: u32, tri: u32, corner: u32) -> u32
             }
             return select(5u + tri + corner - 1u, 1u, corner == 0u);
         }
-        if join == JOIN_BEVEL {
-            // A bevel names each place it repeats by one slot
-            let ends = array<vec2<u32>, 4>(vec2<u32>(2u, 3u), vec2<u32>(3u, 5u), vec2<u32>(5u, 6u), vec2<u32>(6u, 8u));
-            return select(ends[min(tri, 3u)][min(max(corner, 1u), 2u) - 1u], 0u, corner == 0u);
-        }
-        if corner == 0u {
-            return select(1u, 0u, tri == 0u || tri == 3u);
-        }
-        let first = array<u32, 4>(2u, 4u, 5u, 7u);
-        return first[min(tri, 3u)] + corner - 1u;
+        // A bevel names each place it repeats by one slot
+        let miter = array<vec3<u32>, 4>(vec3<u32>(0u, 2u, 3u), vec3<u32>(1u, 4u, 5u), vec3<u32>(9u, 6u, 1u), vec3<u32>(7u, 8u, 0u));
+        let bevel = array<vec3<u32>, 4>(vec3<u32>(0u, 2u, 3u), vec3<u32>(0u, 3u, 5u), vec3<u32>(9u, 6u, 0u), vec3<u32>(6u, 8u, 0u));
+        let i = min(tri, 3u);
+        let triangle = select(miter[i], bevel[i], join == JOIN_BEVEL);
+        return triangle[min(corner, 2u)];
     }
     if cap == CAP_SQUARE {
         let order = select(vec3<u32>(1u, 3u, 2u), vec3<u32>(0u, 1u, 2u), tri == 0u);
@@ -1040,5 +1069,20 @@ fn line_piece_vertex(w: LineWindow, look: LineLook, corner: LpCorner, kind: u32,
             place = lp_cap_vertex(w, look, corner, kind == PIECE_START_CAP, slot);
         }
     }
-    return lp_assemble(lp_pt(w, 0), place);
+    var v = lp_assemble(lp_pt(w, 0), place);
+    if place.round {
+        // A round piece's segments' normals: a join's before and after
+        // it, a cap's own twice
+        let p = lp_pt(w, 0).pos;
+        var before = lp_segment(lp_pt(w, -1).pos, p);
+        var after = lp_segment(p, lp_pt(w, 1).pos);
+        if kind == PIECE_START_CAP {
+            before = after;
+        } else if kind == PIECE_END_CAP {
+            after = before;
+        }
+        v.normal = before.normal;
+        v.second_normal = after.normal;
+    }
+    return v;
 }
