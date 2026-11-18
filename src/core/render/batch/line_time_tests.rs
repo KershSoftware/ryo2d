@@ -309,7 +309,8 @@ fn line_time_splits_into_vertex_and_fragment() {
     ("round 10k", lines_only(LineJoin::Round, 10_000)),
     ("miter 100k", lines_only(LineJoin::Miter, 100_000)),
   ];
-  for (name, stream) in &scenes {
+  // The first scene again at the end, once the GPU's clock is up
+  for (index, (name, stream)) in scenes.iter().chain(scenes.first()).enumerate() {
     let uploaded = lines.upload(&device, &queue, stream);
     let mut figures = Vec::new();
     for run in [Run::Full, Run::Constant, Run::OnePixel, Run::Empty] {
@@ -402,6 +403,9 @@ fn line_time_splits_into_vertex_and_fragment() {
         .get(times.len() / 2)
         .map_or(0.0, |t| t.as_secs_f64() * 1e6);
       figures.push(format!("{run:?} {median:.1} ({} timed)", times.len()));
+    }
+    if index == 0 {
+      continue;
     }
     eprintln!(
       "{name}: {} vertices; {}",
