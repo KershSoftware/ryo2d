@@ -148,9 +148,9 @@ fn ui_line_window(instance: UiInstanceIn, first: i32, offset: vec2<f32>) -> Line
 // both build from the same points), pushed a pixel of the UI image out and
 // measured as the world's are (`line_pieces.wgsl`, `line_cover.wgsl`: no
 // displacement, no snap; Hard by its edge or, as its target's, on the
-// pixel-art target, where the UI camera's `snap` is set). An instance wholly outside its clip, its points'
-// box grown by how far a vertex reaches from them (`ui_line_reach` on the
-// CPU), is collapsed
+// pixel-art target, where the UI camera's `snap` is set). An instance
+// wholly outside its clip, its points' box grown by how far a vertex
+// reaches from them (`ui_line_reach` on the CPU), is collapsed
 fn ui_line(instance: UiInstanceIn, index: u32, by: vec2<f32>, clip: vec4<u32>, base: UiOut) -> UiOut {
     var out = base;
     let bits = u32(instance.a6.w);

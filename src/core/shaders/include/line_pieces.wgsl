@@ -993,7 +993,7 @@ fn lp_cap_vertex(w: LineWindow, look: LineLook, corner: LpCorner, start: bool, s
         let offset = outward * (hw * arc_scale);
         // Across by the offset over the half width, as along the segment
         // (the arc's corner lies past the half width)
-        let uv = vec2<f32>(u + dot(offset, out) * scale, 0.5 - 0.5 * dot(offset, n) / max(hw, 1.0e-30));
+        let uv = vec2<f32>(u + dot(offset, out) * scale, 0.5 - 0.5 * arc_scale * dot(outward, n));
         return lp_placed(lp_round(hw, offset, outward * arc_scale, LINE_NO_EDGE), outward, hw * arc_scale, uv, n);
     }
     switch role {

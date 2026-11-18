@@ -1507,13 +1507,14 @@ impl Builder<'_> {
           towards,
         );
         // and across by the offset over the half width, as along the
-        // segment (an arc's corner lies past the half width)
+        // segment (an arc's corner lies past the half width): its push,
+        // the arc's direction over the step's cosine
         self.round_normals(round_from, n, n);
         for vertex in self.out.vertices.get_mut(base..).into_iter().flatten() {
           let offset = Vec2::from(vertex.position) - p;
           vertex.uv = [
             u + offset.dot(out) * scale,
-            0.5 - 0.5 * offset.dot(n) / hw.max(1e-30),
+            0.5 - 0.5 * vertex.push().dot(n),
           ];
           vertex.effect_u = vertex.uv[0];
         }

@@ -239,9 +239,9 @@ pub(crate) fn sprite_instance(rect: Rect, uv: [f32; 4], tint: Color) -> Option<S
 /// command lays them, before its offset, how it is drawn and that offset
 /// (`at`), moved `by` (as `UiCommand::moved` moves it), or `None` for
 /// another command. UI lines are solid, mitered, butt capped, of one width
-/// and one colour, with their own edge or their target's. The GPU adds the offset to each point (with a scroll
-/// slot's, `ui.wgsl`), so a line in a slot is built from the same points
-/// as one moved there on the CPU.
+/// and one colour, with their own edge or their target's. The GPU adds the
+/// offset to each point (with a scroll slot's, `ui.wgsl`), so a line in a
+/// slot is built from the same points as one moved there on the CPU.
 pub(crate) fn ui_line_points(
   command: &UiCommand,
   points: &mut Vec<PolyPoint>,

@@ -306,11 +306,11 @@ fn a_line_whose_offset_or_points_are_not_finite_builds_nothing() {
   }
 }
 
-#[test]
 /// Every kind but the linear sprite (a render target) in one image through
 /// the UI pipeline, all but one rect clipped by one clip in each instance,
 /// in one run: each draws, and no pixel outside the clip changes but the
 /// unclipped rect's
+#[test]
 fn every_kind_draws_inside_its_clip() {
   let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
     return;

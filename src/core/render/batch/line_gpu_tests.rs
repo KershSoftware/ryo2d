@@ -286,12 +286,7 @@ impl LineGpuTest {
     &self.layout
   }
 
-  pub(super) fn upload(
-    &self,
-    device: &wgpu::Device,
-    _queue: &wgpu::Queue,
-    stream: &LineStream,
-  ) -> UploadedLines {
+  pub(super) fn upload(&self, device: &wgpu::Device, stream: &LineStream) -> UploadedLines {
     let storage = wgpu::BufferUsages::STORAGE;
     let table = buffer(
       device,
@@ -376,7 +371,7 @@ impl LineGpuTest {
     pipeline: &wgpu::RenderPipeline,
     groups: (&wgpu::BindGroup, Option<&wgpu::BindGroup>),
   ) {
-    let lines = self.upload(device, queue, stream);
+    let lines = self.upload(device, stream);
     let mut encoder = device.create_command_encoder(&Default::default());
     self.encode(&mut encoder, &lines);
     {
@@ -442,7 +437,7 @@ fn dump_by(
   stream: &LineStream,
   gpu: &LineGpuTest,
 ) -> Vec<Dumped> {
-  let lines = gpu.upload(device, queue, stream);
+  let lines = gpu.upload(device, stream);
   let count = lines.vertices as usize;
   let storage = |binding, read_only| wgpu::BindGroupLayoutEntry {
     binding,
