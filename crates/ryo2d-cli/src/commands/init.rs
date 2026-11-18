@@ -18,11 +18,8 @@ pub fn execute(args: &InitArgs) -> CliResult<()> {
   };
 
   // Validate project name
-  if !is_valid_project_name(&project_name) {
-    return Err(CliError::Other(
-      "Invalid project name. Use lowercase letters, numbers, hyphens, and underscores only."
-        .to_string(),
-    ));
+  if let Err(problem) = check_project_name(&project_name) {
+    return Err(CliError::Other(format!("Invalid project name: {problem}")));
   }
 
   let project_dir = Path::new(&project_name);
@@ -90,12 +87,37 @@ fn prompt_project_name(prompt: &mut Prompt) -> CliResult<String> {
   Ok(name)
 }
 
-/// Validate project name (similar to cargo package names)
-fn is_valid_project_name(name: &str) -> bool {
-  !name.is_empty()
-    && name
-      .chars()
-      .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+/// Words cargo refuses as a package name (Rust's keywords, and `test`, which
+/// conflicts with the built-in test library)
+const REFUSED_NAMES: [&str; 53] = [
+  "abstract", "as", "async", "await", "become", "box", "break", "const", "continue", "crate", "do",
+  "dyn", "else", "enum", "extern", "false", "final", "fn", "for", "gen", "if", "impl", "in", "let",
+  "loop", "macro", "match", "mod", "move", "mut", "override", "priv", "pub", "ref", "return",
+  "self", "static", "struct", "super", "test", "trait", "true", "try", "type", "typeof", "unsafe",
+  "unsized", "use", "virtual", "where", "while", "yield", "union",
+];
+
+/// What is wrong with a project name for cargo (which names the package
+/// after it), or `Ok` when it is fine
+fn check_project_name(name: &str) -> Result<(), String> {
+  if name.is_empty() {
+    return Err("the name cannot be empty".to_string());
+  }
+  if !name
+    .chars()
+    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+  {
+    return Err("use lowercase letters, numbers, hyphens and underscores only".to_string());
+  }
+  if name.starts_with(|c: char| c.is_ascii_digit()) {
+    return Err(format!("`{name}` cannot start with a digit"));
+  }
+  if REFUSED_NAMES.contains(&name) {
+    return Err(format!(
+      "`{name}` is a Rust keyword or conflicts with a built-in library, so cargo refuses it as a package name"
+    ));
+  }
+  Ok(())
 }
 
 /// The files of a new project, as (path, contents), from the templates
@@ -207,7 +229,28 @@ fn get_installed_engine_path() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-  use super::project_files;
+  use super::{check_project_name, project_files};
+
+  #[test]
+  fn a_name_cargo_refuses_is_refused_before_anything_is_written() {
+    for name in ["my-game", "_x", "game2", "a"] {
+      assert!(check_project_name(name).is_ok(), "{name}");
+    }
+    for name in [
+      "",
+      "2048",
+      "9a",
+      "fn",
+      "test",
+      "Upper",
+      "has space",
+      "dot.name",
+    ] {
+      assert!(check_project_name(name).is_err(), "{name}");
+    }
+    assert!(check_project_name("2048").unwrap_err().contains("digit"));
+    assert!(check_project_name("fn").unwrap_err().contains("keyword"));
+  }
 
   fn ryo_toml() -> String {
     match project_files("game", "ryo2d = { path = \"/engine\" }", "/engine") {
@@ -239,6 +282,20 @@ mod tests {
     assert!(cargo.contains("name = \"my-game\""));
     assert!(cargo.contains("ryo2d = { path = \"/engine\" }"));
     assert!(!cargo.contains("your-username") && !cargo.contains("rand = "));
+  }
+
+  /// A game is a binary: its lock file is committed for reproducible builds
+  #[test]
+  fn a_new_game_s_gitignore_keeps_cargo_lock() {
+    let files = project_files("my-game", "ryo2d = { path = \"/engine\" }", "/engine");
+    let ignore = files
+      .unwrap_or_default()
+      .into_iter()
+      .find(|(path, _)| *path == ".gitignore")
+      .map(|(_, text)| text)
+      .unwrap_or_default();
+    assert!(ignore.contains("/target/"), "{ignore}");
+    assert!(!ignore.contains("Cargo.lock"), "{ignore}");
   }
 
   /// A new game starts at the mix as designed: master at 1, which is the
