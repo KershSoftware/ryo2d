@@ -84,7 +84,7 @@ These replace anything above that says otherwise.
 - **Translucent corners:** no darker than their segments (the existing test), for miter, bevel and round joins.
 - **Culling:** a miter tip reaching into view from a line just off it is drawn.
 - **UI rects:** the same pixels as before (the rect tests unchanged).
-- **Speed:** a new line bench (a thousand lines and trails of mixed joins, extract and draw) and the UI bench within 5% of main; no allocation added.
+- **Speed:** a new line bench (a thousand lines and trails of mixed joins, extract and draw) and the UI bench within 5% of main; no allocation added. As built, on the final code (`docs/backlog/lines.md`, three alternating runs at machine loads of 7 to 11): the CPU's render step is 63% to 81% under main and the upload 75% to 81% under; the GPU bound (1.15 times main) is met on 10,000 mitered lines (0.67) and 10,000 round lines (0.77) and missed on the mixed thousand (1.34), 1,000 mitered lines (1.35) and 1,000 round lines (1.31); the UI bench's render step is +3% (one label) and +1% (scrolling) over main's.
 - **Visual review:** before-and-after captures of the text demo's page 5, the trails demo's pages, the UI demo's checkbox and dropdown pages, a debug overlay and a pixel-art page, at 1x and 2x, side by side, for the owner's hand-play. The tour changes only on pages with lines, each looked at.
 - **Docs:** the render, trail, shaders and UI notes, `ryo-renderer`, the line and trail sections of the skills, `ryo-ui`'s lines, and the backlog notes that pointed here.
 
