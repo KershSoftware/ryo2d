@@ -172,7 +172,12 @@ fn run_netplay_server() -> CliResult<()> {
   let running = Arc::new(AtomicBool::new(true));
 
   // Read cloudflared output to find the tunnel URL
-  let stderr = cloudflared.stderr.take().unwrap();
+  let Some(stderr) = cloudflared.stderr.take() else {
+    let _ = cloudflared.kill();
+    return Err(CliError::Other(
+      "could not read cloudflared's output".to_string(),
+    ));
+  };
   let reader = BufReader::new(stderr);
 
   let mut tunnel_url: Option<String> = None;
