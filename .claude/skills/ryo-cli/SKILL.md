@@ -24,7 +24,7 @@ ryo2d build --dev-tools  # The same, keeping the developer tools (for testing, n
 ryo2d run              # Run production build
 ryo2d dev              # Development mode (debug build, asset hot reload)
 ryo2d export           # Package release into distributable zip
-ryo2d install-skills   # Add Agent Skills to existing project (--skills claude|copilot|both)
+ryo2d install-skills   # Add Agent Skills to existing project (--skills claude|copilot|both|none)
 ryo2d check-ui [files] # Check UI files (*.ui.ron) without running the game
 ryo2d sheet <file>     # Draw a skeleton's animations as a contact sheet PNG
 ryo2d netplay          # Tools for testing multiplayer with friends
@@ -106,7 +106,7 @@ show_colliders = false
 
 ## Release bundle
 
-`ryo2d build` writes `release/` with the game binary, `assets/`, `levels/`, `icon.png` and `licenses/` (plus `data/` when `[release] portable = true`; a rebuild replaces everything in `release/` but `data/`, so a portable build's saves survive). The game runs from that folder wherever it's launched from, and saves to the OS user data folder unless portable - see the `ryo-config-save` skill.
+`ryo2d build` writes `release/` with the game binary, `assets/`, `levels/`, `icon.png` and `licenses/` (plus `data/` when `[release] portable = true`; a rebuild replaces everything in `release/`, but keeps `data/` for a portable game, so its saves survive; a game that is not portable has `data/` removed. `ryo2d export` never zips `release/data/`: a portable game's zip gets an empty `data/`, any other none). The game runs from that folder wherever it's launched from, and saves to the OS user data folder unless portable - see the `ryo-config-save` skill.
 
 - **`licenses/` holds the licences of the fonts the engine builds into every game** (feature `default-fonts`): Inter and JetBrains Mono (SIL Open Font License 1.1, which asks that every copy of the fonts carries its notice and licence) and m5x7 (CC0), with a README naming them. Ship the folder with the game; `ryo2d export` always puts it in the zip. The zip is named `NAME-vVERSION-YYYYMMDD.zip` with today's UTC date, and keeps the game executable's run permission (0o755) for Mac and Linux. Add your own fonts' and assets' licences beside it.
 - **A release has no developer tools**: no console, no logger or profiler window, no debug keys (F1-F4, F9, F10, F12 and the backquote key reach the game; F5's borderless toggle stays) and no debug overlays, whatever Ryo.toml's `[debug]` section says; a plain build ignores those settings without a word. The FPS counter stays, as the player's setting. `ryo2d::DEV_TOOLS` is `false` in it.

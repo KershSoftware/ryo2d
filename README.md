@@ -122,6 +122,8 @@ fn main() -> EngineResult<()> {
 | `ryo2d dev` | Development mode with hot-reload |
 | `ryo2d export` | Package release into distributable zip |
 | `ryo2d install-skills` | Add Agent Skills to existing project |
+| `ryo2d check-ui` | Check `*.ui.ron` files without running the game |
+| `ryo2d sheet <file>` | Draw a skeleton's animations as a contact sheet PNG |
 | `ryo2d netplay` | Test multiplayer with friends over internet |
 
 ## Core Features

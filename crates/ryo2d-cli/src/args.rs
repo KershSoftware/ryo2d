@@ -68,10 +68,13 @@ pub enum Command {
   /// Creates a zip from the release/ folder, named
   /// {project-name}-v{version}-{YYYYMMDD}.zip, where the date is today's UTC
   /// date. The game's executable keeps its run permission (0o755) in the
-  /// zip, so it runs after unzipping on Mac and Linux. The version is Ryo.toml's
-  /// [project].version, or else Cargo.toml's [package].version; when neither
-  /// has one, the -v{version} part is left out. If a zip of that name
-  /// exists, a suffix is added: -001, -002 and so on.
+  /// zip, so it runs after unzipping on Mac and Linux. The version is
+  /// Ryo.toml's [project].version, or else Cargo.toml's [package].version;
+  /// when neither has one, the -v{version} part is left out. If a zip of
+  /// that name exists, a suffix is added: -001, -002 and so on.
+  ///
+  /// The release's data/ (saves and settings from playing it) is never
+  /// zipped: a portable game gets an empty data/, any other none.
   ///
   /// The zip always carries licenses/, the licences of the fonts the engine
   /// builds in (written into release/ first if missing).
@@ -158,7 +161,8 @@ The bundle (release/) holds:
     - levels/ (if present)
     - data/ (empty, for save files; made only when Ryo.toml has
       [release] portable = true, otherwise saves go to the player's
-      own folders)
+      own folders; kept when rebuilding a portable game, removed
+      otherwise, and never exported)
     - icon.png (the game's icon: [release] logo, else the engine's)
     - README.md (if present)
     - licenses/ (the licences of the fonts the engine builds in)
