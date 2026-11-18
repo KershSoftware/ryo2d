@@ -31,7 +31,7 @@
 //!   point 0. Butt caps are left out (they have no triangles). Each piece
 //!   draws a fixed number of triangles, in a fixed order
 //!   (`piece_triangles`): a segment 4, a miter or bevel join 4, a round join
-//!   18, a square cap 2, a round cap 16. What a corner's geometry leaves
+//!   10, a square cap 2, a round cap 8. What a corner's geometry leaves
 //!   unused collapses to a triangle of no area at the corner point (a join
 //!   where the line runs straight on draws only those).
 //! - **A piece is self-contained.** It has its own vertices, shares none
@@ -70,7 +70,7 @@
 //!   along the bevel's normal, its distance across rising by `m · bevel`.
 //! - **Round arcs are circumscribed**
 //!   (`round_pieces_are_contained_and_true_at_a_half_width_of_150`): a round
-//!   join's 16 triangles fan over its angle in 15 steps, a round cap's over
+//!   join's 8 triangles fan over its angle in 7 steps, a round cap's over
 //!   half a turn; the arc's ends are the strip's outer vertices and the
 //!   corners between them sit at the half-step angles, `hw / cos(step / 2)`
 //!   from the corner point, pushed by `1 / cos(step / 2)` units per unit, so
@@ -270,6 +270,37 @@ struct Scratch {
 }
 
 impl Triangles {
+  /// The line's true shape as triangles, unpushed: each triangle as built,
+  /// but a round piece's, whose circumscribed arc is only the drawn
+  /// polygon, as the sector of the disc it spans (in 32 steps), as its
+  /// coverage takes it (the offset's length against the half width). The
+  /// coverage tests measure the line's exact area from these.
+  pub(crate) fn true_shape(&self) -> Vec<[Vec2; 3]> {
+    const STEPS: u32 = 32;
+    let mut out = Vec::new();
+    for tri in self.indices.chunks(3) {
+      let v = [0, 1, 2].map(|k| &self.vertices[tri[k] as usize]);
+      let at = v.map(|v| Vec2::from(v.position));
+      if !v.iter().all(|v| v.flags & FLAG_ROUND != 0) {
+        out.push(at);
+        continue;
+      }
+      // Its corner point is the vertex of no offset; the sector runs from
+      // one of the others' directions to the other's, the short way
+      let offset = |v: &Vertex2D| Vec2::new(v.dist, v.second);
+      let Some(centre) = (0..3).find(|&k| offset(v[k]) == Vec2::ZERO) else {
+        out.push(at);
+        continue;
+      };
+      let (b, c) = (offset(v[(centre + 1) % 3]), offset(v[(centre + 2) % 3]));
+      let (from, sweep) = (b.to_angle(), b.angle_to(c));
+      let (p, radius) = (at[centre], v[centre].half);
+      let on = |k: u32| p + Vec2::from_angle(from + sweep * k as f32 / STEPS as f32) * radius;
+      out.extend((0..STEPS).map(|k| [p, on(k), on(k + 1)]));
+    }
+    out
+  }
+
   /// Forget every triangle and line, keeping the allocations.
   pub(crate) fn clear(&mut self) {
     self.vertices.clear();
@@ -1241,7 +1272,7 @@ impl Builder<'_> {
     }
   }
 
-  /// A round piece's arc of 16 triangles from `first` to `last` (the
+  /// A round piece's arc of 8 triangles from `first` to `last` (the
   /// strip's outer vertices, as round vertices), fanned from `centre` over
   /// `angle`, circumscribed: the corners between them at the half-step
   /// angles, `hw / cos(step / 2)` from the corner point, pushed by
@@ -1264,10 +1295,11 @@ impl Builder<'_> {
     for k in 0..steps {
       let (outward, across) = towards(step * (k as f32 + 0.5));
       let offset = outward * (hw * scale);
+      // Across, the texture runs on past the half width as the offset does
       let arc = self.vertex(
         p + offset,
         point,
-        uv,
+        [uv[0], 0.5 + (uv[1] - 0.5) * scale],
         across,
         Measure::round(hw, offset, outward * scale, NO_EDGE),
       );
@@ -1425,10 +1457,14 @@ impl Builder<'_> {
           [u, 0.5],
           towards,
         );
+        // and across by the offset over the half width, as along the
+        // segment (an arc's corner lies past the half width)
         for vertex in self.out.vertices.get_mut(base..).into_iter().flatten() {
           let offset = Vec2::from(vertex.position) - p;
-          let outward = offset.normalize_or_zero();
-          vertex.uv = [u + offset.dot(out) * scale, 0.5 - 0.5 * outward.dot(n)];
+          vertex.uv = [
+            u + offset.dot(out) * scale,
+            0.5 - 0.5 * offset.dot(n) / hw.max(1e-30),
+          ];
           vertex.effect_u = vertex.uv[0];
         }
       }
@@ -2404,7 +2440,8 @@ mod tests {
   const INNER_REACH: f32 = 4.0;
 
   /// The worst coverage error over pixels whose centres lie within `reach`
-  /// of one of `around`, against the exact area of the unpushed mesh, and
+  /// of one of `around`, against the exact area of the line unpushed (its
+  /// round pieces true discs, `Triangles::true_shape`), and
   /// the worst at one of the `inner` corners; and where the worst lies.
   fn worst_coverage(
     t: &Triangles,
@@ -2414,9 +2451,7 @@ mod tests {
     overlap: &[Overlap],
   ) -> ((f32, Vec2), (f32, Vec2)) {
     use super::super::coverage::area_in_pixel;
-    let rest: Vec<[Vec2; 3]> = triangles_of(t)
-      .map(|tri| tri.map(|v| Vec2::from(v.position)))
-      .collect();
+    let rest = t.true_shape();
     let pushed: Vec<([Vertex2D; 3], [Landed; 3])> = triangles_of(t)
       .map(|tri| (tri, tri.map(|v| landed(&v, 1.0))))
       .filter(|(_, land)| {

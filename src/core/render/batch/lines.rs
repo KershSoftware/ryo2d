@@ -234,7 +234,7 @@ pub(crate) const SQUARE_CAP_TRIANGLES: u32 = 2;
 /// The triangles a round cap draws
 pub(crate) const ROUND_CAP_TRIANGLES: u32 = ARC_TRIANGLES;
 /// The triangles of a round piece's arc
-pub(crate) const ARC_TRIANGLES: u32 = 16;
+pub(crate) const ARC_TRIANGLES: u32 = 8;
 
 /// The triangles a piece of `kind` draws, whatever its geometry.
 pub(crate) fn piece_triangles(kind: PieceKind, join: LineJoin, cap: LineCap) -> u32 {
@@ -828,7 +828,7 @@ mod tests {
     );
     stream.cap = StreamCap {
       points: 16,
-      indices: 300,
+      indices: 200,
       lines: 5,
     };
     let line = |count: usize| -> Vec<PolyPoint> {
@@ -850,12 +850,12 @@ mod tests {
       edge: None,
     };
     let (round, miter) = (style(LineJoin::Round), style(LineJoin::Miter));
-    // Three lines of three points and 26 triangles each
+    // Three lines of three points and 18 triangles each
     for _ in 0..3 {
-      assert_eq!(stream.polyline(&line(3), &round).len(), 78);
+      assert_eq!(stream.polyline(&line(3), &round).len(), 54);
     }
     assert!(!stream.warned);
-    // A fourth would take 104 triangles
+    // A fourth would take 216 indices
     assert!(stream.polyline(&line(3), &round).is_empty());
     assert!(stream.warned, "warned");
     assert!(!stream.polyline(&line(2), &miter).is_empty());
@@ -871,7 +871,7 @@ mod tests {
         stream.indices.len(),
         stream.lines.len()
       ),
-      (13, 258, 5)
+      (13, 186, 5)
     );
     assert!(stream.points.len() <= cap.points && stream.indices.len() <= cap.indices);
   }

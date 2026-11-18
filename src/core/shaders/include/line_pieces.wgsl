@@ -38,8 +38,9 @@ const CAP_BUTT: u32 = 0u;
 const CAP_SQUARE: u32 = 1u;
 const CAP_ROUND: u32 = 2u;
 
-// A round piece's arc: 16 triangles over its angle in 15 steps
-const LINE_ARC_STEPS: u32 = 15u;
+// A round piece's arc: 8 triangles over its angle in 7 steps
+// (`ARC_TRIANGLES` on the CPU)
+const LINE_ARC_STEPS: u32 = 7u;
 
 // A point of a line
 struct LinePt {
@@ -808,7 +809,9 @@ fn lp_join_vertex(w: LineWindow, look: LineLook, corner: LpCorner, slot: u32) ->
         let outward = vec2<f32>(r.x * m0.x - r.y * m0.y, r.y * m0.x + r.x * m0.y);
         let across = vec2<f32>(r.x * n0.x - r.y * n0.y, r.y * n0.x + r.x * n0.y);
         let offset = outward * (hw * scale);
-        return lp_placed(lp_round(hw, offset, outward * scale, LINE_NO_EDGE), outward, hw * scale, vec2<f32>(u, v_out), across);
+        // Across, the texture runs on past the half width as the offset does
+        let uv = vec2<f32>(u, 0.5 + (v_out - 0.5) * scale);
+        return lp_placed(lp_round(hw, offset, outward * scale, LINE_NO_EDGE), outward, hw * scale, uv, across);
     }
     switch role {
         case LJ_CENTRE: {
@@ -951,8 +954,9 @@ fn lp_cap_vertex(w: LineWindow, look: LineLook, corner: LpCorner, start: bool, s
         let r = vec2<f32>(cos(angle), sin(angle));
         let outward = vec2<f32>(r.x * n.x - r.y * n.y, r.y * n.x + r.x * n.y);
         let offset = outward * (hw * arc_scale);
-        let towards = lp_normalize_or(offset, vec2<f32>(0.0));
-        let uv = vec2<f32>(u + dot(offset, out) * scale, 0.5 - 0.5 * dot(towards, n));
+        // Across by the offset over the half width, as along the segment
+        // (the arc's corner lies past the half width)
+        let uv = vec2<f32>(u + dot(offset, out) * scale, 0.5 - 0.5 * dot(offset, n) / max(hw, 1.0e-30));
         return lp_placed(lp_round(hw, offset, outward * arc_scale, LINE_NO_EDGE), outward, hw * arc_scale, uv, n);
     }
     switch role {

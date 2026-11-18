@@ -1073,7 +1073,7 @@ fn the_slot_layouts_agree() {
       }
     }
   }
-  assert!(checked > 500, "{checked} slots checked");
+  assert!(checked > 300, "{checked} slots checked");
   assert!(differ.is_empty(), "{}", differ.join("\n"));
 }
 

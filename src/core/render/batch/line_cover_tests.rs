@@ -480,11 +480,8 @@ fn worst_against_truth(
   let (mut stream, mut reference) = (LineStream::default(), Triangles::default());
   stream.polyline(&points, &style);
   reference.polyline(&points, &style);
-  let triangles: Vec<[Vec2; 3]> = reference
-    .indices
-    .chunks(3)
-    .map(|tri| [0, 1, 2].map(|k| Vec2::from(reference.vertices[tri[k] as usize].position)))
-    .collect();
+  // The line's exact shape: its round pieces true discs
+  let triangles = reference.true_shape();
   let (mut min, mut max) = (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN));
   for &p in &case.around {
     min = min.min(p - case.reach);
