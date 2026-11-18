@@ -95,12 +95,13 @@ fn init_makes_a_project_that_builds() {
     .expect("a target folder");
 
   // The workspace's lock, so the engine's dependencies are the versions it
-  // builds with and nothing is resolved afresh
+  // builds with; only what it lacks (the project itself and its build
+  // dependency `winresource`, with that one's own dependencies) is resolved
   fs::copy(repo.join("Cargo.lock"), project.join("Cargo.lock")).expect("Cargo.lock");
 
   let check = Command::new("cargo")
-    // not `--locked`: the new package itself is not in the workspace's lock
-    .args(["check", "--offline"])
+    // not `--locked` or `--offline`: the lock lacks the project and winresource
+    .arg("check")
     .current_dir(&project)
     .env("CARGO_TARGET_DIR", target)
     .output()
