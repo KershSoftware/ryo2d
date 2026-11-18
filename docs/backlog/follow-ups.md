@@ -6,6 +6,16 @@ Items from 4f on were copied from their execution records. Items from earlier su
 
 ## The ryo2d command
 
+- Owner decisions (2026-11-18): the CLI, input and the engine's structure were asked for as the audit's remaining smaller items, in that order; the owner said "skip questions", so the design follows a professional engine's tool, and design and plan were approved together, subagent-driven. The first commit staged only two lines of `src/core/logging/mod.rs` (its `cargo fmt` reordering stays out), at the owner's word after the permission checker refused the agent's partial staging. The owner approved deleting `target/debug` as needed until the merge. Hand-play: "happy, merge".
+- Rulings the owner may revisit:
+  - **The CLI is its own crate** (`crates/ryo2d-cli`) and reaches the engine through one `#[doc(hidden)] pub mod tooling`; `logging::set_stderr` and `stderr_on` also stay public at `ryo2d::logging` (re-exported from there, so `logging/mod.rs` was not touched again).
+  - **`install-skills` takes `--skills` too**, as `init` does, so it can run with no terminal.
+  - **A release bundle's binary is named by the bin cargo builds** (`default-run` or the only bin), not by the package; the two differ only when a project names its bin differently.
+  - **The README template names Ryo2D without a link.**
+  - **The init build test copies the workspace's `Cargo.lock`** and resolves only what it lacks (the project and `winresource`), so it needs the network once for `winresource` on a cold cargo cache.
+- Not hand-checked at merge: anything on Windows (`.exe` handling, the test's paths); `dev` in a window with Ctrl-C; prompts at a real terminal (the scripted run had none).
+- Deferred findings: with no terminal, `dev` still prints its whole warning block before the hint, and `netplay`'s no-flag wording is unchanged; `init` refuses uppercase names cargo accepts; `run`'s no-bundle fallback ignores `build.target` (older than the branch); the no-colour test is weak (the clap features are the guard).
+- The asset watcher's timing tests (`core::asset::watch`) fail under the full suite's load (seven on the merged tree at load 6) and pass alone (17 of 17); one real race was fixed (the debounce test's writes), and the rest look like FSEvents delivering late or nothing under load. An audio test (`plays_that_waited_count_against_per_frame_as_they_land`) failed once in a sequential run and passes alone.
 - A macOS `.app` bundle and a Windows installer for `ryo2d export`: it writes a zip of the release folder only.
 - `ryo2d netplay` is parked with the networking rethink; it keeps its behaviour until then.
 - Ctrl-C under `ryo2d run` and `ryo2d dev`: the command waits for the game as a child, so the signal reaches both. Replacing the process (exec) or forwarding the signal would give the game sole say.
