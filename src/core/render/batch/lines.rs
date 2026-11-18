@@ -9,10 +9,10 @@
 //!   and miter limit); then an index buffer whose values are vertex codes,
 //!   each naming its piece's point, the piece's kind and one of the
 //!   piece's fixed slots, three a triangle in the order the pieces draw
-//!   (`piece_list`, `piece_template`). Nothing is tessellated on the CPU.
-//!   The filter, the piece list and the line table are the CPU's whole
-//!   part; their rules are told in `polyline.rs`, the reference builder,
-//!   compiled for tests alone. A draw is indexed, over `3 × triangles`
+//!   (`piece_list`, `piece_template`). Nothing is tessellated on the
+//!   CPU. The filter, the piece list and the line table are the CPU's
+//!   whole part; their rules are told in `polyline.rs`, the reference
+//!   builder, compiled for tests alone. A draw is indexed, over `3 × triangles`
 //!   indices, and the vertex stage decodes its `vertex_index`, the code
 //!   (`line.wgsl`), so a piece's triangles share its vertices in the GPU's
 //!   vertex reuse, draws merge as index ranges did and z-order holds.
